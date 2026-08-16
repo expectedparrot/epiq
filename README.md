@@ -1,85 +1,506 @@
 # Epiq
 
-Epiq is a local-first epistemic database for agent-driven research. People and agents define
-typed questions, collect immutable evidence, assert temporally scoped claims, and derive views
-whose lineage remains inspectable. SQLite is canonical; an append-only `events` table records
-every accepted change.
+Epiq is a local-first epistemic database for agent-driven research. It stores entities, typed
+questions, source excerpts, and evidence-backed claims in SQLite. It can then project that history
+into ordinary tables, interactive HTML, and Excel without throwing away where each cell came from.
 
-This repository is an executable vertical slice of the formal model in *Databases That Ask
-Back*. It currently demonstrates:
+Epiq does not search the web or call a language model. A person, script, or research agent finds
+information and submits it through the same deterministic interface. This keeps research
+orchestration replaceable and makes storage behavior testable.
 
-- immutable entities, versioned questions, sources, evidence, claims, and events;
-- valid time and transaction time on claims;
-- evidence-required assertions and explicit retraction;
-- deterministic time-travel queries;
-- semiring-style claim tokens explaining derived results;
-- a narrow, statically checked EpiQL grammar;
-- concurrent-writer serialization using SQLite WAL and `BEGIN IMMEDIATE`.
+This README builds a database from scratch before introducing the packaged examples.
 
-It deliberately does **not** search the web or call a language model. Research agents operate
-outside Epiq and submit proposed evidence and claims through its validated interface.
+## The model in one minute
 
-## Run the Patriots example
+Suppose you want a table like this:
 
-Python 3.11 or later is sufficient; there are no runtime dependencies.
+| Town | Population | Median home value |
+| --- | ---: | ---: |
+| Barnstable | 49,568 | $602,500 |
+| Truro | 1,708 | $888,200 |
+
+An ordinary spreadsheet stores the displayed values. Epiq stores the pieces that justify them:
+
+| Epiq object | Example | Rough spreadsheet analogy |
+| --- | --- | --- |
+| Entity | `Barnstable`, of kind `Town` | Row |
+| Question | `population : Int for Town` | Typed column |
+| Source | Census API URL and retrieval date | Citation |
+| Evidence | A bounded excerpt from that source | Supporting passage |
+| Claim | Barnstable's population was 49,568 as of 2024-12-31 | Cell assertion |
+| Event | `claim.assert` by `agent:census` | Audit-log entry |
+| Projection | Current Town-by-question matrix | View or report |
+
+The table is derived. Claims and evidence are the durable record.
+
+Four cell states remain distinct:
+
+- `Answered`: one supported current answer.
+- `Contested`: multiple incompatible current answers.
+- `NotFound`: a bounded search was completed without sufficient evidence.
+- `Unasked`: no claim or completed search has been recorded.
+
+`NotFound` is deliberately not a negative answer. “I searched and could not establish whether the
+product supports SSO” does not mean “the product does not support SSO.”
+
+## Install
+
+Epiq requires Python 3.11 or later and has no runtime dependencies.
+
+From a checkout:
 
 ```bash
-python -m epiq --db /tmp/patriots.sqlite init --name "Patriots 2025"
-python -m epiq --db /tmp/patriots.sqlite demo patriots
-python -m epiq --db /tmp/patriots.sqlite season-record "New England Patriots 2025"
+uv sync --extra test
+uv run epiq --help
 ```
 
-The final command returns `14-3` plus the 17 claim tokens from which that record was derived.
-Move the transaction-time cutoff backward to see the cell change:
+Install the command in an isolated environment:
 
 ```bash
-python -m epiq --db /tmp/patriots.sqlite season-record \
+uv tool install .
+epiq --help
+```
+
+You can also replace `epiq` with `python -m epiq` in every example below.
+
+## Tutorial: build a town database
+
+### 1. Select a database
+
+Choose the SQLite file once for the current workspace:
+
+```bash
+epiq use examples/tutorial-towns.sqlite
+```
+
+Epiq writes the absolute path to `.epiq/config.json`. The file is workspace configuration, is
+ignored by Git, and may point to a database that does not exist yet.
+
+Inspect the selection:
+
+```bash
+epiq db
+```
+
+```json
+{
+  "database": "/path/to/epiq/examples/tutorial-towns.sqlite",
+  "exists": false,
+  "ok": true,
+  "source": "workspace"
+}
+```
+
+Database resolution has an explicit precedence order:
+
+1. `epiq --db path/to/file.sqlite ...`
+2. The `EPIQ_DB` environment variable
+3. `.epiq/config.json`, written by `epiq use`
+4. `.epiq/epiq.sqlite`
+
+Therefore CI can use `EPIQ_DB`, a developer can use `epiq use`, and an individual command can
+still override both.
+
+### 2. Initialize it
+
+```bash
+epiq init --name "Cape Cod Town Tutorial"
+```
+
+```json
+{
+  "database": "/path/to/epiq/examples/tutorial-towns.sqlite",
+  "name": "Cape Cod Town Tutorial",
+  "ok": true
+}
+```
+
+Initialization creates the SQLite schema and immutable project identity. Running `init` again on
+the same path fails rather than replacing the database.
+
+### 3. Add entities—the future rows
+
+```bash
+epiq entity Town "Barnstable" \
+  --attributes '{"county":"Barnstable County","state":"Massachusetts","geoid":"06000US2500103690"}'
+
+epiq entity Town "Truro" \
+  --attributes '{"county":"Barnstable County","state":"Massachusetts","geoid":"06000US2500170605"}'
+```
+
+Each command returns a stable ID:
+
+```json
+{
+  "entity_id": "ent_...",
+  "ok": true
+}
+```
+
+Commands accept either that ID or the exact entity name when referring to the entity later.
+Attributes are descriptive metadata; researched values belong in claims, not attributes.
+
+### 4. Define typed questions—the future columns
+
+Questions apply to an entity kind. Adding a question is how the schema grows.
+
+```bash
+epiq question population \
+  --for Town \
+  --type Int \
+  --definition '{"label":"Population estimate","unit":"people","cardinality":"one"}'
+
+epiq question median_home_value \
+  --for Town \
+  --type Int \
+  --definition '{"label":"Median owner-occupied home value","unit":"USD","cardinality":"one"}'
+```
+
+The question name is the stable machine-facing field name. `definition` holds presentation and
+policy metadata. The current implementation recognizes:
+
+- `Int`: validated as a JSON integer.
+- `Bool`: validated as JSON `true` or `false`.
+- `Enum[a,b,c]`: validated against the listed strings.
+- `Json`: accepts structured JSON for richer answers.
+
+`cardinality` defaults to `one`. A question with `"cardinality":"many"` projects all supported
+values instead of treating multiple values as a contradiction.
+
+Questions are immutable and versioned. Defining the same question name again creates a new version;
+current projections use the latest version.
+
+### 5. Add evidence
+
+Evidence is stored before a claim can cite it:
+
+```bash
+epiq --actor agent:census evidence \
+  --url "https://api.example.gov/towns/barnstable" \
+  --title "2024 town estimates" \
+  --retrieved-at 2026-08-15 \
+  --excerpt "Barnstable population: 49,568; median owner-occupied home value: $602,500."
+```
+
+```json
+{
+  "evidence_id": "evd_...",
+  "ok": true,
+  "source_id": "src_..."
+}
+```
+
+A source records the URL, title, retrieval date, and content hash. Evidence is the bounded excerpt
+used to support a claim. Repeating the same URL and excerpt returns the existing IDs, which makes
+agent retries safe.
+
+Capture the evidence ID for shell chaining with `jq`:
+
+```bash
+BARNSTABLE_EVIDENCE=$(epiq --actor agent:census evidence \
+  --url "https://api.example.gov/towns/barnstable" \
+  --title "2024 town estimates" \
+  --retrieved-at 2026-08-15 \
+  --excerpt "Barnstable population: 49,568; median owner-occupied home value: $602,500." \
+  | jq -r .evidence_id)
+```
+
+The CLI does not download or summarize the URL. The caller is responsible for retrieval; Epiq
+stores the submitted source metadata and excerpt.
+
+### 6. Assert evidence-backed claims
+
+Use the same evidence fragment for both facts it supports:
+
+```bash
+epiq --actor agent:census assert \
+  --subject "Barnstable" \
+  --question population \
+  --value 49568 \
+  --valid-from 2024-12-31 \
+  --evidence "$BARNSTABLE_EVIDENCE" \
+  --confidence high
+
+epiq --actor agent:census assert \
+  --subject "Barnstable" \
+  --question median_home_value \
+  --value 602500 \
+  --valid-from 2024-12-31 \
+  --evidence "$BARNSTABLE_EVIDENCE" \
+  --confidence high
+```
+
+An assertion is rejected if the entity, question, or evidence does not exist; the question applies
+to another entity kind; or the value fails type validation. Confidence is `low`, `medium`, or
+`high`. Epiq records confidence but does not silently rewrite it as evidence ages.
+
+`--valid-from` answers “when was this true?” The event timestamp separately records “when did this
+database learn it?” This is the distinction between valid time and transaction time.
+
+The `--value` argument is parsed as JSON when possible:
+
+```bash
+# Int
+--value 49568
+
+# Bool
+--value true
+
+# Enum or plain string
+--value native
+
+# Structured Json
+--value '{"amount":602500,"currency":"USD","measure":"median"}'
+```
+
+Repeating an identical normalized assertion returns the original claim ID without adding another
+event.
+
+### 7. Inspect the projection
+
+```bash
+epiq matrix --kind Town
+```
+
+The response contains question schemas, entity rows, projected cell states, values, confidence,
+and lineage. A shortened cell looks like this:
+
+```json
+{
+  "confidence": "high",
+  "lineage": [
+    {
+      "claim_id": "clm_...",
+      "evidence_id": "evd_...",
+      "excerpt": "Barnstable population: 49,568...",
+      "source": {
+        "title": "2024 town estimates",
+        "url": "https://api.example.gov/towns/barnstable"
+      },
+      "token": "p_clm_..."
+    }
+  ],
+  "state": "Answered",
+  "value": 49568,
+  "values": [49568]
+}
+```
+
+Select particular questions or historical cutoffs:
+
+```bash
+epiq matrix --kind Town --questions population,median_home_value
+epiq matrix --kind Town --valid-at 2024-12-31
+epiq matrix --kind Town --known-at 2026-01-01T00:00:00Z
+```
+
+At fixed valid- and transaction-time cutoffs, the projection is deterministic.
+
+### 8. Record research that did not find an answer
+
+Truro currently has two `Unasked` cells. Suppose an agent searches for a population source but
+cannot establish an answer:
+
+```bash
+epiq --actor agent:census not-found \
+  --subject "Truro" \
+  --question population \
+  --query 'Truro Massachusetts 2024 official population estimate' \
+  --notes 'Checked the town profile and state portal; neither exposed a citable 2024 estimate.'
+```
+
+The Truro population cell becomes `NotFound`, while its home-value cell remains `Unasked`. This
+records work performed without inventing a negative or zero value. A later supported assertion
+will make the current cell `Answered`; the research task remains in the event history.
+
+### 9. Understand contradictions and corrections
+
+For a cardinality-one question, two active claims with different values produce `Contested`:
+
+```bash
+epiq assert --subject Barnstable --question population --value 49568 \
+  --valid-from 2024-12-31 --evidence evd_first
+
+epiq assert --subject Barnstable --question population --value 50000 \
+  --valid-from 2024-12-31 --evidence evd_second
+```
+
+Epiq does not silently choose a winner. A reviewer resolves the conflict by retracting the claim
+that should no longer be active:
+
+```bash
+epiq --actor human:reviewer retract clm_incorrect \
+  --reason "The source rounded the ACS estimate; retain the exact table value."
+```
+
+Retraction closes the claim's transaction-time interval. It does not delete the assertion,
+evidence, or original event. The current projection changes, while historical queries can still
+recover what the database previously believed.
+
+### 10. Inspect the event history
+
+```bash
+epiq history
+epiq history --type entity.create
+epiq history --type claim.assert
+epiq history --type claim.retracted
+```
+
+Each event includes a monotonically increasing sequence, event ID, timestamp, actor, type, and
+payload. Use distinctive actors for research runs:
+
+```bash
+epiq --actor agent:census-refresh-2026-08 evidence ...
+epiq --actor agent:census-refresh-2026-08 assert ...
+```
+
+`--actor` is a global option, so it appears before the subcommand.
+
+### 11. Export without losing provenance
+
+Create a self-contained interactive report:
+
+```bash
+epiq export-html --kind Town --output reports/towns.html
+```
+
+The generic explorer discovers questions from the database and displays:
+
+- the entity-by-question matrix;
+- automatic charts for numeric questions;
+- coverage and unknown cells;
+- evidence excerpts and source links;
+- confidence and claim-token lineage.
+
+Create a native Excel workbook:
+
+```bash
+epiq export-xlsx --kind Town --output reports/towns.xlsx
+```
+
+The workbook contains three sheets:
+
+- `Data`: a conventional entity-by-question table.
+- `Evidence`: one row per active claim lineage, including URLs and excerpts.
+- `Unknowns`: `Unasked`, `NotFound`, and contested cells.
+
+Both exporters are projections. The SQLite database remains the source of truth.
+
+## What an agent loop looks like
+
+A research agent does not need a privileged write path. Its loop is ordinary CLI composition:
+
+1. Run `epiq matrix --kind Company` and locate `Unasked`, `NotFound`, stale, or contested cells.
+2. Search externally using a browser, API, scraper, or another tool.
+3. Add a bounded source excerpt with `epiq evidence`.
+4. Submit the supported answer with `epiq assert`.
+5. If a bounded search fails, record it with `epiq not-found`.
+6. Regenerate HTML, Excel, or JSON projections.
+
+All commands emit exactly one JSON value on success. Errors go to stderr in a machine-readable
+shape:
+
+```json
+{
+  "error": {
+    "code": "entity_not_found",
+    "message": "Entity not found: Barnstabel"
+  }
+}
+```
+
+Write commands return created IDs, so an agent can chain operations without parsing terminal prose.
+
+## Python API
+
+Bulk importers may use the same storage API directly:
+
+```python
+from epiq.store import Store
+
+store = Store("research.sqlite")
+store.initialize("Product landscape")
+
+company_id = store.add_entity(
+    "Company",
+    "Example Research",
+    {"domain": "example.test"},
+    "import:seed",
+)
+
+store.add_question(
+    "supports_sso",
+    "Company",
+    "Bool",
+    {"label": "Supports SSO", "cardinality": "one"},
+    "import:seed",
+)
+
+_, evidence_id = store.add_evidence(
+    "https://example.test/security",
+    "Security documentation",
+    "2026-08-15",
+    "Enterprise accounts support SAML SSO.",
+    "agent:security-review",
+)
+
+store.assert_claim(
+    company_id,
+    "supports_sso",
+    True,
+    "2026-08-15",
+    evidence_id,
+    "agent:security-review",
+)
+
+matrix = store.matrix("Company")
+```
+
+The CLI is the preferred cross-package boundary. The Python API is useful for trusted importers.
+Direct SQL reads are possible, but external code should not write tables directly because doing so
+would bypass validation and the event log.
+
+## Packaged examples
+
+### Patriots and transaction time
+
+The Patriots fixture demonstrates cells changing as results become known:
+
+```bash
+epiq --db /tmp/patriots.sqlite init --name "Patriots 2025"
+epiq --db /tmp/patriots.sqlite demo patriots
+epiq --db /tmp/patriots.sqlite season-record "New England Patriots 2025"
+```
+
+The final command returns `14-3` plus the 17 claim tokens used in the derivation. Move the
+transaction-time cutoff backward:
+
+```bash
+epiq --db /tmp/patriots.sqlite season-record \
   "New England Patriots 2025" --known-at 2025-09-22T00:00:00Z
 ```
 
-That query returns `1-2`: only the first three result claims were known at the selected cutoff.
+That returns `1-2`, because only three results were known at the cutoff.
 
-Check the corresponding DSL without performing any effects:
+### Cape Cod towns
 
-```bash
-python -m epiq --db /tmp/patriots.sqlite check examples/patriots.epiq
-```
-
-## Manual write loop
-
-All commands emit JSON. Write commands also accept `--actor` before the subcommand.
-
-Select a database once for the current workspace. Epiq writes the selection to the ignored
-`.epiq/config.json` file:
+This reproducible importer builds 15 towns, two questions, 15 evidence fragments, and 30 claims
+from the Census ACS 2024 five-year release:
 
 ```bash
-epiq use examples/ai-interviewers.sqlite
-epiq db
-epiq init --name "AI Interviewer Market"
+python scripts/build_cape_cod_towns.py --db examples/cape-cod-towns.sqlite
+epiq --db examples/cape-cod-towns.sqlite export-html \
+  --kind Town --output examples/cape-cod-towns.html
+epiq --db examples/cape-cod-towns.sqlite export-xlsx \
+  --kind Town --output examples/cape-cod-towns.xlsx
 ```
 
-Afterward, commands can omit `--db`. An explicit `--db` takes precedence, followed by the
-`EPIQ_DB` environment variable, workspace configuration, and finally `.epiq/epiq.sqlite`.
+The visible questions are population and median owner-occupied home value. Each evidence excerpt
+also retains the estimate's margin of error.
 
-```bash
-epiq init --name "My space"
-epiq entity Game "Patriots Week 1" --attributes '{"season_id":"ent_..."}'
-epiq question game_result --for Game --type 'Enum[W,L,T]' \
-  --definition '{"cardinality":"one"}'
-epiq evidence --url https://example.test/game --title "Final" \
-  --retrieved-at 2026-08-15 --excerpt "New England lost 13-20."
-epiq assert --subject "Patriots Week 1" --question game_result --value L \
-  --valid-from 2025-09-07 --evidence evd_...
-```
+### Cham corpus adapter
 
-Assertions without existing evidence fail. Repeating the same normalized claim is idempotent.
-Corrections use `retract`; later versions will add atomic `supersede` to the CLI.
-
-## AI-interviewer market example
-
-The repository can translate the earlier Cham research packet into an Epiq workspace. Controlled
-features become individual typed questions, making missing claims executable research gaps rather
-than false values.
+`import-cham` translates the earlier entity/evidence/claim JSON packet into typed Epiq questions:
 
 ```bash
 epiq use examples/ai-interviewers.sqlite
@@ -89,57 +510,14 @@ epiq --actor agent:corpus-import import-cham \
   --evidence path/to/evidence.json \
   --claims path/to/claims.json
 epiq matrix --kind Company
-python scripts/expand_ai_market.py --db examples/ai-interviewers.sqlite
-epiq export-html --kind Company --output examples/ai-interviewers-visual.html
 ```
 
-The expansion script adds a researched discovery cohort (Glaut, Conveo, Koji Research, and
-Tellet), then classifies all eight companies with typed `market_segment` and
-`comparison_status` questions. The original four remain `core`; newly discovered companies are
-`candidate` until their research coverage is comparable.
-
-Open `examples/ai-interviewers-visual.html` to inspect the taxonomy, research pipeline, feature
-coverage, matrix cells, generated backlog, and evidence lineage. The imported database is
-generated and gitignored; the HTML projection is a reproducible report artifact.
-
-The adapter currently uses the primary evidence item for two older multi-source claims. Native
-many-to-many claim/evidence support is the next storage migration.
-
-## Generic HTML explorer
-
-The HTML renderer is schema-driven and works with any Epiq database. It chooses the entity kind
-with the richest defined schema by default, renders every current question for that kind, and distinguishes Answered,
-Contested, NotFound, and Unasked cells. Evidence and claim lineage remain inspectable in-place.
-
-```bash
-epiq --db path/to/research.sqlite export-html --output report.html
-```
-
-Use `--kind Game` (or another entity kind) when the database contains multiple populations.
-
-The Cape Cod example exercises the same renderer with municipal statistics rather than companies:
-
-```bash
-python scripts/build_cape_cod_towns.py --db examples/cape-cod-towns.sqlite
-epiq --db examples/cape-cod-towns.sqlite export-html \
-  --kind Town --output examples/cape-cod-towns.html
-```
-
-Its population and median owner-occupied home values use the Census ACS 2024 five-year release;
-the evidence attached to every cell retains the corresponding margin of error.
-
-Any projection can also be exported to a native Excel workbook. The workbook contains `Data`,
-`Evidence`, and `Unknowns` sheets so spreadsheet analysis does not discard provenance.
-
-```bash
-epiq --db examples/cape-cod-towns.sqlite export-xlsx \
-  --kind Town \
-  --output examples/cape-cod-towns.xlsx
-```
+The current adapter uses the primary evidence item for older multi-source claims. Native
+many-to-many claim/evidence support is a planned storage migration.
 
 ## EpiQL v0.1
 
-The parser currently accepts typed question declarations and count-over-filter derivations:
+The repository also contains a deliberately narrow parser for a future research DSL:
 
 ```epiq
 question game_result : Enum[W,L,T] for Game {
@@ -151,23 +529,70 @@ derive wins : Int for Season =
   games |> where game_result == W |> count
 ```
 
-Unsupported derivations fail loudly. The next language increment will add populations, temporal
-lenses, proposal-producing `research` effects, and atomic acceptance policies. The narrow parser
-is a contract, not a mock implementation of the broader grammar.
+Check a file without performing effects:
+
+```bash
+epiq --db /tmp/patriots.sqlite check examples/patriots.epiq
+```
+
+Unsupported expressions fail loudly. Planned language work includes populations, temporal lenses,
+proposal-producing research effects, and explicit acceptance policies.
+
+## Storage and concurrency
+
+An Epiq project is one SQLite file. The principal tables are:
+
+- `meta`
+- `events`
+- `entities`
+- `questions`
+- `sources`
+- `evidence`
+- `claims`
+- `research_tasks`
+
+SQLite runs in WAL mode. Writes use `BEGIN IMMEDIATE`, which serializes competing writers rather
+than allowing interleaved partial changes. Each accepted domain write and its event-log record are
+committed in one transaction.
+
+Current invariants:
+
+1. Events, sources, and evidence are never updated or deleted.
+2. A claim requires an existing evidence fragment.
+3. Closing a claim changes its active interval; its assertion remains addressable.
+4. Operational tables and replayable events change in one SQLite transaction.
+5. A pure query at fixed valid- and transaction-time cutoffs is deterministic.
+6. Failure to find evidence is not a negative claim.
+7. Retried identical evidence and claim writes are idempotent.
+
+The database is portable and can live beside a research project. Generated SQLite databases,
+HTML reports, and Excel files are ignored in this repository by default.
+
+## Current limits
+
+Epiq is an executable vertical slice, not yet a production database server. In particular:
+
+- there is no web server, authentication layer, or multi-tenancy;
+- there are no web searches, scrapers, or LLM calls inside the CLI;
+- claim-to-evidence is currently one-to-one;
+- question migrations and atomic supersede are not yet exposed as full CLI workflows;
+- EpiQL implements only question declarations and a narrow count-over-filter derivation;
+- SQLite is canonical; there is not yet a separate append-only JSONL interchange format.
+
+These boundaries are intentional enough to make experiments honest, but not promises that the
+interface is finished.
 
 ## Development
 
 ```bash
 uv sync --extra test
-uv run pytest -q
 uv run ruff check .
+uv run pytest -q
+uv build
 ```
 
-## Storage invariants
+GitHub Actions runs lint and tests on every push and pull request.
 
-1. Events, sources, and evidence are never updated or deleted.
-2. A claim requires an existing evidence fragment.
-3. Closing a claim changes its active interval; its assertion remains addressable.
-4. Replayable events and operational tables change in one SQLite transaction.
-5. A pure query at fixed valid- and transaction-time cutoffs is deterministic.
-6. Failure to find evidence is not a negative claim.
+## License
+
+MIT
