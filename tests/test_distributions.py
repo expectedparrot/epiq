@@ -143,3 +143,76 @@ def test_unknown_or_malformed_question_types_are_rejected(
     store, _ = weather
     with pytest.raises(EpiqError, match="Unknown or malformed"):
         store.add_question("invalid", "WeatherEvent", value_type, {}, "test")
+
+
+def test_weighted_distribution_preserves_weights_and_lineage(weather: tuple[Store, str]) -> None:
+    store, event = weather
+    store.add_question("forecast", "WeatherEvent", "Probability", {"cardinality": "many"}, "test")
+    store.add_question("ensemble", "WeatherEvent", "Distribution[Float]", {}, "test")
+    claims = []
+    for index, value in enumerate([0.2, 0.8]):
+        _, evidence = store.add_evidence(
+            f"https://example.test/{index}", "Forecast", "2026-08-16", str(value), "test"
+        )
+        claims.append(store.assert_claim(event, "forecast", value, "2026-08-17", evidence, "test"))
+
+    derived = store.derive_distribution(
+        event, "ensemble", claims, "2026-08-17", "agent:ensemble", [0.25, 0.75], "high"
+    )
+    cell = store.matrix("WeatherEvent")["rows"][0]["cells"]["ensemble"]
+
+    assert cell["value"] == {
+        "kind": "weighted_empirical",
+        "samples": [0.2, 0.8],
+        "weights": [0.25, 0.75],
+    }
+    assert cell["lineage"][0]["derivation"] == {
+        "operation": "weighted_empirical",
+        "parameters": {"weights": [0.25, 0.75]},
+        "input_claim_ids": claims,
+    }
+    assert cell["lineage"][0]["claim_id"] == derived
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ([], "JSON object"),
+        ({"kind": "empirical", "samples": []}, "needs samples"),
+        ({"kind": "empirical", "samples": [True]}, "finite numbers"),
+        ({"kind": "weighted_empirical", "samples": [0.2], "weights": []}, "match"),
+        ({"kind": "weighted_empirical", "samples": [0.2], "weights": [-1]}, "sum to 1"),
+        ({"kind": "weighted_empirical", "samples": [0.2], "weights": [0.9]}, "sum to 1"),
+        ({"kind": "gaussian", "mean": 0.5}, "Unsupported"),
+    ],
+)
+def test_float_distribution_rejects_malformed_values(
+    weather: tuple[Store, str], value: object, message: str
+) -> None:
+    store, event = weather
+    store.add_question("ensemble", "WeatherEvent", "Distribution[Float]", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test", "Forecast", "2026-08-16", "Forecast.", "test"
+    )
+    with pytest.raises(EpiqError, match=message):
+        store.assert_claim(event, "ensemble", value, "2026-08-17", evidence, "test")
+
+
+def test_distribution_derivation_rejects_bad_inputs(weather: tuple[Store, str]) -> None:
+    store, event = weather
+    store.add_question("text", "WeatherEvent", "String", {}, "test")
+    store.add_question("ensemble", "WeatherEvent", "Distribution[Float]", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test", "Forecast", "2026-08-16", "Forecast.", "test"
+    )
+    text_claim = store.assert_claim(event, "text", "unlikely", "2026-08-17", evidence, "test")
+
+    with pytest.raises(EpiqError, match="At least one"):
+        store.derive_distribution(event, "ensemble", [], "2026-08-17", "test")
+    with pytest.raises(EpiqError, match="Weights must match"):
+        store.derive_distribution(event, "ensemble", [text_claim], "2026-08-17", "test", [0.5, 0.5])
+    with pytest.raises(EpiqError, match="not numeric"):
+        store.derive_distribution(event, "ensemble", [text_claim], "2026-08-17", "test")
+    store.close_claim(text_claim, "retracted", "Withdrawn", "test")
+    with pytest.raises(EpiqError, match="Active input claim not found"):
+        store.derive_distribution(event, "ensemble", [text_claim], "2026-08-17", "test")

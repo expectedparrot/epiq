@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from epiq.cli import main
 from epiq.store import Store
 
@@ -91,3 +93,110 @@ def test_cli_derives_distribution_from_repeated_input_claims(tmp_path: Path, cap
         "kind": "empirical",
         "samples": [0.4, 0.6],
     }
+
+
+def test_cli_crud_matrix_history_and_retraction(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "market.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Market")
+    entity = invoke("entity", "Company", "Example", "--attributes", '{"domain":"example.test"}')
+    question = invoke(
+        "question",
+        "status",
+        "--for",
+        "Company",
+        "--type",
+        "String",
+        "--definition",
+        '{"label":"Status"}',
+    )
+    evidence = invoke(
+        "evidence",
+        "--url", "https://example.test/about",
+        "--title", "About",
+        "--retrieved-at", "2026-08-16",
+        "--excerpt", "The company is active.",
+    )
+    claim = invoke(
+        "assert",
+        "--subject", entity["entity_id"],
+        "--question", question["question_id"],
+        "--value", "active",
+        "--valid-from", "2026-08-16",
+        "--evidence", evidence["evidence_id"],
+        "--confidence", "medium",
+    )
+
+    matrix = invoke("matrix", "--kind", "Company", "--questions", "status")
+    assert matrix["rows"][0]["cells"]["status"]["value"] == "active"
+    assert len(invoke("history", "--type", "claim.assert")) == 1
+    assert invoke("retract", claim["claim_id"], "--reason", "Outdated")["status"] == "retracted"
+    assert invoke("matrix", "--kind", "Company")["rows"][0]["cells"]["status"]["state"] == "Unasked"
+
+
+def test_cli_records_not_found_and_exports_xlsx(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "market.sqlite"
+    store = Store(database)
+    store.initialize("Market")
+    company = store.add_entity("Company", "Example", {}, "test")
+    store.add_question("pricing", "Company", "String", {}, "test")
+
+    main([
+        "--db", str(database), "not-found",
+        "--subject", company,
+        "--question", "pricing",
+        "--query", "site:example.test pricing",
+        "--notes", "No public price found.",
+    ])
+    assert json.loads(capsys.readouterr().out)["state"] == "NotFound"
+
+    output = tmp_path / "market.xlsx"
+    main(["--db", str(database), "export-xlsx", "--kind", "Company", "--output", str(output)])
+    result = json.loads(capsys.readouterr().out)
+    assert result["entities"] == 1
+    assert result["questions"] == 1
+    assert output.read_bytes().startswith(b"PK")
+
+
+def test_cli_errors_are_single_machine_readable_json_values(tmp_path: Path, capsys) -> None:
+    missing = tmp_path / "missing.sqlite"
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--db", str(missing), "matrix", "--kind", "Company"])
+    assert exit_info.value.code == 2
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "project_not_found"
+    assert "Run:" in error["suggestion"]
+
+    database = tmp_path / "market.sqlite"
+    main(["--db", str(database), "init", "--name", "Market"])
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--db", str(database), "entity", "Company", "Example", "--attributes", "[]"])
+    assert exit_info.value.code == 2
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "invalid_attributes"
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--db", str(database), "entity", "Company", "Example", "--attributes", "{"])
+    assert exit_info.value.code == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "invalid_input"
+
+
+def test_cli_rejects_non_array_distribution_weights(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "weather.sqlite"
+    Store(database).initialize("Weather")
+    with pytest.raises(SystemExit) as exit_info:
+        main([
+            "--db", str(database), "derive-distribution",
+            "--subject", "missing",
+            "--question", "missing",
+            "--input-claim", "clm_missing",
+            "--weights", '{"first":1}',
+            "--valid-from", "2026-08-17",
+        ])
+    assert exit_info.value.code == 2
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "invalid_weights"

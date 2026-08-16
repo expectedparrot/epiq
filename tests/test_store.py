@@ -1,4 +1,5 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -146,3 +147,134 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
     assert store.overview()["project"]["schema_version"] == "2"
+
+
+def test_duplicate_entity_rolls_back_its_event(store: Store) -> None:
+    store.add_entity("Company", "Example", {}, "test")
+    before = store.history()
+
+    with pytest.raises(EpiqError) as error:
+        store.add_entity("Company", "Example", {}, "test")
+
+    assert error.value.code == "duplicate_entity"
+    assert store.history() == before
+
+
+def test_evidence_is_idempotent(store: Store) -> None:
+    first = store.add_evidence(
+        "https://example.test/about", "About", "2026-08-16", "Same excerpt.", "agent:a"
+    )
+    second = store.add_evidence(
+        "https://example.test/about", "A changed title", "2026-08-17", "Same excerpt.", "agent:b"
+    )
+
+    assert second == first
+    assert [event["event_type"] for event in store.history()].count("evidence.add") == 1
+
+
+def test_reasserting_claim_can_attach_additional_evidence(store: Store) -> None:
+    company = store.add_entity("Company", "Example", {}, "test")
+    store.add_question("summary", "Company", "String", {}, "test")
+    evidence = [
+        store.add_evidence(
+            f"https://example.test/{index}",
+            f"Source {index}",
+            "2026-08-16",
+            f"Excerpt {index}",
+            "test",
+        )[1]
+        for index in range(3)
+    ]
+
+    first = store.assert_claim(company, "summary", "Agreed.", "2026-08-16", evidence[0], "test")
+    second = store.assert_claim(
+        company, "summary", "Agreed.", "2026-08-16", [evidence[0], evidence[1], evidence[1]], "test"
+    )
+    third = store.assert_claim(
+        company, "summary", "Agreed.", "2026-08-16", [evidence[0], evidence[2]], "test"
+    )
+
+    assert first == second == third
+    cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
+    assert [item["evidence_id"] for item in cell["lineage"]] == evidence
+    assert [event["event_type"] for event in store.history()].count("claim.assert") == 1
+    assert [event["event_type"] for event in store.history()].count("claim.evidence_link") == 2
+
+
+def test_single_cardinality_conflicts_are_contested(store: Store) -> None:
+    company = store.add_entity("Company", "Example", {}, "test")
+    store.add_question("status", "Company", "Enum[active,closed]", {}, "test")
+    evidence = [
+        store.add_evidence(
+            f"https://example.test/{value}", value, "2026-08-16", value, "test"
+        )[1]
+        for value in ("active", "closed")
+    ]
+    store.assert_claim(company, "status", "active", "2026-01-01", evidence[0], "test")
+    store.assert_claim(company, "status", "closed", "2026-08-01", evidence[1], "test")
+
+    cell = store.matrix("Company")["rows"][0]["cells"]["status"]
+    assert cell["state"] == "Contested"
+    assert set(cell["values"]) == {"active", "closed"}
+
+
+def test_claim_validation_reports_resolution_and_shape_errors(store: Store) -> None:
+    company = store.add_entity("Company", "Example", {}, "test")
+    product = store.add_entity("Product", "Widget", {}, "test")
+    store.add_question("employees", "Company", "Int", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test", "Source", "2026-08-16", "Ten employees.", "test"
+    )
+
+    cases = [
+        (("missing", "employees", 10, "2026-08-16", evidence, "test"), "entity_not_found"),
+        ((company, "missing", 10, "2026-08-16", evidence, "test"), "question_not_found"),
+        ((product, "employees", 10, "2026-08-16", evidence, "test"), "subject_type_mismatch"),
+        ((company, "employees", 10, "2026-08-16", [], "test"), "evidence_required"),
+        (
+            (company, "employees", 10, "2026-08-16", evidence, "test", None, "certain"),
+            "confidence_error",
+        ),
+        ((company, "employees", True, "2026-08-16", evidence, "test"), "value_type_error"),
+    ]
+    for arguments, code in cases:
+        with pytest.raises(EpiqError) as error:
+            store.assert_claim(*arguments)
+        assert error.value.code == code
+
+
+def test_claim_state_transitions_are_guarded(store: Store) -> None:
+    company = store.add_entity("Company", "Example", {}, "test")
+    store.add_question("status", "Company", "String", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test", "Source", "2026-08-16", "Active.", "test"
+    )
+    claim = store.assert_claim(company, "status", "active", "2026-08-16", evidence, "test")
+
+    store.close_claim(claim, "superseded", "New information", "reviewer")
+    with pytest.raises(EpiqError) as inactive:
+        store.close_claim(claim, "retracted", "Again", "reviewer")
+    assert inactive.value.code == "claim_inactive"
+    with pytest.raises(EpiqError) as missing:
+        store.close_claim("clm_missing", "retracted", "Missing", "reviewer")
+    assert missing.value.code == "claim_not_found"
+    with pytest.raises(ValueError):
+        store.close_claim(claim, "deleted", "Forbidden", "reviewer")
+
+
+def test_concurrent_writers_do_not_lose_entities_or_events(tmp_path: Path) -> None:
+    path = tmp_path / "concurrent.sqlite"
+    Store(path).initialize("Concurrent")
+
+    def write(index: int) -> str:
+        return Store(path).add_entity(
+            "Company", f"Company {index}", {"index": index}, f"agent:{index}"
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        entity_ids = list(executor.map(write, range(40)))
+
+    store = Store(path)
+    assert len(set(entity_ids)) == 40
+    assert len(store.matrix("Company")["rows"]) == 40
+    assert [event["event_type"] for event in store.history()].count("entity.create") == 40
