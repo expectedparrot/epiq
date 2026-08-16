@@ -21,7 +21,7 @@ def test_xlsx_preserves_values_evidence_and_unknowns(tmp_path: Path) -> None:
 
     tables = projection_rows(matrix)
     assert tables["Data"][1] == ["Example", 42, "[NotFound]"]
-    assert tables["Evidence"][1][8] == "https://example.test"
+    assert tables["Evidence"][1][8] == "https://example.test/"
     assert tables["Unknowns"][1][-1] == "No sufficient result."
 
     output = write_xlsx(matrix, tmp_path / "report.xlsx")

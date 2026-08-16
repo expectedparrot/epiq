@@ -1,4 +1,7 @@
 .epiq/
+.env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -10,5 +13,7 @@ build/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+node_modules/
+*.tsbuildinfo
 examples/*.html
 examples/*.xlsx

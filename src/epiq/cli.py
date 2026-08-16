@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from .dsl import describe, parse
 from .errors import EpiqError
 from .html import write_html
 from .importers import import_cham_corpus
-from .store import Store
+from .store import QUESTION_CHALLENGE_PROBLEMS, Store
 from .xlsx import write_xlsx
 
 CONFIG_PATH = Path(".epiq/config.json")
@@ -73,6 +74,42 @@ def parser() -> argparse.ArgumentParser:
 
     commands.add_parser("db", help="Show the currently selected database")
 
+    commands.add_parser("doctor", help="Check SQLite integrity and event consistency")
+
+    backup = commands.add_parser("backup", help="Create a consistent SQLite backup")
+    backup.add_argument("--output", required=True)
+    backup.add_argument("--force", action="store_true")
+
+    schema = commands.add_parser("schema", help="Describe row types and typed research fields")
+    schema.add_argument("--kind")
+
+    context = commands.add_parser("context", help="Emit compact current state for an agent")
+    context.add_argument("--kind")
+    context.add_argument("--budget", type=int, default=4000, help="Approximate token budget")
+
+    gaps = commands.add_parser("gaps", help="List unanswered and unsuccessful research cells")
+    gaps.add_argument("--kind", required=True)
+
+    stale = commands.add_parser("stale", help="List cells whose temporal policy says stale")
+    stale.add_argument("--kind", required=True)
+
+    contradictions = commands.add_parser(
+        "contradictions", help="List cells with incompatible active claims"
+    )
+    contradictions.add_argument("--kind", required=True)
+
+    refresh_plan = commands.add_parser(
+        "refresh-plan", help="Generate deterministic external-agent research tasks"
+    )
+    refresh_plan.add_argument("--kind", required=True)
+    refresh_plan.add_argument(
+        "--include", choices=["gaps", "stale", "contested", "all"], default="all"
+    )
+
+    search = commands.add_parser("search", help="Search entities, schema, evidence, and claims")
+    search.add_argument("text")
+    search.add_argument("--limit", type=int, default=50)
+
     entity = commands.add_parser("entity", help="Create an entity")
     entity.add_argument("kind")
     entity.add_argument("name")
@@ -106,6 +143,42 @@ def parser() -> argparse.ArgumentParser:
     retract = commands.add_parser("retract", help="Retract a claim")
     retract.add_argument("claim_id")
     retract.add_argument("--reason", required=True)
+
+    supersede = commands.add_parser("supersede", help="Atomically replace an active claim")
+    supersede.add_argument("claim_id")
+    supersede.add_argument("--value", required=True)
+    supersede.add_argument("--valid-from", required=True)
+    supersede.add_argument("--evidence", action="append", required=True)
+    supersede.add_argument("--reason", required=True)
+    supersede.add_argument("--confidence", choices=["low", "medium", "high"], default="high")
+    supersede.add_argument(
+        "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
+    )
+
+    challenge = commands.add_parser(
+        "challenge-question", help="Record that a question cannot represent an observation"
+    )
+    challenge.add_argument("question")
+    challenge.add_argument("--problem", choices=sorted(QUESTION_CHALLENGE_PROBLEMS), required=True)
+    challenge.add_argument("--explanation", required=True)
+    challenge.add_argument("--example-entity")
+    challenge.add_argument("--evidence", action="append", default=[])
+    challenge.add_argument(
+        "--proposed-replacement", help="JSON object with at least name and value_type"
+    )
+
+    challenges = commands.add_parser(
+        "question-challenges", help="List open or historical question challenges"
+    )
+    challenges.add_argument("--question")
+    challenges.add_argument("--status", choices=["open", "resolved", "dismissed"])
+
+    resolve_challenge = commands.add_parser(
+        "resolve-question-challenge", help="Resolve or dismiss a schema challenge"
+    )
+    resolve_challenge.add_argument("challenge_id")
+    resolve_challenge.add_argument("--status", choices=["resolved", "dismissed"], required=True)
+    resolve_challenge.add_argument("--resolution", required=True)
 
     season = commands.add_parser("season-record", help="Derive a season record with lineage")
     season.add_argument("season")
@@ -196,6 +269,180 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             f"Database does not exist: {database}",
             "Run: epiq init --name 'My research space' or select another database with epiq use",
         )
+    if args.command == "doctor":
+        return store.doctor()
+    if args.command == "backup":
+        output = store.backup(args.output, args.force)
+        return {"ok": True, "database": str(database), "backup": str(output)}
+    if args.command == "schema":
+        overview = store.overview()
+        kinds = [item["kind"] for item in overview["entity_kinds"]]
+        selected = [args.kind] if args.kind else kinds
+        return {
+            "project": overview["project"],
+            "value_types": [
+                "String",
+                "Int",
+                "Float",
+                "Probability",
+                "Bool",
+                "Json",
+                "Enum[a,b,c]",
+                "Distribution[Float]",
+                "Distribution[Enum[a,b,c]]",
+            ],
+            "tables": [
+                {
+                    "entity_kind": kind,
+                    "questions": store.matrix(kind)["questions"],
+                }
+                for kind in selected
+            ],
+        }
+    if args.command == "context":
+        if args.budget < 100:
+            raise EpiqError("invalid_budget", "Context budget must be at least 100 tokens")
+        overview = store.overview()
+        kinds = [item["kind"] for item in overview["entity_kinds"]]
+        selected = [args.kind] if args.kind else kinds
+        tables = [store.matrix(kind) for kind in selected]
+        result: dict[str, Any] = {
+            "project": overview["project"],
+            "tables": tables,
+            "truncated": False,
+        }
+        encoded = json.dumps(result, sort_keys=True)
+        character_budget = args.budget * 4
+        if len(encoded) > character_budget:
+            compact_tables = []
+            used = 0
+            for table in tables:
+                compact = {
+                    "entity_kind": table["entity_kind"],
+                    "questions": [
+                        {
+                            "name": question["name"],
+                            "value_type": question["value_type"],
+                            "definition": question["definition"],
+                        }
+                        for question in table["questions"]
+                    ],
+                    "rows": [],
+                }
+                for row in table["rows"]:
+                    candidate = {
+                        "entity_id": row["entity_id"],
+                        "name": row["name"],
+                        "cells": {
+                            name: {
+                                "state": cell["state"],
+                                "value": cell.get("value"),
+                                "confidence": (
+                                    cell["lineage"][0]["confidence"]
+                                    if cell.get("lineage")
+                                    else None
+                                ),
+                            }
+                            for name, cell in row["cells"].items()
+                        },
+                    }
+                    size = len(json.dumps(candidate, sort_keys=True))
+                    if used + size > character_budget:
+                        break
+                    compact["rows"].append(candidate)
+                    used += size
+                compact_tables.append(compact)
+            result = {
+                "project": overview["project"],
+                "tables": compact_tables,
+                "truncated": True,
+                "approximate_token_budget": args.budget,
+            }
+        return result
+    if args.command in {"gaps", "stale"}:
+        projection = store.matrix(args.kind)
+        cells = []
+        for row in projection["rows"]:
+            for question in projection["questions"]:
+                cell = row["cells"][question["name"]]
+                include = (
+                    cell["state"] in {"Unasked", "NotFound"}
+                    if args.command == "gaps"
+                    else cell.get("temporal", {}).get("freshness") == "stale"
+                )
+                if include:
+                    cells.append(
+                        {
+                            "entity_id": row["entity_id"],
+                            "entity_name": row["name"],
+                            "question_id": question["question_id"],
+                            "question": question["name"],
+                            "state": cell["state"],
+                            "temporal": cell.get("temporal"),
+                        }
+                    )
+        return {"entity_kind": args.kind, "count": len(cells), "cells": cells}
+    if args.command == "contradictions":
+        projection = store.matrix(args.kind)
+        cells = [
+            {
+                "entity_id": row["entity_id"],
+                "entity_name": row["name"],
+                "question_id": question["question_id"],
+                "question": question["name"],
+                "values": row["cells"][question["name"]]["values"],
+                "lineage": row["cells"][question["name"]]["lineage"],
+            }
+            for row in projection["rows"]
+            for question in projection["questions"]
+            if row["cells"][question["name"]]["state"] == "Contested"
+        ]
+        return {"entity_kind": args.kind, "count": len(cells), "cells": cells}
+    if args.command == "refresh-plan":
+        projection = store.matrix(args.kind)
+        tasks = []
+        for row in projection["rows"]:
+            for question in projection["questions"]:
+                cell = row["cells"][question["name"]]
+                reasons = []
+                if cell["state"] in {"Unasked", "NotFound"}:
+                    reasons.append("gap")
+                if cell.get("temporal", {}).get("freshness") == "stale":
+                    reasons.append("stale")
+                if cell["state"] == "Contested":
+                    reasons.append("contested")
+                allowed = (
+                    reasons
+                    if args.include == "all"
+                    else [reason for reason in reasons if reason == args.include.rstrip("s")]
+                )
+                if not allowed:
+                    continue
+                label = str(question["definition"].get("label", question["name"]))
+                tasks.append(
+                    {
+                        "task_key": f"{row['entity_id']}:{question['question_id']}",
+                        "entity_kind": args.kind,
+                        "entity_id": row["entity_id"],
+                        "entity_name": row["name"],
+                        "question_id": question["question_id"],
+                        "question": question["name"],
+                        "value_type": question["value_type"],
+                        "reasons": allowed,
+                        "suggested_query": f'"{row["name"]}" {label}',
+                        "research_guidance": question["definition"].get("research_guidance", ""),
+                        "existing_values": cell.get("values", []),
+                        "existing_source_urls": list(
+                            dict.fromkeys(
+                                lineage["source"]["url"] for lineage in cell.get("lineage", [])
+                            )
+                        ),
+                    }
+                )
+        return {"entity_kind": args.kind, "count": len(tasks), "tasks": tasks}
+    if args.command == "search":
+        results = store.search(args.text, args.limit)
+        return {"query": args.text, "count": len(results), "results": results}
     if args.command == "entity":
         entity_id = store.add_entity(args.kind, args.name, _attributes(args.attributes), args.actor)
         return {"ok": True, "entity_id": entity_id}
@@ -224,6 +471,42 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "retract":
         store.close_claim(args.claim_id, "retracted", args.reason, args.actor)
         return {"ok": True, "claim_id": args.claim_id, "status": "retracted"}
+    if args.command == "supersede":
+        replacement_id = store.supersede_claim(
+            args.claim_id,
+            _value(args.value),
+            args.valid_from,
+            args.evidence,
+            args.reason,
+            args.actor,
+            args.confidence,
+            args.temporal_basis,
+        )
+        return {
+            "ok": True,
+            "claim_id": args.claim_id,
+            "status": "superseded",
+            "replacement_claim_id": replacement_id,
+        }
+    if args.command == "challenge-question":
+        replacement = _attributes(args.proposed_replacement) if args.proposed_replacement else None
+        challenge_id = store.challenge_question(
+            args.question,
+            args.problem,
+            args.explanation,
+            args.actor,
+            args.example_entity,
+            args.evidence,
+            replacement,
+        )
+        return {"ok": True, "challenge_id": challenge_id, "status": "open"}
+    if args.command == "question-challenges":
+        return store.question_challenges(args.question, args.status)
+    if args.command == "resolve-question-challenge":
+        store.resolve_question_challenge(
+            args.challenge_id, args.status, args.resolution, args.actor
+        )
+        return {"ok": True, "challenge_id": args.challenge_id, "status": args.status}
     if args.command == "season-record":
         return store.season_record(args.season, args.known_at, args.valid_at)
     if args.command == "history":
@@ -299,6 +582,21 @@ def main(argv: list[str] | None = None) -> None:
     except (json.JSONDecodeError, OSError) as exc:
         print(
             json.dumps({"error": {"code": "invalid_input", "message": str(exc)}}, sort_keys=True),
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
+    except sqlite3.Error as exc:
+        print(
+            json.dumps(
+                {
+                    "error": {
+                        "code": "database_error",
+                        "message": str(exc),
+                        "suggestion": "Run `epiq doctor` and restore a recent backup if needed.",
+                    }
+                },
+                sort_keys=True,
+            ),
             file=sys.stderr,
         )
         raise SystemExit(2) from None

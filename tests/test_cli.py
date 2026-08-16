@@ -116,19 +116,29 @@ def test_cli_crud_matrix_history_and_retraction(tmp_path: Path, capsys) -> None:
     )
     evidence = invoke(
         "evidence",
-        "--url", "https://example.test/about",
-        "--title", "About",
-        "--retrieved-at", "2026-08-16",
-        "--excerpt", "The company is active.",
+        "--url",
+        "https://example.test/about",
+        "--title",
+        "About",
+        "--retrieved-at",
+        "2026-08-16",
+        "--excerpt",
+        "The company is active.",
     )
     claim = invoke(
         "assert",
-        "--subject", entity["entity_id"],
-        "--question", question["question_id"],
-        "--value", "active",
-        "--valid-from", "2026-08-16",
-        "--evidence", evidence["evidence_id"],
-        "--confidence", "medium",
+        "--subject",
+        entity["entity_id"],
+        "--question",
+        question["question_id"],
+        "--value",
+        "active",
+        "--valid-from",
+        "2026-08-16",
+        "--evidence",
+        evidence["evidence_id"],
+        "--confidence",
+        "medium",
     )
 
     matrix = invoke("matrix", "--kind", "Company", "--questions", "status")
@@ -138,6 +148,41 @@ def test_cli_crud_matrix_history_and_retraction(tmp_path: Path, capsys) -> None:
     assert invoke("matrix", "--kind", "Company")["rows"][0]["cells"]["status"]["state"] == "Unasked"
 
 
+def test_cli_question_challenge_lifecycle(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "boats.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Boats")
+    boat = invoke("entity", "BoatModel", "RS Quest")
+    question = invoke("question", "has_spinnaker", "--for", "BoatModel", "--type", "Bool")
+    challenge = invoke(
+        "challenge-question",
+        question["question_id"],
+        "--problem",
+        "modal_ambiguity",
+        "--explanation",
+        "Can have is different from currently has.",
+        "--example-entity",
+        boat["entity_id"],
+        "--proposed-replacement",
+        '{"name":"spinnaker_availability","value_type":"Enum[standard,optional,unavailable]"}',
+    )
+    listed = invoke("question-challenges", "--status", "open")
+    assert listed[0]["challenge_id"] == challenge["challenge_id"]
+    resolved = invoke(
+        "resolve-question-challenge",
+        challenge["challenge_id"],
+        "--status",
+        "dismissed",
+        "--resolution",
+        "Keep the Boolean but clarify its definition.",
+    )
+    assert resolved["status"] == "dismissed"
+
+
 def test_cli_records_not_found_and_exports_xlsx(tmp_path: Path, capsys) -> None:
     database = tmp_path / "market.sqlite"
     store = Store(database)
@@ -145,13 +190,21 @@ def test_cli_records_not_found_and_exports_xlsx(tmp_path: Path, capsys) -> None:
     company = store.add_entity("Company", "Example", {}, "test")
     store.add_question("pricing", "Company", "String", {}, "test")
 
-    main([
-        "--db", str(database), "not-found",
-        "--subject", company,
-        "--question", "pricing",
-        "--query", "site:example.test pricing",
-        "--notes", "No public price found.",
-    ])
+    main(
+        [
+            "--db",
+            str(database),
+            "not-found",
+            "--subject",
+            company,
+            "--question",
+            "pricing",
+            "--query",
+            "site:example.test pricing",
+            "--notes",
+            "No public price found.",
+        ]
+    )
     assert json.loads(capsys.readouterr().out)["state"] == "NotFound"
 
     output = tmp_path / "market.xlsx"
@@ -190,13 +243,54 @@ def test_cli_rejects_non_array_distribution_weights(tmp_path: Path, capsys) -> N
     database = tmp_path / "weather.sqlite"
     Store(database).initialize("Weather")
     with pytest.raises(SystemExit) as exit_info:
-        main([
-            "--db", str(database), "derive-distribution",
-            "--subject", "missing",
-            "--question", "missing",
-            "--input-claim", "clm_missing",
-            "--weights", '{"first":1}',
-            "--valid-from", "2026-08-17",
-        ])
+        main(
+            [
+                "--db",
+                str(database),
+                "derive-distribution",
+                "--subject",
+                "missing",
+                "--question",
+                "missing",
+                "--input-claim",
+                "clm_missing",
+                "--weights",
+                '{"first":1}',
+                "--valid-from",
+                "2026-08-17",
+            ]
+        )
     assert exit_info.value.code == 2
     assert json.loads(capsys.readouterr().err)["error"]["code"] == "invalid_weights"
+
+
+def test_cli_operational_and_agent_orientation_commands(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "market.sqlite"
+    store = Store(database)
+    store.initialize("Market")
+    store.add_entity("Company", "Example", {}, "test")
+    store.add_question("employee_count", "Company", "Int", {"label": "Employees"}, "test")
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    assert invoke("doctor")["ok"] is True
+    schema = invoke("schema", "--kind", "Company")
+    assert schema["tables"][0]["questions"][0]["name"] == "employee_count"
+    assert "Probability" in schema["value_types"]
+    context = invoke("context", "--kind", "Company", "--budget", "100")
+    assert context["project"]["name"] == "Market"
+    gaps = invoke("gaps", "--kind", "Company")
+    assert gaps["cells"][0]["state"] == "Unasked"
+    plan = invoke("refresh-plan", "--kind", "Company")
+    assert plan["tasks"][0]["reasons"] == ["gap"]
+    assert plan["tasks"][0]["suggested_query"] == '"Example" Employees'
+    assert invoke("contradictions", "--kind", "Company")["count"] == 0
+    search = invoke("search", "Example")
+    assert any(item["record_type"] == "entity" for item in search["results"])
+
+    backup = tmp_path / "backups" / "market.sqlite"
+    result = invoke("backup", "--output", str(backup))
+    assert result["ok"] is True
+    assert Store(backup).doctor()["ok"] is True

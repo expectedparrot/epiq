@@ -381,6 +381,42 @@ Retraction closes the claim's transaction-time interval. It does not delete the 
 evidence, or original event. The current projection changes, while historical queries can still
 recover what the database previously believed.
 
+### Challenge a question that imposes the wrong categories
+
+A source can reveal that the field itself is ill-typed rather than merely unanswered. For example,
+`has_spinnaker: Bool` conflates a boat model's optional capability with the equipment installed on
+an individual boat. Record that as a schema-level challenge:
+
+```bash
+epiq challenge-question has_spinnaker \
+  --problem modal_ambiguity \
+  --explanation "Can be equipped is different from currently has." \
+  --example-entity "RS Quest" \
+  --evidence evd_quest_options \
+  --proposed-replacement '{
+    "questions": [
+      {"name":"spinnaker_availability","value_type":"Enum[standard,optional,unavailable,unknown]"},
+      {"name":"spinnaker_equipped","value_type":"Bool","subject_kind":"Boat"}
+    ]
+  }'
+```
+
+This appends a `question.challenge` event and marks the projected question's `schema_state` as
+`challenged`. It does not mutate the question, retract claims, or automatically apply the proposed
+schema. Challenges are review-first:
+
+```bash
+epiq question-challenges --status open
+epiq question-challenges --question has_spinnaker
+epiq resolve-question-challenge qch_... --status resolved \
+  --resolution "Created separate model capability and boat equipment questions."
+```
+
+The initial problem taxonomy is `type_mismatch`, `cardinality_mismatch`, `temporal_mismatch`,
+`level_mismatch`, `population_mismatch`, `predicate_conflation`, `modal_ambiguity`,
+`unit_mismatch`, `epistemic_mismatch`, `definition_ambiguity`, and `other`. Triggering evidence and
+an example entity are optional but preserved when supplied.
+
 ### 10. Inspect the event history
 
 ```bash
@@ -728,25 +764,148 @@ Current invariants:
 The database is portable and can live beside a research project. Generated SQLite databases,
 HTML reports, and Excel files are ignored in this repository by default.
 
+## Spreadsheet web application
+
+Epiq includes a functional local web application built with FastAPI, React, and TypeScript. The
+spreadsheet is a projection of the same SQLite database used by the CLI; it does not maintain a
+second source of truth.
+
+The application currently supports:
+
+- creating a workspace;
+- adding entity rows and typed question columns on the fly;
+- entering evidence-backed answers;
+- inspecting confidence, excerpts, source links, and claim tokens in a cell drawer;
+- displaying `Answered`, `Contested`, `NotFound`, and `Unasked` as distinct states;
+- recording unsuccessful research without asserting a negative answer; and
+- retracting claims while preserving their event history.
+
+Install both development environments:
+
+```bash
+uv sync --extra test --extra web --extra web-test
+npm --prefix web install
+```
+
+For frontend development, run the API and Vite development server in separate terminals:
+
+```bash
+EPIQ_DB=examples/my-market.sqlite uv run --extra web epiq-web
+npm --prefix web run dev
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` requests to FastAPI on port 8000. If the selected
+database does not exist, the welcome screen initializes it.
+
+For the single-server production-style build:
+
+```bash
+npm --prefix web run build
+EPIQ_DB=examples/my-market.sqlite uv run --extra web epiq-web
+```
+
+Then open `http://127.0.0.1:8000`. FastAPI serves `web/dist` and falls back to `index.html` for
+client-side routes. API documentation remains available at `http://127.0.0.1:8000/docs`.
+
+The principal endpoints are:
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/project` | Project identity and available tables |
+| `POST` | `/api/project` | Initialize the selected SQLite file |
+| `GET` | `/api/matrix/{kind}` | Current entity-by-question projection |
+| `POST` | `/api/entities` | Add a row |
+| `POST` | `/api/questions` | Add a typed, versioned column |
+| `POST` | `/api/questions/{id}/challenges` | Record a schema/category challenge |
+| `GET` | `/api/question-challenges` | List and filter schema challenges |
+| `POST` | `/api/question-challenges/{id}/resolve` | Resolve or dismiss a challenge |
+| `POST` | `/api/evidence` | Add an immutable source excerpt |
+| `POST` | `/api/claims` | Assert an evidence-backed cell answer |
+| `POST` | `/api/claims/{id}/retract` | Close a claim without deleting it |
+| `POST` | `/api/research/not-found` | Record a completed unsuccessful search |
+| `GET` | `/api/history` | Read the append-only event history |
+
+### What a cell edit means
+
+The UI deliberately does not implement silent replacement. Adding an answer creates a claim. If a
+different active answer already exists in a single-valued field, the cell becomes `Contested` and
+both claims remain inspectable. Retracting a claim closes its transaction-time interval but leaves
+the original assertion and evidence in history.
+
+## Operational safety and agent handoff
+
+Before a long research run, create a transactionally consistent backup while the app is running:
+
+```bash
+epiq backup --output backups/market-before-refresh.sqlite
+```
+
+Existing files are never replaced unless `--force` is explicit. Check both SQLite integrity and
+cross-table references with:
+
+```bash
+epiq doctor
+```
+
+Agents can orient themselves without reading this tutorial or guessing the schema:
+
+```bash
+epiq schema --kind Company
+epiq context --kind Company --budget 4000
+epiq gaps --kind Company
+epiq stale --kind Company
+epiq contradictions --kind Company
+epiq refresh-plan --kind Company
+epiq search "pricing announcement"
+```
+
+`context` returns current typed cells and confidence-aware lineage, compacting rows when the
+approximate token budget would be exceeded. `gaps` distinguishes cells that have never been asked
+from completed unsuccessful searches. `stale` follows each field's temporal policy rather than
+decaying claim confidence.
+`refresh-plan` turns those conditions into stable JSON tasks with typed questions, suggested search
+queries, interpretation guidance, existing values, and source URLs for an external research agent.
+
+Background research jobs and provisional entity/field suggestions are persisted in the project
+database. Completed review queues therefore survive a server restart. A job interrupted by a stop
+is marked failed at startup with an explicit retry message; Epiq never pretends it is still running.
+
+Corrections that replace a claim can be committed atomically:
+
+```bash
+epiq supersede clm_OLD \
+  --value '"closed"' \
+  --valid-from 2026-08-01 \
+  --evidence evd_NEW \
+  --reason "Company closure announcement"
+```
+
+The old claim remains in history as `superseded`; either both changes commit or neither does.
+
 ## Current limits
 
 Epiq is an executable vertical slice, not yet a production database server. In particular:
 
-- there is no web server, authentication layer, or multi-tenancy;
+- the web server is intentionally loopback-oriented; there is no authentication or multi-tenancy,
+  so it must not be exposed to an untrusted network;
+- spreadsheet interactions do not yet include rectangular selection, copy/paste, formulas, or
+  bulk fill;
 - there are no web searches, scrapers, or LLM calls inside the CLI;
-- question migrations and atomic supersede are not yet exposed as full CLI workflows;
+- question replacement migrations are not yet exposed as a full CLI workflow;
 - EpiQL implements only question declarations and a narrow count-over-filter derivation;
 - SQLite is canonical; there is not yet a separate append-only JSONL interchange format.
 
 These boundaries are intentional enough to make experiments honest, but not promises that the
-interface is finished.
+interface is finished. See [ROADMAP.md](ROADMAP.md) for the production sequence and release gates.
 
 ## Development
 
 ```bash
-uv sync --extra test
+uv sync --extra test --extra web --extra web-test
 uv run ruff check .
 uv run pytest -q
+npm --prefix web install
+npm --prefix web run build
 uv build
 ```
 
