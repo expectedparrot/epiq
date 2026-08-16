@@ -1,0 +1,13 @@
+question game_result : Enum[W,L,T] for Game {
+  ask "What was the final result for New England?"
+  accept source in [official_league, official_team]
+  cardinality one
+  resolve contest_on_conflict
+}
+
+derive wins : Int for Season =
+  games |> where game_result == W |> count
+
+derive losses : Int for Season =
+  games |> where game_result == L |> count
+
