@@ -87,3 +87,43 @@ def test_overview_discovers_available_entity_projections(store: Store) -> None:
         {"kind": "Company", "entities": 1, "questions": 1},
         {"kind": "Product", "entities": 1, "questions": 0},
     ]
+
+
+@pytest.mark.parametrize("value", [0.73, 0, 1, 42.5])
+def test_float_question_accepts_finite_json_numbers(store: Store, value: float) -> None:
+    entity = store.add_entity("Forecast", "Example", {}, "test")
+    store.add_question("probability", "Forecast", "Float", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/forecast", "Forecast", "2026-08-16", "Probability estimate.", "test"
+    )
+
+    store.assert_claim(entity, "probability", value, "2026-08-16", evidence, "test")
+    assert store.matrix("Forecast")["rows"][0]["cells"]["probability"]["value"] == value
+
+
+@pytest.mark.parametrize("value", [True, "0.73", float("inf"), float("nan")])
+def test_float_question_rejects_non_numeric_or_non_finite_values(
+    store: Store, value: object
+) -> None:
+    entity = store.add_entity("Forecast", "Example", {}, "test")
+    store.add_question("probability", "Forecast", "Float", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/forecast", "Forecast", "2026-08-16", "Probability estimate.", "test"
+    )
+
+    with pytest.raises(EpiqError, match="Expected finite Float"):
+        store.assert_claim(entity, "probability", value, "2026-08-16", evidence, "test")
+
+
+def test_string_question_is_distinct_from_json(store: Store) -> None:
+    entity = store.add_entity("Company", "Example", {}, "test")
+    store.add_question("summary", "Company", "String", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/about", "About", "2026-08-16", "A plain-text summary.", "test"
+    )
+
+    store.assert_claim(entity, "summary", "A plain-text summary.", "2026-08-16", evidence, "test")
+    with pytest.raises(EpiqError, match="Expected String"):
+        store.assert_claim(
+            entity, "summary", {"text": "structured"}, "2026-08-16", evidence, "test"
+        )

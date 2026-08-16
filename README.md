@@ -160,9 +160,27 @@ The question name is the stable machine-facing field name. `definition` holds pr
 policy metadata. The current implementation recognizes:
 
 - `Int`: validated as a JSON integer.
+- `Float`: validated as a finite JSON number; integers are accepted because they are valid real
+  values (for example, probability endpoints `0` and `1`).
 - `Bool`: validated as JSON `true` or `false`.
+- `String`: validated as plain text.
 - `Enum[a,b,c]`: validated against the listed strings.
 - `Json`: accepts structured JSON for richer answers.
+
+For example, probability and free-text fields can be declared without wrapping either in a JSON
+object:
+
+```bash
+epiq question probability_of_launch \
+  --for Company \
+  --type Float \
+  --definition '{"label":"Probability of launch","cardinality":"one"}'
+
+epiq question positioning_summary \
+  --for Company \
+  --type String \
+  --definition '{"label":"Positioning summary","cardinality":"one"}'
+```
 
 `cardinality` defaults to `one`. A question with `"cardinality":"many"` projects all supported
 values instead of treating multiple values as a contradiction.
@@ -245,6 +263,15 @@ The `--value` argument is parsed as JSON when possible:
 
 # Bool
 --value true
+
+# Float
+--value 0.73
+
+# String (unquoted text that is not another JSON literal is treated as a string)
+--value 'Enterprise research platform'
+
+# An explicitly JSON-quoted String is equivalent
+--value '"Enterprise research platform"'
 
 # Enum or plain string
 --value native

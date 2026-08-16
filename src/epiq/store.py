@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -357,8 +358,18 @@ class Store:
                 )
         elif value_type == "Int" and (not isinstance(value, int) or isinstance(value, bool)):
             raise EpiqError("value_type_error", f"Expected Int; received {value!r}")
+        elif value_type == "Float" and (
+            not isinstance(value, int | float)
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+        ):
+            raise EpiqError("value_type_error", f"Expected finite Float; received {value!r}")
         elif value_type == "Bool" and not isinstance(value, bool):
             raise EpiqError("value_type_error", f"Expected Bool; received {value!r}")
+        elif value_type == "String" and not isinstance(value, str):
+            raise EpiqError("value_type_error", f"Expected String; received {value!r}")
+        elif value_type not in {"Int", "Float", "Bool", "String", "Json"}:
+            raise EpiqError("value_type_error", f"Unknown value type: {value_type}")
 
     def close_claim(self, claim_id: str, status: str, reason: str, actor: str) -> None:
         """Retract or supersede a claim without deleting it."""
