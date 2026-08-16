@@ -95,7 +95,12 @@ def parser() -> argparse.ArgumentParser:
     claim.add_argument("--question", required=True)
     claim.add_argument("--value", required=True)
     claim.add_argument("--valid-from", required=True)
-    claim.add_argument("--evidence", required=True)
+    claim.add_argument(
+        "--evidence",
+        action="append",
+        required=True,
+        help="Evidence ID; repeat for multiple sources",
+    )
     claim.add_argument("--confidence", choices=["low", "medium", "high"], default="high")
 
     retract = commands.add_parser("retract", help="Retract a claim")
@@ -143,6 +148,21 @@ def parser() -> argparse.ArgumentParser:
     not_found.add_argument("--question", required=True)
     not_found.add_argument("--query", required=True)
     not_found.add_argument("--notes", required=True)
+
+    derive = commands.add_parser(
+        "derive-distribution", help="Derive an empirical distribution from numeric claims"
+    )
+    derive.add_argument("--subject", required=True)
+    derive.add_argument("--question", required=True)
+    derive.add_argument(
+        "--input-claim",
+        action="append",
+        required=True,
+        help="Input claim ID; repeat or provide comma-separated IDs",
+    )
+    derive.add_argument("--weights", help="Optional JSON array of weights summing to 1")
+    derive.add_argument("--valid-from", required=True)
+    derive.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
     return root
 
 
@@ -246,6 +266,26 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             args.subject, args.question, args.query, args.notes, args.actor
         )
         return {"ok": True, "task_id": task_id, "state": "NotFound"}
+    if args.command == "derive-distribution":
+        input_claims = [
+            claim_id.strip()
+            for group in args.input_claim
+            for claim_id in group.split(",")
+            if claim_id.strip()
+        ]
+        weights = _value(args.weights) if args.weights else None
+        if weights is not None and not isinstance(weights, list):
+            raise EpiqError("invalid_weights", "--weights must be a JSON array")
+        claim_id = store.derive_distribution(
+            args.subject,
+            args.question,
+            input_claims,
+            args.valid_from,
+            args.actor,
+            weights,
+            args.confidence,
+        )
+        return {"ok": True, "claim_id": claim_id, "input_claim_ids": input_claims}
     raise AssertionError(args.command)
 
 

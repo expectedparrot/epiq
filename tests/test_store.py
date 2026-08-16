@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -127,3 +128,21 @@ def test_string_question_is_distinct_from_json(store: Store) -> None:
         store.assert_claim(
             entity, "summary", {"text": "structured"}, "2026-08-16", evidence, "test"
         )
+
+
+def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store) -> None:
+    entity = store.add_entity("Company", "Example", {}, "test")
+    store.add_question("summary", "Company", "String", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test", "About", "2026-08-16", "Summary.", "test"
+    )
+    store.assert_claim(entity, "summary", "Summary.", "2026-08-16", evidence, "test")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TABLE claim_inputs")
+        connection.execute("DROP TABLE derivations")
+        connection.execute("DROP TABLE claim_evidence")
+        connection.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+
+    cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
+    assert cell["lineage"][0]["evidence_id"] == evidence
+    assert store.overview()["project"]["schema_version"] == "2"

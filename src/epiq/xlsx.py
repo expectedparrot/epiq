@@ -79,6 +79,8 @@ def projection_rows(matrix: dict[str, Any]) -> dict[str, list[list[Any]]]:
             "Source URL",
             "Excerpt",
             "Provenance token",
+            "Derivation",
+            "Input claim IDs",
         ]
     ]
     unknowns = [[matrix["entity_kind"], "Question", "State", "Search query", "Notes"]]
@@ -107,6 +109,8 @@ def projection_rows(matrix: dict[str, Any]) -> dict[str, list[list[Any]]]:
                         lineage.get("source", {}).get("url"),
                         lineage.get("excerpt"),
                         lineage.get("token"),
+                        lineage.get("derivation", {}).get("operation"),
+                        lineage.get("derivation", {}).get("input_claim_ids"),
                     ]
                 )
             if cell["state"] != "Answered":
@@ -194,7 +198,7 @@ def write_xlsx(matrix: dict[str, Any], output: str | Path) -> Path:
         )
         widths = {
             "Data": [22] + [24] * (len(tables["Data"][0]) - 1),
-            "Evidence": [22, 24, 14, 28, 12, 22, 22, 32, 48, 80, 28],
+            "Evidence": [22, 24, 14, 28, 12, 22, 22, 32, 48, 80, 28, 22, 60],
             "Unknowns": [22, 24, 14, 48, 80],
         }
         for index, name in enumerate(sheets, 1):

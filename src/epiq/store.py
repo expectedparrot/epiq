@@ -89,6 +89,32 @@ CREATE TABLE IF NOT EXISTS claims (
 
 CREATE INDEX IF NOT EXISTS idx_claim_lookup
 ON claims(subject_id, question_id, tx_from, tx_to, valid_from, valid_to);
+
+CREATE TABLE IF NOT EXISTS claim_evidence (
+    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+    ordinal INTEGER NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    PRIMARY KEY(claim_id, evidence_id),
+    UNIQUE(claim_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS derivations (
+    claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id),
+    operation TEXT NOT NULL,
+    parameters_json TEXT NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq)
+);
+
+CREATE TABLE IF NOT EXISTS claim_inputs (
+    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+    input_claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+    ordinal INTEGER NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    PRIMARY KEY(claim_id, input_claim_id),
+    UNIQUE(claim_id, ordinal),
+    CHECK(claim_id <> input_claim_id)
+);
 CREATE INDEX IF NOT EXISTS idx_entity_kind ON entities(kind);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 
@@ -138,7 +164,7 @@ class Store:
                 [
                     ("project_id", _id("prj")),
                     ("name", name),
-                    ("schema_version", "1"),
+                    ("schema_version", "2"),
                     ("created_at", _now()),
                 ],
             )
@@ -150,6 +176,39 @@ class Store:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA busy_timeout = 10000")
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claims'"
+        ).fetchone():
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS claim_evidence (
+                    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+                    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+                    ordinal INTEGER NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq),
+                    PRIMARY KEY(claim_id, evidence_id),
+                    UNIQUE(claim_id, ordinal)
+                );
+                CREATE TABLE IF NOT EXISTS derivations (
+                    claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id),
+                    operation TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq)
+                );
+                CREATE TABLE IF NOT EXISTS claim_inputs (
+                    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+                    input_claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+                    ordinal INTEGER NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq),
+                    PRIMARY KEY(claim_id, input_claim_id),
+                    UNIQUE(claim_id, ordinal),
+                    CHECK(claim_id <> input_claim_id)
+                );
+                INSERT OR IGNORE INTO claim_evidence(claim_id,evidence_id,ordinal,created_seq)
+                SELECT claim_id,evidence_id,0,created_seq FROM claims;
+                UPDATE meta SET value='2' WHERE key='schema_version' AND CAST(value AS INTEGER)<2;
+                """
+            )
         return connection
 
     @contextmanager
@@ -207,6 +266,7 @@ class Store:
         actor: str,
     ) -> str:
         """Add the next immutable version of a typed question."""
+        self._check_type_declaration(value_type)
         with self.transaction() as connection:
             row = connection.execute(
                 "SELECT COALESCE(MAX(version),0)+1 AS version FROM questions WHERE name=?", (name,)
@@ -227,6 +287,21 @@ class Store:
                 (question_id, name, version, subject_kind, value_type, _json(definition), seq),
             )
         return question_id
+
+    @staticmethod
+    def _check_type_declaration(value_type: str) -> None:
+        if value_type in {"Int", "Float", "Probability", "Bool", "String", "Json"}:
+            return
+        if value_type.startswith("Enum[") and value_type.endswith("]"):
+            if all(part.strip() for part in value_type[5:-1].split(",")):
+                return
+        if value_type == "Distribution[Float]":
+            return
+        if value_type.startswith("Distribution[Enum[") and value_type.endswith("]]"):
+            inner = value_type[13:-1]
+            if all(part.strip() for part in inner[5:-1].split(",")):
+                return
+        raise EpiqError("value_type_error", f"Unknown or malformed value type: {value_type}")
 
     def add_evidence(
         self, url: str, title: str, retrieved_at: str, excerpt: str, actor: str
@@ -288,69 +363,228 @@ class Store:
         question: str,
         value: Any,
         valid_from: str,
-        evidence_id: str,
+        evidence_id: str | list[str],
         actor: str,
         recorded_at: str | None = None,
         confidence: str = "high",
     ) -> str:
         """Assert a typed, evidence-backed claim."""
         with self.transaction() as connection:
-            entity = self._resolve_entity(connection, subject)
-            q = self._resolve_question(connection, question)
-            if entity["kind"] != q["subject_kind"]:
-                raise EpiqError(
-                    "subject_type_mismatch",
-                    f"Question {q['name']} applies to {q['subject_kind']}, not {entity['kind']}",
-                )
-            if not connection.execute(
-                "SELECT 1 FROM evidence WHERE evidence_id=?", (evidence_id,)
-            ).fetchone():
-                raise EpiqError("evidence_not_found", f"Evidence not found: {evidence_id}")
-            if confidence not in {"low", "medium", "high"}:
-                raise EpiqError("confidence_error", f"Unknown confidence: {confidence}")
-            self._check_value_type(str(q["value_type"]), value)
-            value_json = _json(value)
-            existing = connection.execute(
-                """SELECT claim_id FROM claims WHERE subject_id=? AND question_id=?
-                   AND value_json=? AND valid_from=? AND evidence_id=?""",
-                (entity["entity_id"], q["question_id"], value_json, valid_from, evidence_id),
-            ).fetchone()
-            if existing:
-                return str(existing["claim_id"])
-            claim_id = _id("clm")
-            payload = {
-                "claim_id": claim_id,
-                "subject_id": entity["entity_id"],
-                "question_id": q["question_id"],
-                "value": value,
-                "valid_from": valid_from,
-                "evidence_id": evidence_id,
-                "confidence": confidence,
-            }
-            seq, _, event_time = self._event(connection, "claim.assert", actor, payload)
-            tx_from = recorded_at or event_time
-            connection.execute(
-                """INSERT INTO claims
-                   (claim_id,subject_id,question_id,value_json,valid_from,valid_to,tx_from,tx_to,
-                    evidence_id,confidence,status,created_seq,closed_seq)
-                   VALUES(?,?,?,?,?,NULL,?,NULL,?,?,'asserted',?,NULL)""",
-                (
-                    claim_id,
-                    entity["entity_id"],
-                    q["question_id"],
-                    value_json,
-                    valid_from,
-                    tx_from,
-                    evidence_id,
-                    confidence,
-                    seq,
-                ),
+            claim_id, _, _ = self._assert_claim_tx(
+                connection,
+                subject,
+                question,
+                value,
+                valid_from,
+                evidence_id,
+                actor,
+                recorded_at,
+                confidence,
             )
-        return claim_id
+            return claim_id
+
+    def _assert_claim_tx(
+        self,
+        connection: sqlite3.Connection,
+        subject: str,
+        question: str,
+        value: Any,
+        valid_from: str,
+        evidence: str | list[str],
+        actor: str,
+        recorded_at: str | None = None,
+        confidence: str = "high",
+        event_type: str = "claim.assert",
+        extra_payload: dict[str, Any] | None = None,
+    ) -> tuple[str, int, bool]:
+        entity = self._resolve_entity(connection, subject)
+        q = self._resolve_question(connection, question)
+        if entity["kind"] != q["subject_kind"]:
+            raise EpiqError(
+                "subject_type_mismatch",
+                f"Question {q['name']} applies to {q['subject_kind']}, not {entity['kind']}",
+            )
+        evidence_ids = list(dict.fromkeys([evidence] if isinstance(evidence, str) else evidence))
+        if not evidence_ids:
+            raise EpiqError("evidence_required", "At least one evidence ID is required")
+        placeholders = ",".join("?" for _ in evidence_ids)
+        found = {
+            str(row["evidence_id"])
+            for row in connection.execute(
+                f"SELECT evidence_id FROM evidence WHERE evidence_id IN ({placeholders})",
+                evidence_ids,
+            )
+        }
+        missing = [evidence_id for evidence_id in evidence_ids if evidence_id not in found]
+        if missing:
+            raise EpiqError("evidence_not_found", f"Evidence not found: {', '.join(missing)}")
+        if confidence not in {"low", "medium", "high"}:
+            raise EpiqError("confidence_error", f"Unknown confidence: {confidence}")
+        self._check_value_type(str(q["value_type"]), value)
+        value_json = _json(value)
+        primary_evidence = evidence_ids[0]
+        existing = connection.execute(
+            """SELECT claim_id,created_seq FROM claims WHERE subject_id=? AND question_id=?
+               AND value_json=? AND valid_from=? AND evidence_id=?""",
+            (entity["entity_id"], q["question_id"], value_json, valid_from, primary_evidence),
+        ).fetchone()
+        if existing:
+            claim_id = str(existing["claim_id"])
+            linked = {
+                str(row["evidence_id"])
+                for row in connection.execute(
+                    "SELECT evidence_id FROM claim_evidence WHERE claim_id=?", (claim_id,)
+                )
+            }
+            additions = [item for item in evidence_ids if item not in linked]
+            if additions:
+                seq, _, _ = self._event(
+                    connection,
+                    "claim.evidence_link",
+                    actor,
+                    {"claim_id": claim_id, "evidence_ids": additions},
+                )
+                next_ordinal = int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(ordinal),-1)+1 n FROM claim_evidence WHERE claim_id=?",
+                        (claim_id,),
+                    ).fetchone()["n"]
+                )
+                connection.executemany(
+                    "INSERT INTO claim_evidence VALUES(?,?,?,?)",
+                    [
+                        (claim_id, evidence_id, next_ordinal + offset, seq)
+                        for offset, evidence_id in enumerate(additions)
+                    ],
+                )
+                return claim_id, seq, False
+            return claim_id, int(existing["created_seq"]), False
+        claim_id = _id("clm")
+        payload = {
+            "claim_id": claim_id,
+            "subject_id": entity["entity_id"],
+            "question_id": q["question_id"],
+            "value": value,
+            "valid_from": valid_from,
+            "evidence_id": primary_evidence,
+            "evidence_ids": evidence_ids,
+            "confidence": confidence,
+            **(extra_payload or {}),
+        }
+        seq, _, event_time = self._event(connection, event_type, actor, payload)
+        tx_from = recorded_at or event_time
+        connection.execute(
+            """INSERT INTO claims
+               (claim_id,subject_id,question_id,value_json,valid_from,valid_to,tx_from,tx_to,
+                evidence_id,confidence,status,created_seq,closed_seq)
+               VALUES(?,?,?,?,?,NULL,?,NULL,?,?,'asserted',?,NULL)""",
+            (
+                claim_id,
+                entity["entity_id"],
+                q["question_id"],
+                value_json,
+                valid_from,
+                tx_from,
+                primary_evidence,
+                confidence,
+                seq,
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO claim_evidence VALUES(?,?,?,?)",
+            [
+                (claim_id, evidence_id, ordinal, seq)
+                for ordinal, evidence_id in enumerate(evidence_ids)
+            ],
+        )
+        return claim_id, seq, True
+
+    def derive_distribution(
+        self,
+        subject: str,
+        question: str,
+        input_claim_ids: list[str],
+        valid_from: str,
+        actor: str,
+        weights: list[float] | None = None,
+        confidence: str = "medium",
+    ) -> str:
+        """Derive an empirical distribution with claim and evidence lineage."""
+        inputs = list(dict.fromkeys(input_claim_ids))
+        if not inputs:
+            raise EpiqError("input_claims_required", "At least one input claim is required")
+        if weights is not None and len(weights) != len(inputs):
+            raise EpiqError("distribution_error", "Weights must match the number of input claims")
+        with self.transaction() as connection:
+            samples: list[int | float] = []
+            evidence_ids: list[str] = []
+            for claim_id in inputs:
+                claim = connection.execute(
+                    "SELECT * FROM claims WHERE claim_id=? AND status='asserted' AND tx_to IS NULL",
+                    (claim_id,),
+                ).fetchone()
+                if not claim:
+                    raise EpiqError("claim_not_found", f"Active input claim not found: {claim_id}")
+                sample = json.loads(claim["value_json"])
+                if not isinstance(sample, int | float) or isinstance(sample, bool):
+                    raise EpiqError("distribution_error", f"Input claim is not numeric: {claim_id}")
+                samples.append(sample)
+                evidence_ids.extend(
+                    str(row["evidence_id"])
+                    for row in connection.execute(
+                        """SELECT evidence_id FROM claim_evidence
+                           WHERE claim_id=? ORDER BY ordinal""",
+                        (claim_id,),
+                    )
+                )
+            distribution: dict[str, Any] = {"kind": "empirical", "samples": samples}
+            if weights is not None:
+                distribution = {
+                    "kind": "weighted_empirical",
+                    "samples": samples,
+                    "weights": weights,
+                }
+            operation = str(distribution["kind"])
+            claim_id, seq, _ = self._assert_claim_tx(
+                connection,
+                subject,
+                question,
+                distribution,
+                valid_from,
+                list(dict.fromkeys(evidence_ids)),
+                actor,
+                confidence=confidence,
+                event_type="claim.derive",
+                extra_payload={"operation": operation, "input_claim_ids": inputs},
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO derivations VALUES(?,?,?,?)",
+                (claim_id, operation, _json({"weights": weights}), seq),
+            )
+            connection.executemany(
+                "INSERT OR IGNORE INTO claim_inputs VALUES(?,?,?,?)",
+                [
+                    (claim_id, input_claim_id, ordinal, seq)
+                    for ordinal, input_claim_id in enumerate(inputs)
+                ],
+            )
+            return claim_id
 
     @staticmethod
     def _check_value_type(value_type: str, value: Any) -> None:
-        if value_type.startswith("Enum["):
+        if value_type == "Probability":
+            if (
+                not isinstance(value, int | float)
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or not 0 <= value <= 1
+            ):
+                raise EpiqError(
+                    "value_type_error", f"Expected Probability between 0 and 1; received {value!r}"
+                )
+        elif value_type.startswith("Distribution[") and value_type.endswith("]"):
+            Store._check_distribution(value_type[13:-1], value)
+        elif value_type.startswith("Enum["):
             choices = [part.strip() for part in value_type[5:-1].split(",")]
             if value not in choices:
                 raise EpiqError(
@@ -368,8 +602,63 @@ class Store:
             raise EpiqError("value_type_error", f"Expected Bool; received {value!r}")
         elif value_type == "String" and not isinstance(value, str):
             raise EpiqError("value_type_error", f"Expected String; received {value!r}")
-        elif value_type not in {"Int", "Float", "Bool", "String", "Json"}:
+        elif value_type not in {"Int", "Float", "Bool", "String", "Json", "Probability"}:
             raise EpiqError("value_type_error", f"Unknown value type: {value_type}")
+
+    @staticmethod
+    def _check_distribution(inner_type: str, value: Any) -> None:
+        if not isinstance(value, dict):
+            raise EpiqError("value_type_error", "A distribution must be a JSON object")
+        kind = value.get("kind")
+        if inner_type == "Float" and kind in {"empirical", "weighted_empirical"}:
+            samples = value.get("samples")
+            if not isinstance(samples, list) or not samples:
+                raise EpiqError("value_type_error", "An empirical distribution needs samples")
+            if any(
+                not isinstance(sample, int | float)
+                or isinstance(sample, bool)
+                or not math.isfinite(sample)
+                for sample in samples
+            ):
+                raise EpiqError("value_type_error", "Distribution samples must be finite numbers")
+            if kind == "weighted_empirical":
+                weights = value.get("weights")
+                if not isinstance(weights, list) or len(weights) != len(samples):
+                    raise EpiqError(
+                        "value_type_error", "Distribution weights must match the samples"
+                    )
+                if any(
+                    not isinstance(weight, int | float)
+                    or isinstance(weight, bool)
+                    or not math.isfinite(weight)
+                    or weight < 0
+                    for weight in weights
+                ) or not math.isclose(sum(weights), 1.0, rel_tol=0, abs_tol=1e-9):
+                    raise EpiqError(
+                        "value_type_error", "Distribution weights must be nonnegative and sum to 1"
+                    )
+            return
+        if inner_type.startswith("Enum[") and inner_type.endswith("]") and kind == "categorical":
+            choices = {part.strip() for part in inner_type[5:-1].split(",")}
+            probabilities = value.get("probabilities")
+            if not isinstance(probabilities, dict) or set(probabilities) != choices:
+                raise EpiqError(
+                    "value_type_error",
+                    f"Categorical distribution must define exactly {sorted(choices)}",
+                )
+            values = list(probabilities.values())
+            if any(
+                not isinstance(probability, int | float)
+                or isinstance(probability, bool)
+                or not math.isfinite(probability)
+                or probability < 0
+                for probability in values
+            ) or not math.isclose(sum(values), 1.0, rel_tol=0, abs_tol=1e-9):
+                raise EpiqError(
+                    "value_type_error", "Categorical probabilities must be nonnegative and sum to 1"
+                )
+            return
+        raise EpiqError("value_type_error", f"Unsupported {kind!r} distribution for {inner_type}")
 
     def close_claim(self, claim_id: str, status: str, reason: str, actor: str) -> None:
         """Retract or supersede a claim without deleting it."""
@@ -525,9 +814,7 @@ class Store:
                 cells: dict[str, Any] = {}
                 for question in questions:
                     claims = connection.execute(
-                        """SELECT c.*, e.excerpt, s.url, s.title
-                           FROM claims c JOIN evidence e ON e.evidence_id=c.evidence_id
-                           JOIN sources s ON s.source_id=e.source_id
+                        """SELECT c.* FROM claims c
                            WHERE c.subject_id=? AND c.question_id=?
                            AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
                            AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
@@ -548,7 +835,9 @@ class Store:
                            ORDER BY t.created_seq DESC LIMIT 1""",
                         (entity["entity_id"], question["question_id"]),
                     ).fetchone()
-                    cells[str(question["name"])] = self._project_cell(claims, definition, task)
+                    cells[str(question["name"])] = self._project_cell(
+                        connection, claims, definition, task, cutoff
+                    )
                 rows.append(
                     {
                         "entity_id": entity["entity_id"],
@@ -573,9 +862,13 @@ class Store:
             "rows": rows,
         }
 
-    @staticmethod
     def _project_cell(
-        claims: list[sqlite3.Row], definition: dict[str, Any], task: sqlite3.Row | None = None
+        self,
+        connection: sqlite3.Connection,
+        claims: list[sqlite3.Row],
+        definition: dict[str, Any],
+        task: sqlite3.Row | None = None,
+        cutoff: str = "9999-12-31T23:59:59Z",
     ) -> dict[str, Any]:
         if not claims:
             if task and task["status"] == "not_found":
@@ -599,22 +892,57 @@ class Store:
             state = "Contested"
         else:
             state = "Answered"
+        lineage: list[dict[str, Any]] = []
+        for claim in claims:
+            evidence_rows = connection.execute(
+                """SELECT ce.evidence_id,e.excerpt,s.url,s.title
+                   FROM claim_evidence ce
+                   JOIN evidence e ON e.evidence_id=ce.evidence_id
+                   JOIN sources s ON s.source_id=e.source_id
+                   JOIN events ev ON ev.seq=ce.created_seq
+                   JOIN claims owner ON owner.claim_id=ce.claim_id
+                   WHERE ce.claim_id=? AND (ce.created_seq=owner.created_seq OR ev.recorded_at<=?)
+                   ORDER BY ce.ordinal""",
+                (claim["claim_id"], cutoff),
+            ).fetchall()
+            derivation = connection.execute(
+                "SELECT * FROM derivations WHERE claim_id=?", (claim["claim_id"],)
+            ).fetchone()
+            input_claim_ids = [
+                str(row["input_claim_id"])
+                for row in connection.execute(
+                    """SELECT ci.input_claim_id FROM claim_inputs ci
+                       JOIN events ev ON ev.seq=ci.created_seq
+                       JOIN claims owner ON owner.claim_id=ci.claim_id
+                       WHERE ci.claim_id=?
+                       AND (ci.created_seq=owner.created_seq OR ev.recorded_at<=?)
+                       ORDER BY ci.ordinal""",
+                    (claim["claim_id"], cutoff),
+                )
+            ]
+            for evidence_row in evidence_rows:
+                item = {
+                    "token": f"p_{claim['claim_id']}",
+                    "claim_id": claim["claim_id"],
+                    "value": json.loads(claim["value_json"]),
+                    "confidence": claim["confidence"],
+                    "evidence_id": evidence_row["evidence_id"],
+                    "source": {"title": evidence_row["title"], "url": evidence_row["url"]},
+                    "excerpt": evidence_row["excerpt"],
+                }
+                if derivation:
+                    item["derivation"] = {
+                        "operation": derivation["operation"],
+                        "parameters": json.loads(derivation["parameters_json"]),
+                        "input_claim_ids": input_claim_ids,
+                    }
+                lineage.append(item)
         return {
             "state": state,
             "value": values[0] if cardinality == "one" and len(unique) == 1 else None,
             "values": values,
             "confidence": claims[0]["confidence"] if len(claims) == 1 else None,
-            "lineage": [
-                {
-                    "token": f"p_{claim['claim_id']}",
-                    "claim_id": claim["claim_id"],
-                    "confidence": claim["confidence"],
-                    "evidence_id": claim["evidence_id"],
-                    "source": {"title": claim["title"], "url": claim["url"]},
-                    "excerpt": claim["excerpt"],
-                }
-                for claim in claims
-            ],
+            "lineage": lineage,
         }
 
     def record_not_found(

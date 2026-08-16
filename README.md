@@ -162,9 +162,12 @@ policy metadata. The current implementation recognizes:
 - `Int`: validated as a JSON integer.
 - `Float`: validated as a finite JSON number; integers are accepted because they are valid real
   values (for example, probability endpoints `0` and `1`).
+- `Probability`: a finite number constrained to the closed interval `[0,1]`.
 - `Bool`: validated as JSON `true` or `false`.
 - `String`: validated as plain text.
 - `Enum[a,b,c]`: validated against the listed strings.
+- `Distribution[Float]`: an empirical or weighted empirical numeric distribution.
+- `Distribution[Enum[a,b,c]]`: a categorical probability distribution over exactly those outcomes.
 - `Json`: accepts structured JSON for richer answers.
 
 For example, probability and free-text fields can be declared without wrapping either in a JSON
@@ -173,7 +176,7 @@ object:
 ```bash
 epiq question probability_of_launch \
   --for Company \
-  --type Float \
+  --type Probability \
   --definition '{"label":"Probability of launch","cardinality":"one"}'
 
 epiq question positioning_summary \
@@ -211,6 +214,17 @@ epiq --actor agent:census evidence \
 A source records the URL, title, retrieval date, and content hash. Evidence is the bounded excerpt
 used to support a claim. Repeating the same URL and excerpt returns the existing IDs, which makes
 agent retries safe.
+
+A claim may cite more than one fragment by repeating `--evidence`:
+
+```bash
+epiq assert --subject Barnstable --question population --value 49568 \
+  --valid-from 2024-12-31 \
+  --evidence evd_census_table \
+  --evidence evd_town_profile
+```
+
+Every evidence link remains visible in JSON, HTML, and Excel lineage.
 
 Capture the evidence ID for shell chaining with `jq`:
 
@@ -265,6 +279,9 @@ The `--value` argument is parsed as JSON when possible:
 --value true
 
 # Float
+--value 0.73
+
+# Probability uses the same JSON number syntax but additionally enforces 0 <= p <= 1
 --value 0.73
 
 # String (unquoted text that is not another JSON literal is treated as a string)
@@ -413,6 +430,107 @@ The workbook contains three sheets:
 
 Both exporters are projections. The SQLite database remains the source of truth.
 
+## Tutorial: preserve multiple forecasts as a distribution
+
+Five forecasts are not one fact with a strangely shaped value. They are five separately sourced
+claims that may disagree. Epiq preserves those observations first and derives an ensemble second.
+
+Create an event and two questions:
+
+```bash
+epiq entity WeatherEvent "Boston rain on 2026-08-17" \
+  --attributes '{"location":"Boston, MA","target_date":"2026-08-17"}'
+
+epiq question rain_probability \
+  --for WeatherEvent \
+  --type Probability \
+  --definition '{"label":"Provider rain probabilities","cardinality":"many"}'
+
+epiq question forecast_distribution \
+  --for WeatherEvent \
+  --type 'Distribution[Float]' \
+  --definition '{"label":"Forecast ensemble","cardinality":"one"}'
+```
+
+Each provider gets its own evidence and claim:
+
+```bash
+NOAA_EVIDENCE=$(epiq evidence \
+  --url https://example.test/noaa/2026-08-17 \
+  --title "NOAA forecast" \
+  --retrieved-at 2026-08-16 \
+  --excerpt "NOAA assigns a 40% chance of rain." | jq -r .evidence_id)
+
+NOAA_CLAIM=$(epiq assert \
+  --subject "Boston rain on 2026-08-17" \
+  --question rain_probability \
+  --value 0.40 \
+  --valid-from 2026-08-17 \
+  --evidence "$NOAA_EVIDENCE" | jq -r .claim_id)
+```
+
+Repeat that write for the other providers. Then derive an equally weighted empirical distribution
+from the five claim IDs:
+
+```bash
+epiq --actor agent:weather-ensemble derive-distribution \
+  --subject "Boston rain on 2026-08-17" \
+  --question forecast_distribution \
+  --input-claim "$NOAA_CLAIM" \
+  --input-claim "$WEATHER_DOT_COM_CLAIM" \
+  --input-claim "$ACCUWEATHER_CLAIM" \
+  --input-claim "$APPLE_CLAIM" \
+  --input-claim "$LOCAL_STATION_CLAIM" \
+  --valid-from 2026-08-17
+```
+
+The projected value is:
+
+```json
+{
+  "kind": "empirical",
+  "samples": [0.4, 0.55, 0.35, 0.6, 0.45]
+}
+```
+
+The derived claim additionally records:
+
+- all five input claim IDs in order;
+- all five inherited evidence fragments;
+- the `empirical` derivation operation;
+- its own actor, timestamp, confidence, and validity interval.
+
+Use weights when providers should not contribute equally. Do this instead of the unweighted
+derivation (or retract the earlier derived claim), otherwise both ensembles correctly appear as a
+contested cardinality-one field:
+
+```bash
+epiq derive-distribution \
+  --subject "Boston rain on 2026-08-17" \
+  --question forecast_distribution \
+  --input-claim "$NOAA_CLAIM,$WEATHER_DOT_COM_CLAIM,$ACCUWEATHER_CLAIM" \
+  --weights '[0.5,0.3,0.2]' \
+  --valid-from 2026-08-17
+```
+
+Weights must be finite, nonnegative, match the number of samples, and sum to one. A categorical
+distribution supplied directly by a source uses a typed value such as:
+
+```bash
+epiq question rain_outcome \
+  --for WeatherEvent \
+  --type 'Distribution[Enum[rain,no_rain]]'
+
+epiq assert \
+  --subject "Boston rain on 2026-08-17" \
+  --question rain_outcome \
+  --value '{"kind":"categorical","probabilities":{"rain":0.4,"no_rain":0.6}}' \
+  --valid-from 2026-08-17 \
+  --evidence "$NOAA_EVIDENCE"
+```
+
+Categorical probabilities must cover exactly the declared outcomes and sum to one.
+
 ## What an agent loop looks like
 
 A research agent does not need a privileged write path. Its loop is ordinary CLI composition:
@@ -525,6 +643,18 @@ epiq --db examples/cape-cod-towns.sqlite export-xlsx \
 The visible questions are population and median owner-occupied home value. Each evidence excerpt
 also retains the estimate's margin of error.
 
+### Weather forecast distributions
+
+The illustrative weather fixture creates five atomic provider forecasts and derives an empirical
+distribution with full claim and evidence lineage:
+
+```bash
+python scripts/build_weather_forecasts.py --db examples/weather-forecasts.sqlite
+epiq --db examples/weather-forecasts.sqlite matrix --kind WeatherEvent
+epiq --db examples/weather-forecasts.sqlite export-html \
+  --kind WeatherEvent --output examples/weather-forecasts.html
+```
+
 ### Cham corpus adapter
 
 `import-cham` translates the earlier entity/evidence/claim JSON packet into typed Epiq questions:
@@ -576,6 +706,9 @@ An Epiq project is one SQLite file. The principal tables are:
 - `sources`
 - `evidence`
 - `claims`
+- `claim_evidence`
+- `derivations`
+- `claim_inputs`
 - `research_tasks`
 
 SQLite runs in WAL mode. Writes use `BEGIN IMMEDIATE`, which serializes competing writers rather
@@ -601,7 +734,6 @@ Epiq is an executable vertical slice, not yet a production database server. In p
 
 - there is no web server, authentication layer, or multi-tenancy;
 - there are no web searches, scrapers, or LLM calls inside the CLI;
-- claim-to-evidence is currently one-to-one;
 - question migrations and atomic supersede are not yet exposed as full CLI workflows;
 - EpiQL implements only question declarations and a narrow count-over-filter derivation;
 - SQLite is canonical; there is not yet a separate append-only JSONL interchange format.
