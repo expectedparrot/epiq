@@ -49,6 +49,18 @@ python -m epiq --db /tmp/patriots.sqlite check examples/patriots.epiq
 
 All commands emit JSON. Write commands also accept `--actor` before the subcommand.
 
+Select a database once for the current workspace. Epiq writes the selection to the ignored
+`.epiq/config.json` file:
+
+```bash
+epiq use examples/ai-interviewers.sqlite
+epiq db
+epiq init --name "AI Interviewer Market"
+```
+
+Afterward, commands can omit `--db`. An explicit `--db` takes precedence, followed by the
+`EPIQ_DB` environment variable, workspace configuration, and finally `.epiq/epiq.sqlite`.
+
 ```bash
 epiq init --name "My space"
 epiq entity Game "Patriots Week 1" --attributes '{"season_id":"ent_..."}'
@@ -70,15 +82,15 @@ features become individual typed questions, making missing claims executable res
 than false values.
 
 ```bash
-epiq --db examples/ai-interviewers.sqlite init --name "AI Interviewer Market"
-epiq --db examples/ai-interviewers.sqlite --actor agent:corpus-import import-cham \
+epiq use examples/ai-interviewers.sqlite
+epiq init --name "AI Interviewer Market"
+epiq --actor agent:corpus-import import-cham \
   --entities path/to/entities.json \
   --evidence path/to/evidence.json \
   --claims path/to/claims.json
-epiq --db examples/ai-interviewers.sqlite matrix --kind Company
+epiq matrix --kind Company
 python scripts/expand_ai_market.py --db examples/ai-interviewers.sqlite
-epiq --db examples/ai-interviewers.sqlite export-html \
-  --kind Company --output examples/ai-interviewers-visual.html
+epiq export-html --kind Company --output examples/ai-interviewers-visual.html
 ```
 
 The expansion script adds a researched discovery cohort (Glaut, Conveo, Koji Research, and

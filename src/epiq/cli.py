@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,9 @@ from .html import write_html
 from .importers import import_cham_corpus
 from .store import Store
 from .xlsx import write_xlsx
+
+CONFIG_PATH = Path(".epiq/config.json")
+DEFAULT_DB = Path(".epiq/epiq.sqlite")
 
 
 def _emit(value: Any) -> None:
@@ -37,17 +41,37 @@ def _attributes(raw: str | None) -> dict[str, Any]:
     return result
 
 
+def _database(explicit: str | None) -> tuple[Path, str]:
+    """Resolve the database using CLI, environment, workspace, then conventional default."""
+    if explicit:
+        return Path(explicit), "command_line"
+    if environment := os.environ.get("EPIQ_DB"):
+        return Path(environment), "environment"
+    if CONFIG_PATH.exists():
+        config = json.loads(CONFIG_PATH.read_text())
+        configured = config.get("database")
+        if not isinstance(configured, str) or not configured:
+            raise EpiqError("invalid_config", f"Invalid database setting in {CONFIG_PATH}")
+        return Path(configured), "workspace"
+    return DEFAULT_DB, "default"
+
+
 def parser() -> argparse.ArgumentParser:
     """Build the CLI parser."""
     root = argparse.ArgumentParser(
         prog="epiq", description="Evidence-backed agent research database"
     )
-    root.add_argument("--db", default=".epiq/epiq.sqlite", help="SQLite project path")
+    root.add_argument("--db", help="SQLite project path; overrides EPIQ_DB and workspace config")
     root.add_argument("--actor", default="human:cli", help="Actor recorded for write commands")
     commands = root.add_subparsers(dest="command", required=True)
 
     init = commands.add_parser("init", help="Initialize a project")
     init.add_argument("--name", required=True)
+
+    use = commands.add_parser("use", help="Select the database for this workspace")
+    use.add_argument("database")
+
+    commands.add_parser("db", help="Show the currently selected database")
 
     entity = commands.add_parser("entity", help="Create an entity")
     entity.add_argument("kind")
@@ -124,15 +148,33 @@ def parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     """Execute one parsed command."""
-    store = Store(args.db)
+    if args.command == "use":
+        database = Path(args.database).expanduser().resolve()
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps({"database": str(database)}, indent=2) + "\n")
+        return {
+            "ok": True,
+            "database": str(database),
+            "config": str(CONFIG_PATH),
+            "exists": database.exists(),
+        }
+    database, database_source = _database(args.db)
+    if args.command == "db":
+        return {
+            "ok": True,
+            "database": str(database),
+            "source": database_source,
+            "exists": database.exists(),
+        }
+    store = Store(database)
     if args.command == "init":
         store.initialize(args.name)
-        return {"ok": True, "database": str(Path(args.db)), "name": args.name}
-    if not Path(args.db).exists():
+        return {"ok": True, "database": str(database), "name": args.name}
+    if not database.exists():
         raise EpiqError(
             "project_not_found",
-            f"Database does not exist: {args.db}",
-            f"Run: epiq --db {args.db} init --name 'My research space'",
+            f"Database does not exist: {database}",
+            "Run: epiq init --name 'My research space' or select another database with epiq use",
         )
     if args.command == "entity":
         entity_id = store.add_entity(args.kind, args.name, _attributes(args.attributes), args.actor)
