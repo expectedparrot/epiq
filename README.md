@@ -6,11 +6,57 @@ Epiq is a local-first epistemic database for agent-driven research. It stores en
 questions, source excerpts, and evidence-backed claims in SQLite. It can then project that history
 into ordinary tables, interactive HTML, and Excel without throwing away where each cell came from.
 
-Epiq does not search the web or call a language model. A person, script, or research agent finds
-information and submits it through the same deterministic interface. This keeps research
-orchestration replaceable and makes storage behavior testable.
+Epiq's core database and CLI do not search the web or call a language model. The optional local web
+application can launch replaceable research agents and submit their reviewed findings through the
+same deterministic interface. This keeps research orchestration replaceable and makes storage
+behavior testable.
 
 This README builds a database from scratch before introducing the packaged examples.
+
+## Run the web app locally — paste this into your coding agent
+
+Copy the following prompt into Codex, Claude Code, or another terminal-capable coding agent. Replace
+the project filename and display name if you already know what you want to research.
+
+```text
+Set up and launch the Epiq web application locally for me.
+
+1. If you are already inside an Epiq checkout, use it. Otherwise clone
+   https://github.com/expectedparrot/epiq.git and enter the repository.
+2. Confirm Python 3.11+, uv, and Node.js are available. Do not replace or remove any existing
+   databases, configuration, uncommitted work, or running research jobs.
+3. Install the application and build the browser assets:
+     uv sync --extra web
+     npm --prefix web ci
+     npm --prefix web run build
+4. Create the project directory if needed, then select a persistent database for this checkout:
+     mkdir -p .epiq/projects
+     uv run epiq use .epiq/projects/my-research.sqlite
+   Do not initialize or overwrite the file from the terminal. If it is new, let me name and create
+   the project from the web welcome screen.
+5. If OPENAI_API_KEY is already present in the environment, pass it through without printing,
+   logging, or writing it into the repository. If it is absent, explain that the spreadsheet and
+   manual evidence workflows will work but AI research buttons will require the variable.
+6. Start the long-running local server from the repository root:
+     uv run --extra web epiq-web
+   Bind only to the default loopback address. If port 8000 is occupied by an existing healthy Epiq
+   server, do not kill it until you have checked for active research jobs and confirmed whether it
+   can be reused.
+7. Verify that the server started, open http://127.0.0.1:8000 in my browser, and tell me:
+   - the selected SQLite database path;
+   - whether agent research is enabled;
+   - the local URL; and
+   - how to stop and restart the server safely.
+
+Keep the server running after you finish. Do not expose it to the public network and do not commit
+generated databases, workspace configuration, credentials, or build artifacts.
+```
+
+The selected database is remembered in `.epiq/config.json`, so subsequent launches only need:
+
+```bash
+uv run --extra web epiq-web
+```
 
 ## The model in one minute
 
