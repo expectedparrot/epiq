@@ -3568,6 +3568,43 @@ class Store:
             ],
         }
 
+    def research_context(self, entity_kind: str, peer_limit: int = 50) -> dict[str, Any]:
+        """Return bounded project and table context for an external research agent."""
+        if peer_limit < 0 or peer_limit > 200:
+            raise EpiqError("invalid_limit", "Peer limit must be between 0 and 200")
+        overview = self.overview()
+        projection = self.matrix(entity_kind)
+        peers = projection["rows"][:peer_limit]
+        return {
+            "project": {
+                "name": overview["project"].get("name", "Untitled project"),
+                "project_id": overview["project"].get("project_id"),
+            },
+            "table": {
+                "entity_kind": entity_kind,
+                "row_count": len(projection["rows"]),
+                "peer_rows": [
+                    {
+                        "name": row["name"],
+                        "aliases": row.get("aliases", []),
+                        "attributes": row.get("attributes", {}),
+                    }
+                    for row in peers
+                ],
+                "fields": [
+                    {
+                        "name": question["name"],
+                        "label": question["definition"].get("label", question["name"]),
+                        "value_type": question["value_type"],
+                        "research_guidance": question["definition"].get(
+                            "research_guidance", ""
+                        ),
+                    }
+                    for question in projection["questions"]
+                ],
+            },
+        }
+
     def matrix(
         self,
         entity_kind: str,

@@ -1283,9 +1283,23 @@ def create_app(
                     continue
                 cell = row["cells"][question["name"]]
                 if body.mode == "fill_missing" and cell["state"] == "Unasked":
-                    targets.append({"entity_id": row["entity_id"], "name": row["name"]})
+                    targets.append(
+                        {
+                            "entity_id": row["entity_id"],
+                            "name": row["name"],
+                            "aliases": row.get("aliases", []),
+                            "attributes": row.get("attributes", {}),
+                        }
+                    )
                 elif body.mode == "retry_not_found" and cell["state"] == "NotFound":
-                    targets.append({"entity_id": row["entity_id"], "name": row["name"]})
+                    targets.append(
+                        {
+                            "entity_id": row["entity_id"],
+                            "name": row["name"],
+                            "aliases": row.get("aliases", []),
+                            "attributes": row.get("attributes", {}),
+                        }
+                    )
                 elif (
                     body.mode == "add_evidence" and cell["state"] == "Answered" and cell["lineage"]
                 ):
@@ -1303,6 +1317,8 @@ def create_app(
                         {
                             "entity_id": row["entity_id"],
                             "name": row["name"],
+                            "aliases": row.get("aliases", []),
+                            "attributes": row.get("attributes", {}),
                             "existing_value": cell.get("value", cell.get("values")),
                             "existing_valid_from": first.get("as_of"),
                             "claim_id": first["claim_id"],
@@ -1326,6 +1342,7 @@ def create_app(
                 **question,
                 "task_mode": body.mode,
                 "instructions": body.instructions,
+                "research_context": project.research_context(body.entity_kind),
             }
             progress(
                 f"Prepared {len(targets)} {body.entity_kind} row{'s' if len(targets) != 1 else ''}"

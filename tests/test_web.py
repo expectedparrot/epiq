@@ -20,6 +20,67 @@ def wait_for_job(client: TestClient, job_id: str) -> dict:
     raise AssertionError("Research job did not finish")
 
 
+def test_research_receives_project_table_and_entity_identity_context(tmp_path: Path) -> None:
+    captured = {}
+
+    def researcher(kind, question, targets, progress=None):
+        captured.update({"kind": kind, "question": question, "targets": targets})
+        return [
+            {
+                "entity_id": targets[0]["entity_id"],
+                "status": "not_found",
+                "value": None,
+                "source_type": "web",
+                "source_url": None,
+                "source_title": "",
+                "excerpt": "",
+                "confidence": "low",
+                "notes": "Identity could not be verified.",
+            }
+        ]
+
+    client = TestClient(create_app(tmp_path / "context.sqlite", tmp_path / "missing", researcher))
+    client.post("/api/project", json={"name": "Cape Cod Towns"})
+    orleans = client.post(
+        "/api/entities",
+        json={
+            "kind": "Town",
+            "name": "Orleans",
+            "attributes": {"region": "Cape Cod, Massachusetts"},
+        },
+    ).json()["entity_id"]
+    client.post("/api/entities", json={"kind": "Town", "name": "Wellfleet"})
+    question = client.post(
+        "/api/questions",
+        json={
+            "name": "wikipedia_url",
+            "subject_kind": "Town",
+            "value_type": "URL",
+            "definition": {"label": "Wikipedia URL"},
+        },
+    ).json()["question_id"]
+    job = client.post(
+        "/api/research/jobs",
+        json={
+            "entity_kind": "Town",
+            "question": question,
+            "entity_ids": [orleans],
+            "scope": "cell",
+        },
+    ).json()
+    wait_for_job(client, job["job_id"])
+
+    assert captured["question"]["research_context"]["project"]["name"] == "Cape Cod Towns"
+    peer_names = {
+        row["name"]
+        for row in captured["question"]["research_context"]["table"]["peer_rows"]
+    }
+    assert peer_names == {"Orleans", "Wellfleet"}
+    assert captured["targets"][0]["attributes"] == {
+        "region": "Cape Cod, Massachusetts"
+    }
+
+
 def test_research_jobs_can_be_cancelled_without_writing_late_results(tmp_path: Path) -> None:
     started = Event()
     release = Event()

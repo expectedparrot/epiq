@@ -172,6 +172,11 @@ Question: {json.dumps(question, sort_keys=True)}
 Rows: {json.dumps(entities, sort_keys=True)}
 
 Research each row independently using public sources. Return exactly one result per entity_id.
+Use question.research_context to disambiguate every row. Project name, peer rows, aliases, and row
+attributes are identity constraints, not incidental hints. Before accepting a source, verify that
+it describes the intended entity in that project and table. A matching bare name is insufficient
+when places, people, organizations, or works can share names. If identity cannot be verified,
+return not_found and explain the ambiguity.
 The value_json field must contain a JSON-encoded value conforming to value_type (for example,
 Bool true is the string "true", and a String is the string "\"Boston\""). For answered
 results, include a direct source URL, descriptive title, and a short supporting excerpt. Do not
@@ -247,6 +252,11 @@ it cannot be accessed, return not_found and explain that limitation instead of s
 substituting an unrelated aggregator. In add_evidence mode, inspect a new independent source and
 return the value that source actually reports. It may support the existing_value or conflict with
 it; never suppress, coerce, or discard a conflicting observation.
+Use question.research_context to disambiguate every row. Project name, peer rows, aliases, and row
+attributes are identity constraints, not incidental hints. Before accepting a source, verify that
+it describes the intended entity in that project and table. A matching bare name is insufficient
+when places, people, organizations, or works can share names. If identity cannot be verified,
+return not_found and explain the ambiguity.
 Each row supplies existing_evidence with every URL, title, and excerpt already attached. Do not
 return any existing URL, the same page under another URL variant, or merely another excerpt from an
 existing source. If no independent source can be found, return not_found rather than duplicating it.
