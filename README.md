@@ -320,6 +320,36 @@ The `--value` argument is parsed as JSON when possible:
 Repeating an identical normalized assertion returns the original claim ID without adding another
 event.
 
+### Review agent output before publication
+
+An agent can stage a claim that passes the same entity, type, and evidence validation as an
+assertion but remains invisible to current projections:
+
+```bash
+epiq --actor agent:research propose-claim \
+  --subject Barnstable \
+  --question population \
+  --value 49568 \
+  --valid-from 2020-04-01 \
+  --evidence evd_... \
+  --rationale "Matches the cited decennial Census table"
+
+epiq claim-proposals
+epiq --actor human:reviewer review-claims prp_... \
+  --decision approved --reason "Citation and interpretation verified"
+```
+
+`review-claims` accepts multiple proposal IDs. The entire selection is approved or rejected in one
+transaction; a missing or previously reviewed proposal leaves every selected proposal unchanged.
+
+Trusted agent pipelines can write a JSON array of claim objects directly. This is also one SQLite
+transaction: if item 12 is malformed, items 0–11 do not leak into either events or projections.
+
+```bash
+epiq --actor agent:research bulk-assert --input claims.json
+# Use --input - to read the JSON array from stdin.
+```
+
 ### 7. Inspect the projection
 
 ```bash
@@ -880,6 +910,10 @@ The principal endpoints are:
 | `POST` | `/api/project` | Initialize the selected SQLite file |
 | `GET` | `/api/matrix/{kind}` | Current entity-by-question projection |
 | `POST` | `/api/entities` | Add a row |
+| `POST` | `/api/entities/{id}/aliases` | Add an alternate stable identity |
+| `POST` | `/api/entities/{id}/merge` | Merge a duplicate into a surviving row |
+| `POST` | `/api/entities/{id}/retire` | Retire a row without erasing it |
+| `POST` | `/api/entities/{id}/restore` | Restore a retired row |
 | `POST` | `/api/questions` | Add a typed, versioned column |
 | `POST` | `/api/questions/{id}/retire` | Hide a field while preserving its history |
 | `POST` | `/api/questions/{id}/restore` | Restore a retired field and its prior values |
@@ -888,6 +922,10 @@ The principal endpoints are:
 | `POST` | `/api/question-challenges/{id}/resolve` | Resolve or dismiss a challenge |
 | `POST` | `/api/evidence` | Add an immutable source excerpt |
 | `POST` | `/api/claims` | Assert an evidence-backed cell answer |
+| `POST` | `/api/claims/bulk` | Assert up to 1,000 claims atomically |
+| `POST` | `/api/claim-proposals` | Stage a validated claim outside the live matrix |
+| `GET` | `/api/claim-proposals` | Read the durable claim review queue |
+| `POST` | `/api/claim-proposals/review` | Approve or reject a selection atomically |
 | `POST` | `/api/claims/{id}/retract` | Close a claim without deleting it |
 | `POST` | `/api/claims/{id}/supersede` | Atomically replace a claim |
 | `POST` | `/api/research/not-found` | Record a completed unsuccessful search |

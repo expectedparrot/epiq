@@ -237,7 +237,7 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "7"
+    assert store.overview()["project"]["schema_version"] == "8"
 
 
 def test_entity_alias_merge_and_retirement_preserve_identity_history(store: Store) -> None:
@@ -311,6 +311,78 @@ def test_quantity_type_encodes_unit_and_requires_finite_number(store: Store) -> 
     assert store.matrix("Town")["rows"][0]["cells"]["area"]["value"] == 68.2
     with pytest.raises(EpiqError, match="finite quantity"):
         store.assert_claim(town, "area", "68.2", "2026-08-17", evidence, "test")
+
+
+def test_claim_proposals_are_invisible_until_atomically_approved(store: Store) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("employees", "Company", "Int", {}, "test")
+    store.add_question("active", "Company", "Bool", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/acme",
+        "Acme",
+        "2026-08-17",
+        "Acme has 12 staff and is active.",
+        "test",
+    )
+    first = store.propose_claim(
+        company, "employees", 12, "2026-08-17", [evidence], "agent:test", rationale="Official page"
+    )
+    second = store.propose_claim(company, "active", True, "2026-08-17", [evidence], "agent:test")
+    assert store.matrix("Company")["rows"][0]["cells"]["employees"]["state"] == "Unasked"
+    assert [item["proposal_id"] for item in store.claim_proposals()] == [first, second]
+
+    reviewed = store.review_claim_proposals(
+        [first, second], "approved", "Sources verified", "human:reviewer"
+    )
+    assert all(item["claim_id"] for item in reviewed)
+    row = store.matrix("Company")["rows"][0]
+    assert row["cells"]["employees"]["value"] == 12
+    assert row["cells"]["active"]["value"] is True
+    assert store.claim_proposals() == []
+    assert len(store.claim_proposals("approved")) == 2
+
+
+def test_rejected_proposal_never_becomes_claim(store: Store) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("active", "Company", "Bool", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/acme", "Acme", "2026-08-17", "Possibly active.", "test"
+    )
+    proposal = store.propose_claim(company, "active", True, "2026-08-17", [evidence], "agent")
+    result = store.review_claim_proposals(
+        [proposal], "rejected", "Evidence is equivocal", "reviewer"
+    )
+    assert result == [{"proposal_id": proposal, "status": "rejected", "claim_id": None}]
+    assert store.matrix("Company")["rows"][0]["cells"]["active"]["state"] == "Unasked"
+
+
+def test_bulk_claim_assertion_rolls_back_entire_batch_on_late_error(store: Store) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("employees", "Company", "Int", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/acme", "Acme", "2026-08-17", "Acme has 12 staff.", "test"
+    )
+    items = [
+        {
+            "subject": company,
+            "question": "employees",
+            "value": 12,
+            "valid_from": "2026-08-17",
+            "evidence_ids": [evidence],
+        },
+        {
+            "subject": company,
+            "question": "employees",
+            "value": "twelve",
+            "valid_from": "2026-08-17",
+            "evidence_ids": [evidence],
+        },
+    ]
+    before = len(store.history())
+    with pytest.raises(EpiqError, match="batch item 1"):
+        store.assert_claims_bulk(items, "agent:test")
+    assert len(store.history()) == before
+    assert store.matrix("Company")["rows"][0]["cells"]["employees"]["state"] == "Unasked"
 
 
 def test_question_retirement_hides_projection_but_preserves_and_restores_history(

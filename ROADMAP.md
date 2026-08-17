@@ -17,11 +17,13 @@ tables.
 - Reversible field retirement: `question.retire` removes an unsuitable column from current
   projections and agent work without deleting its schema, claims, evidence, or history;
   `question.restore` brings it back.
-- Schema-versioned automatic migrations (currently v7).
+- Schema-versioned automatic migrations (currently v8).
 - Stable entity identity with normalized duplicate rejection, aliases, merge redirects, and
   reversible entity retirement. Historical claims keep their original subject IDs while current
   projections unify merged identities.
 - Typed relationships (`Ref[EntityKind]`) and unit-bearing numeric measurements (`Quantity[unit]`).
+- Durable, validated claim proposals with atomic multi-selection approval/rejection, plus atomic
+  direct claim batches that roll back every event and projection when any item fails.
 - Durable agent jobs and proposals. Completed jobs survive restarts; interrupted jobs become explicit
   failures rather than remaining permanently “running.”
 - Consistent online SQLite backups and a `doctor` integrity command.
@@ -49,7 +51,6 @@ tables.
 - Search over entity names, question definitions, claim values, evidence titles, and excerpts using
   SQLite FTS5.
 - Deterministic contradiction reports, entity dossiers, timelines, and change-since-baseline reports.
-- Bulk JSON write endpoint with per-item validation and one transaction for safe agent write-back.
 - Rich duplicate suggestions and interactive merge review on top of the implemented alias/merge
   primitives.
 - Schema evolution assistant for splitting or replacing challenged questions while retaining lineage.
@@ -58,7 +59,7 @@ tables.
 
 - Rectangular selection, copy/paste, keyboard navigation, undo as compensating events, filtering,
   frozen columns, and saved views.
-- Review queues for proposed claims and schema changes, including approve/reject in bulk.
+- Spreadsheet review surfaces for the implemented claim queue and existing schema proposals.
 - Formula/derivation builder backed by a broader typed EpiQL rather than opaque spreadsheet formulas.
 - Resumable live job event stream (SSE or WebSocket) with polling as fallback.
 

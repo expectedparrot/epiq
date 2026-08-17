@@ -120,6 +120,23 @@ class ClaimCreate(BaseModel):
     valid_from: str
     evidence_ids: list[str] = Field(min_length=1)
     confidence: Literal["low", "medium", "high"] = "high"
+    temporal_basis: Literal["observed", "source", "unknown"] = "observed"
+    actor: str = "human:web"
+
+
+class ClaimBatchCreate(BaseModel):
+    claims: list[ClaimCreate] = Field(min_length=1, max_length=1000)
+    actor: str = "agent:web"
+
+
+class ClaimProposalCreate(ClaimCreate):
+    rationale: str = ""
+
+
+class ClaimProposalReview(BaseModel):
+    proposal_ids: list[str] = Field(min_length=1)
+    decision: Literal["approved", "rejected"]
+    reason: str = Field(min_length=1)
     actor: str = "human:web"
 
 
@@ -557,8 +574,41 @@ def create_app(
             body.evidence_ids,
             body.actor,
             confidence=body.confidence,
+            temporal_basis=body.temporal_basis,
         )
         return {"claim_id": claim_id}
+
+    @app.post("/api/claims/bulk", status_code=201)
+    def add_claims_bulk(body: ClaimBatchCreate) -> dict[str, Any]:
+        items = [item.model_dump(exclude={"actor"}) for item in body.claims]
+        claim_ids = store().assert_claims_bulk(items, body.actor)
+        return {"count": len(claim_ids), "claim_ids": claim_ids}
+
+    @app.post("/api/claim-proposals", status_code=201)
+    def propose_claim(body: ClaimProposalCreate) -> dict[str, str]:
+        proposal_id = store().propose_claim(
+            body.subject,
+            body.question,
+            body.value,
+            body.valid_from,
+            body.evidence_ids,
+            body.actor,
+            body.confidence,
+            body.temporal_basis,
+            body.rationale,
+        )
+        return {"proposal_id": proposal_id, "status": "pending"}
+
+    @app.get("/api/claim-proposals")
+    def claim_proposals(status: str | None = "pending") -> list[dict[str, Any]]:
+        return store().claim_proposals(status)
+
+    @app.post("/api/claim-proposals/review")
+    def review_claim_proposals(body: ClaimProposalReview) -> dict[str, Any]:
+        results = store().review_claim_proposals(
+            body.proposal_ids, body.decision, body.reason, body.actor
+        )
+        return {"count": len(results), "results": results}
 
     @app.post("/api/claims/{claim_id}/retract")
     def retract(claim_id: str, body: RetractionCreate) -> dict[str, str]:

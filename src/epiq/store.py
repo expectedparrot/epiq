@@ -172,6 +172,25 @@ CREATE TABLE IF NOT EXISTS claim_inputs (
     UNIQUE(claim_id, ordinal),
     CHECK(claim_id <> input_claim_id)
 );
+
+CREATE TABLE IF NOT EXISTS claim_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL REFERENCES entities(entity_id),
+    question_id TEXT NOT NULL REFERENCES questions(question_id),
+    value_json TEXT NOT NULL,
+    valid_from TEXT NOT NULL,
+    evidence_ids_json TEXT NOT NULL,
+    confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
+    temporal_basis TEXT NOT NULL CHECK(temporal_basis IN ('observed', 'source', 'unknown')),
+    rationale TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
+    resulting_claim_id TEXT REFERENCES claims(claim_id),
+    review_reason TEXT,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    reviewed_seq INTEGER REFERENCES events(seq)
+);
+CREATE INDEX IF NOT EXISTS idx_claim_proposals_status
+ON claim_proposals(status, created_seq);
 CREATE INDEX IF NOT EXISTS idx_entity_kind ON entities(kind);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 
@@ -294,7 +313,7 @@ class Store:
                 [
                     ("project_id", _id("prj")),
                     ("name", name),
-                    ("schema_version", "7"),
+                    ("schema_version", "8"),
                     ("created_at", _now()),
                 ],
             )
@@ -425,6 +444,27 @@ class Store:
                 );
                 UPDATE meta SET value='7'
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<7;
+                CREATE TABLE IF NOT EXISTS claim_proposals (
+                    proposal_id TEXT PRIMARY KEY,
+                    subject_id TEXT NOT NULL REFERENCES entities(entity_id),
+                    question_id TEXT NOT NULL REFERENCES questions(question_id),
+                    value_json TEXT NOT NULL,
+                    valid_from TEXT NOT NULL,
+                    evidence_ids_json TEXT NOT NULL,
+                    confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
+                    temporal_basis TEXT NOT NULL
+                        CHECK(temporal_basis IN ('observed', 'source', 'unknown')),
+                    rationale TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
+                    resulting_claim_id TEXT REFERENCES claims(claim_id),
+                    review_reason TEXT,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq),
+                    reviewed_seq INTEGER REFERENCES events(seq)
+                );
+                CREATE INDEX IF NOT EXISTS idx_claim_proposals_status
+                ON claim_proposals(status, created_seq);
+                UPDATE meta SET value='8'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<8;
                 """
             )
             connection.commit()
@@ -487,6 +527,7 @@ class Store:
                     "sources",
                     "evidence",
                     "claims",
+                    "claim_proposals",
                     "research_tasks",
                     "question_challenges",
                     "agent_jobs",
@@ -1017,6 +1058,257 @@ class Store:
                 temporal_basis,
             )
             return claim_id
+
+    def assert_claims_bulk(self, claims: list[dict[str, Any]], actor: str) -> list[str]:
+        """Validate and commit a claim batch atomically, preserving input order."""
+        if not claims:
+            raise EpiqError("empty_batch", "A claim batch must contain at least one item")
+        if len(claims) > 1000:
+            raise EpiqError("batch_too_large", "A claim batch cannot exceed 1,000 items")
+        claim_ids: list[str] = []
+        with self.transaction() as connection:
+            for index, item in enumerate(claims):
+                try:
+                    claim_id, _, _ = self._assert_claim_tx(
+                        connection,
+                        str(item["subject"]),
+                        str(item["question"]),
+                        item["value"],
+                        str(item["valid_from"]),
+                        list(item["evidence_ids"]),
+                        actor,
+                        confidence=str(item.get("confidence", "high")),
+                        temporal_basis=str(item.get("temporal_basis", "observed")),
+                    )
+                except KeyError as error:
+                    raise EpiqError(
+                        "invalid_batch_item",
+                        f"Claim batch item {index} is missing {error.args[0]}",
+                    ) from error
+                except EpiqError as error:
+                    raise EpiqError(
+                        error.code,
+                        f"Claim batch item {index}: {error.message}",
+                        error.suggestion,
+                    ) from error
+                claim_ids.append(claim_id)
+        return claim_ids
+
+    def propose_claim(
+        self,
+        subject: str,
+        question: str,
+        value: Any,
+        valid_from: str,
+        evidence_ids: list[str],
+        actor: str,
+        confidence: str = "medium",
+        temporal_basis: str = "observed",
+        rationale: str = "",
+    ) -> str:
+        """Stage a fully validated claim outside current projections for later review."""
+        with self.transaction() as connection:
+            entity, q, normalized_value, evidence = self._validate_claim_candidate(
+                connection,
+                subject,
+                question,
+                value,
+                evidence_ids,
+                confidence,
+                temporal_basis,
+            )
+            proposal_id = _id("prp")
+            seq, _, _ = self._event(
+                connection,
+                "claim.propose",
+                actor,
+                {
+                    "proposal_id": proposal_id,
+                    "subject_id": str(entity["entity_id"]),
+                    "question_id": str(q["question_id"]),
+                    "value": normalized_value,
+                    "valid_from": valid_from,
+                    "evidence_ids": evidence,
+                    "confidence": confidence,
+                    "temporal_basis": temporal_basis,
+                    "rationale": rationale.strip(),
+                },
+            )
+            connection.execute(
+                """INSERT INTO claim_proposals
+                   VALUES(?,?,?,?,?,?,?,?,?,'pending',NULL,NULL,?,NULL)""",
+                (
+                    proposal_id,
+                    entity["entity_id"],
+                    q["question_id"],
+                    _json(normalized_value),
+                    valid_from,
+                    _json(evidence),
+                    confidence,
+                    temporal_basis,
+                    rationale.strip(),
+                    seq,
+                ),
+            )
+        return proposal_id
+
+    def claim_proposals(self, status: str | None = "pending") -> list[dict[str, Any]]:
+        """Return the durable claim review queue."""
+        if status not in {None, "pending", "approved", "rejected"}:
+            raise EpiqError("invalid_proposal_status", f"Unknown proposal status: {status}")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT p.*,e.name entity_name,q.name question_name
+                   FROM claim_proposals p
+                   JOIN entities e ON e.entity_id=p.subject_id
+                   JOIN questions q ON q.question_id=p.question_id
+                   WHERE (? IS NULL OR p.status=?) ORDER BY p.created_seq""",
+                (status, status),
+            ).fetchall()
+        return [
+            {
+                "proposal_id": str(row["proposal_id"]),
+                "subject_id": str(row["subject_id"]),
+                "entity_name": str(row["entity_name"]),
+                "question_id": str(row["question_id"]),
+                "question_name": str(row["question_name"]),
+                "value": json.loads(str(row["value_json"])),
+                "valid_from": str(row["valid_from"]),
+                "evidence_ids": json.loads(str(row["evidence_ids_json"])),
+                "confidence": str(row["confidence"]),
+                "temporal_basis": str(row["temporal_basis"]),
+                "rationale": str(row["rationale"]),
+                "status": str(row["status"]),
+                "resulting_claim_id": row["resulting_claim_id"],
+                "review_reason": row["review_reason"],
+            }
+            for row in rows
+        ]
+
+    def review_claim_proposals(
+        self, proposal_ids: list[str], decision: str, reason: str, actor: str
+    ) -> list[dict[str, Any]]:
+        """Approve or reject a review selection in one all-or-nothing transaction."""
+        identifiers = list(dict.fromkeys(proposal_ids))
+        if not identifiers:
+            raise EpiqError("empty_review", "Select at least one claim proposal")
+        if decision not in {"approved", "rejected"}:
+            raise EpiqError("invalid_review_decision", f"Unknown decision: {decision}")
+        if not reason.strip():
+            raise EpiqError("reason_required", "A review reason is required")
+        results: list[dict[str, Any]] = []
+        with self.transaction() as connection:
+            placeholders = ",".join("?" for _ in identifiers)
+            rows = connection.execute(
+                f"SELECT * FROM claim_proposals WHERE proposal_id IN ({placeholders})",
+                identifiers,
+            ).fetchall()
+            by_id = {str(row["proposal_id"]): row for row in rows}
+            missing = [identifier for identifier in identifiers if identifier not in by_id]
+            if missing:
+                raise EpiqError("proposal_not_found", f"Claim proposal not found: {missing[0]}")
+            inactive = [
+                identifier for identifier in identifiers if by_id[identifier]["status"] != "pending"
+            ]
+            if inactive:
+                raise EpiqError(
+                    "proposal_already_reviewed", f"Proposal already reviewed: {inactive[0]}"
+                )
+            for proposal_id in identifiers:
+                proposal = by_id[proposal_id]
+                claim_id = None
+                if decision == "approved":
+                    claim_id, _, _ = self._assert_claim_tx(
+                        connection,
+                        str(proposal["subject_id"]),
+                        str(proposal["question_id"]),
+                        json.loads(str(proposal["value_json"])),
+                        str(proposal["valid_from"]),
+                        json.loads(str(proposal["evidence_ids_json"])),
+                        actor,
+                        confidence=str(proposal["confidence"]),
+                        temporal_basis=str(proposal["temporal_basis"]),
+                    )
+                seq, _, _ = self._event(
+                    connection,
+                    f"claim.proposal_{decision}",
+                    actor,
+                    {
+                        "proposal_id": proposal_id,
+                        "claim_id": claim_id,
+                        "reason": reason.strip(),
+                    },
+                )
+                connection.execute(
+                    """UPDATE claim_proposals SET status=?,resulting_claim_id=?,
+                       review_reason=?,reviewed_seq=? WHERE proposal_id=?""",
+                    (decision, claim_id, reason.strip(), seq, proposal_id),
+                )
+                results.append(
+                    {"proposal_id": proposal_id, "status": decision, "claim_id": claim_id}
+                )
+        return results
+
+    def _validate_claim_candidate(
+        self,
+        connection: sqlite3.Connection,
+        subject: str,
+        question: str,
+        value: Any,
+        evidence_ids: list[str],
+        confidence: str,
+        temporal_basis: str,
+    ) -> tuple[sqlite3.Row, sqlite3.Row, Any, list[str]]:
+        q = self._resolve_question(connection, question)
+        entity = self._resolve_entity(connection, subject)
+        entity_visibility = connection.execute(
+            "SELECT visible FROM entity_visibility WHERE entity_id=?", (entity["entity_id"],)
+        ).fetchone()
+        if entity_visibility is not None and not bool(entity_visibility["visible"]):
+            raise EpiqError("entity_retired", f"Entity is retired: {entity['name']}")
+        question_visibility = connection.execute(
+            "SELECT visible FROM question_visibility WHERE name=?", (q["name"],)
+        ).fetchone()
+        if question_visibility is not None and not bool(question_visibility["visible"]):
+            raise EpiqError("question_retired", f"Field is retired: {q['name']}")
+        if entity["kind"] != q["subject_kind"]:
+            raise EpiqError(
+                "subject_type_mismatch",
+                f"Question {q['name']} applies to {q['subject_kind']}, not {entity['kind']}",
+            )
+        evidence = list(dict.fromkeys(evidence_ids))
+        if not evidence:
+            raise EpiqError("evidence_required", "At least one evidence ID is required")
+        placeholders = ",".join("?" for _ in evidence)
+        found = {
+            str(row["evidence_id"])
+            for row in connection.execute(
+                f"SELECT evidence_id FROM evidence WHERE evidence_id IN ({placeholders})", evidence
+            )
+        }
+        missing = [item for item in evidence if item not in found]
+        if missing:
+            raise EpiqError("evidence_not_found", f"Evidence not found: {', '.join(missing)}")
+        if confidence not in {"low", "medium", "high"}:
+            raise EpiqError("confidence_error", f"Unknown confidence: {confidence}")
+        if temporal_basis not in {"observed", "source", "unknown"}:
+            raise EpiqError("temporal_basis_error", f"Unknown temporal basis: {temporal_basis}")
+        value_type = str(q["value_type"])
+        if value_type.startswith("Ref[") and value_type.endswith("]"):
+            if not isinstance(value, str):
+                raise EpiqError(
+                    "value_type_error", f"Expected entity reference; received {value!r}"
+                )
+            target = self._resolve_entity(connection, value)
+            expected = value_type[4:-1].strip()
+            if target["kind"] != expected:
+                raise EpiqError(
+                    "reference_type_mismatch",
+                    f"Expected reference to {expected}, not {target['kind']}",
+                )
+            value = str(target["entity_id"])
+        self._check_value_type(value_type, value)
+        return entity, q, value, evidence
 
     def _assert_claim_tx(
         self,

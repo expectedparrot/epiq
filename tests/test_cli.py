@@ -148,6 +148,61 @@ def test_cli_crud_matrix_history_and_retraction(tmp_path: Path, capsys) -> None:
     assert invoke("matrix", "--kind", "Company")["rows"][0]["cells"]["status"]["state"] == "Unasked"
 
 
+def test_cli_claim_review_and_atomic_bulk_write(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "review.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Review")
+    entity = invoke("entity", "Company", "Acme")["entity_id"]
+    invoke("question", "active", "--for", "Company", "--type", "Bool")
+    evidence = invoke(
+        "evidence",
+        "--url",
+        "https://example.test/acme",
+        "--title",
+        "Acme",
+        "--retrieved-at",
+        "2026-08-17",
+        "--excerpt",
+        "Acme is active.",
+    )["evidence_id"]
+    proposal = invoke(
+        "propose-claim",
+        "--subject",
+        entity,
+        "--question",
+        "active",
+        "--value",
+        "true",
+        "--valid-from",
+        "2026-08-17",
+        "--evidence",
+        evidence,
+    )["proposal_id"]
+    assert invoke("claim-proposals")["proposals"][0]["proposal_id"] == proposal
+    invoke("review-claims", proposal, "--decision", "approved", "--reason", "Verified")
+    assert invoke("matrix", "--kind", "Company")["rows"][0]["cells"]["active"]["value"] is True
+
+    batch = tmp_path / "claims.json"
+    batch.write_text(
+        json.dumps(
+            [
+                {
+                    "subject": entity,
+                    "question": "active",
+                    "value": False,
+                    "valid_from": "2026-08-18",
+                    "evidence_ids": [evidence],
+                }
+            ]
+        )
+    )
+    assert invoke("bulk-assert", "--input", str(batch))["count"] == 1
+
+
 def test_cli_question_challenge_lifecycle(tmp_path: Path, capsys) -> None:
     database = tmp_path / "boats.sqlite"
 

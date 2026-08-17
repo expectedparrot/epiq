@@ -42,6 +42,14 @@ def _attributes(raw: str | None) -> dict[str, Any]:
     return result
 
 
+def _json_file(path: str) -> Any:
+    text = sys.stdin.read() if path == "-" else Path(path).read_text()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as error:
+        raise EpiqError("invalid_json", f"Invalid JSON input: {error}") from error
+
+
 def _database(explicit: str | None) -> tuple[Path, str]:
     """Resolve the database using CLI, environment, workspace, then conventional default."""
     if explicit:
@@ -172,6 +180,37 @@ def parser() -> argparse.ArgumentParser:
         help="Evidence ID; repeat for multiple sources",
     )
     claim.add_argument("--confidence", choices=["low", "medium", "high"], default="high")
+
+    bulk_assert = commands.add_parser(
+        "bulk-assert", help="Atomically assert a JSON array of evidence-backed claims"
+    )
+    bulk_assert.add_argument("--input", required=True, help="JSON file, or - for standard input")
+
+    propose_claim = commands.add_parser(
+        "propose-claim", help="Stage a validated claim for human review"
+    )
+    propose_claim.add_argument("--subject", required=True)
+    propose_claim.add_argument("--question", required=True)
+    propose_claim.add_argument("--value", required=True)
+    propose_claim.add_argument("--valid-from", required=True)
+    propose_claim.add_argument("--evidence", action="append", required=True)
+    propose_claim.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
+    propose_claim.add_argument(
+        "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
+    )
+    propose_claim.add_argument("--rationale", default="")
+
+    proposals = commands.add_parser("claim-proposals", help="Read the durable claim review queue")
+    proposals.add_argument(
+        "--status", choices=["pending", "approved", "rejected", "all"], default="pending"
+    )
+
+    review_proposals = commands.add_parser(
+        "review-claims", help="Atomically approve or reject claim proposals"
+    )
+    review_proposals.add_argument("proposal_id", nargs="+")
+    review_proposals.add_argument("--decision", choices=["approved", "rejected"], required=True)
+    review_proposals.add_argument("--reason", required=True)
 
     retract = commands.add_parser("retract", help="Retract a claim")
     retract.add_argument("claim_id")
@@ -525,6 +564,34 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             confidence=args.confidence,
         )
         return {"ok": True, "claim_id": claim_id}
+    if args.command == "bulk-assert":
+        items = _json_file(args.input)
+        if not isinstance(items, list):
+            raise EpiqError("invalid_batch", "Bulk assertion input must be a JSON array")
+        claim_ids = store.assert_claims_bulk(items, args.actor)
+        return {"ok": True, "count": len(claim_ids), "claim_ids": claim_ids}
+    if args.command == "propose-claim":
+        proposal_id = store.propose_claim(
+            args.subject,
+            args.question,
+            _value(args.value),
+            args.valid_from,
+            args.evidence,
+            args.actor,
+            args.confidence,
+            args.temporal_basis,
+            args.rationale,
+        )
+        return {"ok": True, "proposal_id": proposal_id, "status": "pending"}
+    if args.command == "claim-proposals":
+        status = None if args.status == "all" else args.status
+        items = store.claim_proposals(status)
+        return {"count": len(items), "proposals": items}
+    if args.command == "review-claims":
+        results = store.review_claim_proposals(
+            args.proposal_id, args.decision, args.reason, args.actor
+        )
+        return {"ok": True, "count": len(results), "results": results}
     if args.command == "retract":
         store.close_claim(args.claim_id, "retracted", args.reason, args.actor)
         return {"ok": True, "claim_id": args.claim_id, "status": "retracted"}

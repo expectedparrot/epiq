@@ -198,7 +198,7 @@ def test_health_doctor_and_online_backup_endpoints(tmp_path: Path) -> None:
 
     health = client.get("/api/health").json()
     assert health["project"] == "ready"
-    assert health["schema_version"] == "7"
+    assert health["schema_version"] == "8"
     assert client.get("/api/doctor").json()["ok"] is True
 
     backup = client.get("/api/export/project.sqlite")
@@ -856,3 +856,54 @@ def test_column_research_fans_out_into_independently_completing_cells(
     for job in jobs:
         assert wait_for_job(client, job["job_id"])["status"] == "completed"
     assert len(calls) == 3
+
+
+def test_claim_proposal_review_and_bulk_api(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path / "claims.sqlite", tmp_path / "missing"))
+    client.post("/api/project", json={"name": "Claims"})
+    entity = client.post("/api/entities", json={"kind": "Company", "name": "Acme"}).json()[
+        "entity_id"
+    ]
+    client.post(
+        "/api/questions",
+        json={"name": "active", "subject_kind": "Company", "value_type": "Bool"},
+    )
+    evidence = client.post(
+        "/api/evidence",
+        json={
+            "url": "https://example.test/acme",
+            "title": "Acme",
+            "retrieved_at": "2026-08-17",
+            "excerpt": "Acme is active.",
+        },
+    ).json()["evidence_id"]
+    claim = {
+        "subject": entity,
+        "question": "active",
+        "value": True,
+        "valid_from": "2026-08-17",
+        "evidence_ids": [evidence],
+    }
+    proposed = client.post("/api/claim-proposals", json={**claim, "rationale": "Official source"})
+    assert proposed.status_code == 201
+    proposal_id = proposed.json()["proposal_id"]
+    assert (
+        client.get("/api/matrix/Company").json()["rows"][0]["cells"]["active"]["state"] == "Unasked"
+    )
+    reviewed = client.post(
+        "/api/claim-proposals/review",
+        json={
+            "proposal_ids": [proposal_id],
+            "decision": "approved",
+            "reason": "Verified",
+        },
+    )
+    assert reviewed.status_code == 200
+    assert reviewed.json()["results"][0]["claim_id"]
+
+    bulk = client.post(
+        "/api/claims/bulk",
+        json={"claims": [{**claim, "value": False, "valid_from": "2026-08-18"}]},
+    )
+    assert bulk.status_code == 201
+    assert bulk.json()["count"] == 1
