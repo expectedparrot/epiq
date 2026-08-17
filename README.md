@@ -1033,7 +1033,9 @@ The application currently supports:
 - launching cell, row, column, and whole-table research with incremental progress indicators;
 - cancelling queued or running research without accepting late results, and retrying failed jobs;
 - finding independent supporting evidence without returning sources already attached to a claim;
-- using AI to propose additional entity rows and typed fields, with checkbox-based human approval;
+- describing a desired entity set in natural language (for example, “US Senators from the
+  Northeast”), then reviewing sourced candidates as checkboxes before adding rows;
+- using AI to propose additional typed fields, with checkbox-based human approval;
 - assigning stable, slow-changing, or dynamic temporal policies and surfacing stale evidence;
 - reviewing contradictions, stale evidence, and invalidated calculations from a unified queue;
 - defining calculated fields, materializing them by field, and inspecting typed derivation lineage;

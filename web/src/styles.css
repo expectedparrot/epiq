@@ -1492,11 +1492,34 @@ button:hover {
   line-height: 1.4;
 }
 .suggestion-card {
-  border-top: 1px solid var(--line);
-  margin-top: 13px;
-  padding-top: 13px;
+  align-items: flex-start;
+  background: #fbfaf6;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: pointer;
+  display: flex;
+  gap: 9px;
+  padding: 11px;
 }
-.suggestion-card > div:first-child {
+.suggestion-card:has(input:checked) {
+  background: #edf7f1;
+  border-color: #8ebca5;
+}
+.suggestion-card.accepted,
+.suggestion-card.dismissed {
+  cursor: default;
+  opacity: 0.72;
+}
+.suggestion-card > input {
+  accent-color: var(--green);
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+.suggestion-card > span {
+  min-width: 0;
+  width: 100%;
+}
+.suggestion-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1518,12 +1541,63 @@ button:hover {
   text-decoration: none;
 }
 .suggestion-state {
+  font-style: normal;
   font: 8px DM Mono;
   text-transform: uppercase;
   padding: 3px 5px;
   border-radius: 4px;
   background: #f0f1ed;
   color: #747a73;
+}
+.entity-suggestion-review {
+  display: grid;
+  gap: 8px;
+  margin-top: 13px;
+}
+.entity-query-summary {
+  margin: 8px 0 3px;
+  border-left: 2px solid #9fc6b2;
+  padding-left: 8px;
+  color: #526058;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.dismiss-suggestion {
+  border: 0;
+  background: transparent;
+  color: #8c6359;
+  font-size: 9px;
+  margin-top: 6px;
+  padding: 3px 0;
+}
+.add-selected-entities {
+  width: 100%;
+}
+.entity-query-examples {
+  margin: -4px 0 16px;
+}
+.entity-query-examples small {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+.entity-query-examples > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.entity-query-examples button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f8f8f3;
+  color: #536158;
+  font-size: 9px;
+  padding: 6px 9px;
+}
+.ai-populate-button {
+  border-color: #9fc6b2 !important;
+  background: #edf7f1 !important;
+  color: #1e654b !important;
 }
 .suggestion-state.accepted {
   background: #e7f3ec;

@@ -903,6 +903,12 @@ export default function App() {
               <button onClick={() => setDialog("suggestFields")}>
                 ✦ Suggest fields
               </button>
+              <button
+                className="ai-populate-button"
+                onClick={() => setDialog("suggestEntities")}
+              >
+                ✦ Find rows with AI
+              </button>
               <button className="primary" onClick={() => setDialog("entity")}>
                 ＋ Add {kind.toLowerCase()}
               </button>
@@ -1062,7 +1068,7 @@ export default function App() {
                       title={`Find more ${kind.toLowerCase()} rows`}
                       onClick={() => setDialog("suggestEntities")}
                     >
-                      ✦ Suggest more {kind.toLowerCase()}s
+                      ✦ Find more {kind.toLowerCase()}s
                     </button>
                   </th>
                   <th className="row-action-column action-row-label">
@@ -2604,7 +2610,7 @@ function ActivityPanel({
             </div>
             <b>
               {job.mode === "suggest_entities"
-                ? `Suggest more ${job.entity_kind.toLowerCase()} rows`
+                ? `Find ${job.entity_kind.toLowerCase()} rows`
                 : job.mode === "suggest_fields"
                   ? `Suggest fields for ${job.entity_kind}`
                   : job.mode === "retry_not_found"
@@ -2613,6 +2619,11 @@ function ActivityPanel({
                       ? "Get more evidence"
                       : "Fill missing values"}
             </b>
+            {job.mode === "suggest_entities" && job.instructions && (
+              <blockquote className="entity-query-summary">
+                “{job.instructions}”
+              </blockquote>
+            )}
             <div className="job-progress">
               <i
                 style={{
@@ -2642,51 +2653,9 @@ function ActivityPanel({
                 Retry
               </button>
             )}
-            {job.suggestions?.map((suggestion) => (
-              <div className="suggestion-card" key={suggestion.suggestion_id}>
-                <div>
-                  <b>{suggestion.name}</b>
-                  <span className={`suggestion-state ${suggestion.status}`}>
-                    {suggestion.status}
-                  </span>
-                </div>
-                <p>{suggestion.rationale}</p>
-                <a
-                  href={suggestion.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  ↗ {suggestion.source_title}
-                </a>
-                {suggestion.status === "pending" && (
-                  <div className="suggestion-actions">
-                    <button
-                      className="primary"
-                      onClick={() =>
-                        void onSuggestion(
-                          job.job_id,
-                          suggestion.suggestion_id,
-                          "accept",
-                        )
-                      }
-                    >
-                      Add row
-                    </button>
-                    <button
-                      onClick={() =>
-                        void onSuggestion(
-                          job.job_id,
-                          suggestion.suggestion_id,
-                          "dismiss",
-                        )
-                      }
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+            {job.suggestions && job.suggestions.length > 0 && (
+              <EntitySuggestionReview job={job} onUpdate={onSuggestion} />
+            )}
             {job.field_suggestions && job.field_suggestions.length > 0 && (
               <FieldSuggestionReview job={job} onAccept={onAcceptFields} />
             )}
@@ -2694,6 +2663,105 @@ function ActivityPanel({
         ))}
       </div>
     </aside>
+  );
+}
+
+function EntitySuggestionReview({
+  job,
+  onUpdate,
+}: {
+  job: ResearchJob;
+  onUpdate: (
+    jobId: string,
+    suggestionId: string,
+    action: "accept" | "dismiss",
+  ) => Promise<void>;
+}) {
+  const pending = job.suggestions?.filter((item) => item.status === "pending") ?? [];
+  const [selected, setSelected] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setSelected((current) => {
+      const valid = new Set(pending.map((item) => item.suggestion_id));
+      const retained = current.filter((item) => valid.has(item));
+      if (retained.length || current.length) return retained;
+      return [...valid];
+    });
+  }, [job.suggestions]);
+
+  const toggle = (suggestionId: string) =>
+    setSelected((current) =>
+      current.includes(suggestionId)
+        ? current.filter((item) => item !== suggestionId)
+        : [...current, suggestionId],
+    );
+
+  const acceptSelected = async () => {
+    setBusy(true);
+    try {
+      for (const suggestionId of selected) {
+        await onUpdate(job.job_id, suggestionId, "accept");
+      }
+      setSelected([]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="entity-suggestion-review">
+      {job.suggestions?.map((suggestion) => (
+        <label
+          className={`suggestion-card ${suggestion.status}`}
+          key={suggestion.suggestion_id}
+        >
+          <input
+            type="checkbox"
+            checked={
+              suggestion.status === "accepted" ||
+              selected.includes(suggestion.suggestion_id)
+            }
+            disabled={suggestion.status !== "pending"}
+            onChange={() => toggle(suggestion.suggestion_id)}
+          />
+          <span>
+            <span className="suggestion-title">
+              <b>{suggestion.name}</b>
+              <em className={`suggestion-state ${suggestion.status}`}>
+                {suggestion.status}
+              </em>
+            </span>
+            <p>{suggestion.rationale}</p>
+            <a href={suggestion.source_url} target="_blank" rel="noreferrer">
+              ↗ {suggestion.source_title}
+            </a>
+            {suggestion.status === "pending" && (
+              <button
+                className="dismiss-suggestion"
+                onClick={(event) => {
+                  event.preventDefault();
+                  void onUpdate(job.job_id, suggestion.suggestion_id, "dismiss");
+                }}
+              >
+                Dismiss
+              </button>
+            )}
+          </span>
+        </label>
+      ))}
+      {pending.length > 0 && (
+        <button
+          className="primary add-selected-entities"
+          disabled={!selected.length || busy}
+          onClick={() => void acceptSelected()}
+        >
+          {busy
+            ? "Adding rows…"
+            : `Add ${selected.length} selected row${selected.length === 1 ? "" : "s"}`}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -2777,28 +2845,44 @@ function SuggestEntitiesDialog({
 }) {
   const [count, setCount] = useState(5);
   const [instructions, setInstructions] = useState("");
+  const examples = [
+    "US Senators from the Northeast",
+    "Papers by David Autor",
+    `Leading ${kind.toLowerCase()}s in this market`,
+  ];
   return (
     <Modal
-      title={`Suggest more ${kind.toLowerCase()} rows`}
-      subtitle="An agent will search for candidates. Nothing is added until you approve it."
+      title="Find rows with AI"
+      subtitle={`Describe which ${kind.toLowerCase()} entities belong in this table. An agent will research candidates; you approve them before anything is added.`}
       onClose={onClose}
     >
       <label>
-        Number of suggestions
+        Describe the rows you want
+        <textarea
+          autoFocus
+          value={instructions}
+          onChange={(event) => setInstructions(event.target.value)}
+          placeholder={`For example: US Senators from the Northeast`}
+        />
+      </label>
+      <div className="entity-query-examples">
+        <small>Try an example</small>
+        <div>
+          {examples.map((example) => (
+            <button key={example} onClick={() => setInstructions(example)}>
+              {example}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label>
+        Maximum candidates
         <input
           type="number"
           min={1}
           max={20}
           value={count}
           onChange={(event) => setCount(Number(event.target.value))}
-        />
-      </label>
-      <label>
-        What kinds should it look for? <span>Optional</span>
-        <textarea
-          value={instructions}
-          onChange={(event) => setInstructions(event.target.value)}
-          placeholder={`For example: early-stage technology ${kind.toLowerCase()}s in the United States, with a mix of backgrounds.`}
         />
       </label>
       <div className="research-disclosure">
@@ -2815,10 +2899,10 @@ function SuggestEntitiesDialog({
         </button>
         <button
           className="primary"
-          disabled={count < 1 || count > 20}
+          disabled={count < 1 || count > 20 || !instructions.trim()}
           onClick={() => void onLaunch(count, instructions)}
         >
-          Find candidates →
+          Research candidates →
         </button>
       </div>
     </Modal>

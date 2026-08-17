@@ -101,6 +101,7 @@ export interface ResearchJob {
   completed: number;
   target_entity_ids: string[];
   requested_entity_ids?: string[] | null;
+  instructions?: string;
   scope?: "cell" | "row" | "column" | "table";
   job_type?: "research" | "entity_suggestions" | "field_suggestions";
   mode:
