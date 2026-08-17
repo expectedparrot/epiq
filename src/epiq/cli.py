@@ -601,6 +601,27 @@ def parser() -> argparse.ArgumentParser:
     derive.add_argument("--weights", help="Optional JSON array of weights summing to 1")
     derive.add_argument("--valid-from", required=True)
     derive.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
+    derive_claim = commands.add_parser(
+        "derive", help="Persist a computed claim with input-claim lineage"
+    )
+    derive_claim.add_argument("--subject", required=True)
+    derive_claim.add_argument("--question", required=True)
+    derive_claim.add_argument(
+        "--operation",
+        choices=["sum", "avg", "min", "max", "count", "weighted_avg", "linear"],
+        required=True,
+    )
+    derive_claim.add_argument("--input-claim", action="append")
+    derive_claim.add_argument(
+        "--input-cell",
+        action="append",
+        nargs=2,
+        metavar=("SUBJECT", "QUESTION"),
+        help="Resolve active claim(s) from a cell; repeat as needed",
+    )
+    derive_claim.add_argument("--parameters", default="{}", help="JSON operation parameters")
+    derive_claim.add_argument("--valid-from", required=True)
+    derive_claim.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
     return root
 
 
@@ -1213,6 +1234,31 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             args.confidence,
         )
         return {"ok": True, "claim_id": claim_id, "input_claim_ids": input_claims}
+    if args.command == "derive":
+        input_claims = [
+            claim_id.strip()
+            for group in (args.input_claim or [])
+            for claim_id in group.split(",")
+            if claim_id.strip()
+        ]
+        for subject, question in args.input_cell or []:
+            input_claims.extend(store.active_claim_ids(subject, question))
+        claim_id = store.derive_claim(
+            args.subject,
+            args.question,
+            args.operation,
+            input_claims,
+            args.valid_from,
+            args.actor,
+            _attributes(args.parameters),
+            args.confidence,
+        )
+        return {
+            "ok": True,
+            "claim_id": claim_id,
+            "operation": args.operation,
+            "input_claim_ids": input_claims,
+        }
     raise AssertionError(args.command)
 
 

@@ -32,6 +32,22 @@ uv run epiq --db /tmp/epiq-forecasting.sqlite --format table aggregate \
 | Alice | 0.425 | 2 |
 | Bob | 0.4 | 1 |
 
+Unlike `aggregate`, `derive` writes a new claim and preserves its formula and input claims:
+
+```bash
+uv run epiq --db /tmp/epiq-forecasting.sqlite --actor agent:ensemble derive \
+  --subject "Rain in Boston on August 20" --question ensemble_probability \
+  --operation avg --valid-from 2026-08-18 \
+  --input-cell "Alice forecast 2026-08-17" probability \
+  --input-cell "Alice forecast 2026-08-18" probability \
+  --input-cell "Bob forecast 2026-08-17" probability
+
+uv run epiq --db /tmp/epiq-forecasting.sqlite dossier "Rain in Boston on August 20"
+```
+
+The resulting probability is approximately `0.4167`. Its dossier lineage records operation `avg`,
+all three input claim IDs, and all three underlying evidence records.
+
 ## Product gaps surfaced
 
 - Forecast submissions must still be promoted to entities; Epiq has no first-class observation-series type.
@@ -42,5 +58,10 @@ uv run epiq --db /tmp/epiq-forecasting.sqlite --format table aggregate \
 <!-- epiq-example -->
 ```bash
 examples/cli/forecasting-tournament/build.sh "$EPIQ_EXAMPLE_DB"
+epiq --db "$EPIQ_EXAMPLE_DB" derive --subject "Rain in Boston on August 20" \
+  --question ensemble_probability --operation avg --valid-from 2026-08-18 \
+  --input-cell "Alice forecast 2026-08-17" probability \
+  --input-cell "Alice forecast 2026-08-18" probability \
+  --input-cell "Bob forecast 2026-08-17" probability
 epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Forecast --where 'forecaster=Alice'
 ```

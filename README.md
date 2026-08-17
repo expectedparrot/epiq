@@ -1161,6 +1161,23 @@ epiq aggregate --kind PriceQuote --question price_usd --op avg --group-by region
 epiq --format table aggregate --kind Forecast --question probability --op avg --group-by forecaster
 ```
 
+`aggregate` is a read-only report. Use `derive` when the result should become a typed claim with
+durable formula, input-claim, and inherited evidence lineage:
+
+```bash
+epiq --actor agent:ensemble derive \
+  --subject "Rain tomorrow" --question ensemble_probability \
+  --operation weighted_avg --parameters '{"weights":[1,2,1]}' \
+  --valid-from 2026-08-18 \
+  --input-cell "Alice forecast" probability \
+  --input-cell "Bob forecast" probability \
+  --input-cell "Carol forecast" probability
+```
+
+Operations are `sum`, `avg`, `min`, `max`, `count`, `weighted_avg`, and `linear`. `linear` accepts
+`{"scale":...,"offset":...}` for conversions such as annual to monthly price. Inputs may also be
+provided directly by repeating `--input-claim`.
+
 For scripts, suppress successful output, select one JSON path, or request collected IDs:
 
 ```bash

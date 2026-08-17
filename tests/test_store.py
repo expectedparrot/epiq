@@ -467,6 +467,38 @@ def test_compound_entity_identity_is_idempotent(store: Store) -> None:
     assert json.loads(row["identity_json"]) == identity
 
 
+def test_general_derivation_persists_formula_inputs_and_evidence(store: Store) -> None:
+    event = store.add_entity("Event", "Rain", {}, "test")
+    store.add_question("forecast", "Event", "Probability", {"cardinality": "many"}, "test")
+    store.add_question("ensemble", "Event", "Probability", {}, "test")
+    inputs = []
+    for index, value in enumerate((0.3, 0.5)):
+        _, evidence = store.add_evidence(
+            f"https://example.test/{index}", "Forecast", "2026-08-17", str(value), "test"
+        )
+        inputs.append(
+            store.assert_claim(event, "forecast", value, "2026-08-17", evidence, "test")
+        )
+    derived = store.derive_claim(
+        event,
+        "ensemble",
+        "weighted_avg",
+        inputs,
+        "2026-08-17",
+        "agent:ensemble",
+        {"weights": [1, 3]},
+    )
+    cell = store.matrix("Event")["rows"][0]["cells"]["ensemble"]
+    assert cell["value"] == pytest.approx(0.45)
+    derivation = cell["lineage"][0]["derivation"]
+    assert derivation == {
+        "operation": "weighted_avg",
+        "parameters": {"weights": [1, 3]},
+        "input_claim_ids": inputs,
+    }
+    assert derived == cell["lineage"][0]["claim_id"]
+
+
 def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) -> None:
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE evidence_assessments")

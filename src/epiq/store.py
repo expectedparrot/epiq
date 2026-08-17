@@ -2384,6 +2384,136 @@ class Store:
             )
             return claim_id
 
+    def derive_claim(
+        self,
+        subject: str,
+        question: str,
+        operation: str,
+        input_claim_ids: list[str],
+        valid_from: str,
+        actor: str,
+        parameters: dict[str, Any] | None = None,
+        confidence: str = "medium",
+    ) -> str:
+        """Compute and persist a typed claim with complete input-claim lineage."""
+        allowed = {"sum", "avg", "min", "max", "count", "weighted_avg", "linear"}
+        if operation not in allowed:
+            raise EpiqError("invalid_derivation", f"Unknown derivation operation: {operation}")
+        inputs = list(dict.fromkeys(input_claim_ids))
+        if not inputs:
+            raise EpiqError("input_claims_required", "At least one input claim is required")
+        params = dict(parameters or {})
+        with self.transaction() as connection:
+            values: list[Any] = []
+            evidence_ids: list[str] = []
+            for claim_id in inputs:
+                claim = connection.execute(
+                    "SELECT * FROM claims WHERE claim_id=? AND status='asserted' AND tx_to IS NULL",
+                    (claim_id,),
+                ).fetchone()
+                if not claim:
+                    raise EpiqError("claim_not_found", f"Active input claim not found: {claim_id}")
+                values.append(json.loads(str(claim["value_json"])))
+                evidence_ids.extend(
+                    str(row["evidence_id"])
+                    for row in connection.execute(
+                        "SELECT evidence_id FROM claim_evidence WHERE claim_id=? ORDER BY ordinal",
+                        (claim_id,),
+                    )
+                )
+            if operation == "count":
+                result: Any = len(values)
+            else:
+                numeric = all(
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    for value in values
+                )
+                if not numeric:
+                    raise EpiqError(
+                        "non_numeric_derivation", f"{operation} requires numeric claims"
+                    )
+                if operation == "sum":
+                    result = sum(values)
+                elif operation == "avg":
+                    result = sum(values) / len(values)
+                elif operation == "min":
+                    result = min(values)
+                elif operation == "max":
+                    result = max(values)
+                elif operation == "weighted_avg":
+                    weights = params.get("weights")
+                    if not isinstance(weights, list) or len(weights) != len(values):
+                        raise EpiqError(
+                            "invalid_derivation_parameters",
+                            "weighted_avg requires one weight per input claim",
+                        )
+                    if not all(
+                        isinstance(weight, (int, float))
+                        and not isinstance(weight, bool)
+                        and math.isfinite(weight)
+                        and weight >= 0
+                        for weight in weights
+                    ):
+                        raise EpiqError("invalid_derivation_parameters", "Weights must be finite")
+                    total_weight = sum(weights)
+                    if total_weight <= 0:
+                        raise EpiqError("invalid_derivation_parameters", "Weights must sum above 0")
+                    weighted_sum = sum(
+                        value * weight for value, weight in zip(values, weights, strict=True)
+                    )
+                    result = weighted_sum / total_weight
+                else:
+                    if len(values) != 1:
+                        raise EpiqError(
+                            "invalid_derivation_parameters", "linear requires one input"
+                        )
+                    scale, offset = params.get("scale", 1), params.get("offset", 0)
+                    if not all(isinstance(item, (int, float)) for item in (scale, offset)):
+                        raise EpiqError(
+                            "invalid_derivation_parameters", "scale and offset must be numeric"
+                        )
+                    result = values[0] * scale + offset
+            claim_id, seq, _ = self._assert_claim_tx(
+                connection,
+                subject,
+                question,
+                result,
+                valid_from,
+                list(dict.fromkeys(evidence_ids)),
+                actor,
+                confidence=confidence,
+                event_type="claim.derive",
+                extra_payload={"operation": operation, "input_claim_ids": inputs},
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO derivations VALUES(?,?,?,?)",
+                (claim_id, operation, _json(params), seq),
+            )
+            connection.executemany(
+                "INSERT OR IGNORE INTO claim_inputs VALUES(?,?,?,?)",
+                [(claim_id, input_id, ordinal, seq) for ordinal, input_id in enumerate(inputs)],
+            )
+            return claim_id
+
+    def active_claim_ids(self, subject: str, question: str) -> list[str]:
+        """Resolve current claim IDs for ergonomic derivation inputs."""
+        with self.connect() as connection:
+            entity = self._resolve_entity(connection, subject)
+            field = self._resolve_question(connection, question)
+            rows = connection.execute(
+                """SELECT claim_id FROM claims
+                   WHERE subject_id=? AND question_id=? AND status='asserted' AND tx_to IS NULL
+                   ORDER BY created_seq""",
+                (entity["entity_id"], field["question_id"]),
+            ).fetchall()
+        if not rows:
+            raise EpiqError(
+                "claim_not_found", f"No active claim for {subject} / {question}"
+            )
+        return [str(row["claim_id"]) for row in rows]
+
     @staticmethod
     def _check_value_type(value_type: str, value: Any) -> None:
         if value_type == "Probability":

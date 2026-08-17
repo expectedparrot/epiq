@@ -13,6 +13,7 @@
     {"name":"forecaster","subject_kind":"Forecast","value_type":"Ref[Forecaster]","definition":{"label":"Forecaster"}},
     {"name":"forecast_event","subject_kind":"Forecast","value_type":"Ref[ForecastEvent]","definition":{"label":"Event"}},
     {"name":"probability","subject_kind":"Forecast","value_type":"Probability","definition":{"label":"Probability"}},
-    {"name":"issued_at","subject_kind":"Forecast","value_type":"DateTime","definition":{"label":"Issued at"}}
+    {"name":"issued_at","subject_kind":"Forecast","value_type":"DateTime","definition":{"label":"Issued at"}},
+    {"name":"ensemble_probability","subject_kind":"ForecastEvent","value_type":"Probability","definition":{"label":"Ensemble probability"}}
   ]
 }
