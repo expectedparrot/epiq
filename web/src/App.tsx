@@ -100,6 +100,30 @@ const spreadsheetColumnIndex = (label: string) =>
     (total, character) => total * 26 + character.charCodeAt(0) - 64,
     0,
   ) - 1;
+const parseDivisionFormula = (expression: string, questions: Question[]) => {
+  const normalized = expression.trim();
+  const match = normalized.match(
+    /^=\s*([A-Z]+)(\d+)\s*\/\s*([A-Z]+)(\d+)\s*$/i,
+  );
+  if (!match)
+    throw new Error("Use a row-relative division formula such as =B1/C1.");
+  if (match[2] !== match[4])
+    throw new Error("Both formula references must use the same row.");
+  const inputIndexes = [
+    spreadsheetColumnIndex(match[1]) - 1,
+    spreadsheetColumnIndex(match[3]) - 1,
+  ];
+  const inputs = inputIndexes.map((index) => questions[index]?.name);
+  if (inputs.some((input) => !input))
+    throw new Error(
+      "Formula references must point to visible research fields, not the entity column.",
+    );
+  return {
+    operation: "divide",
+    inputs: inputs as string[],
+    expression: normalized.toUpperCase(),
+  };
+};
 const display = (value: unknown) => {
   if (value === null || value === undefined) return "—";
   if (typeof value === "object") return JSON.stringify(value);
@@ -2142,6 +2166,7 @@ export default function App() {
       {dialog === "editQuestion" && editQuestion && (
         <EditQuestionDialog
           question={editQuestion}
+          questions={displayedQuestions}
           onClose={() => {
             setDialog(null);
             setEditQuestion(null);
@@ -2664,33 +2689,14 @@ function QuestionDialog({
       }
       let formula = null;
       if (computed && formulaExpression.trim()) {
-        const match = formulaExpression
-          .trim()
-          .match(/^=\s*([A-Z]+)(\d+)\s*\/\s*([A-Z]+)(\d+)\s*$/i);
-        if (!match) {
-          setError("Use a row-relative division formula such as =B1/C1.");
-          return;
-        }
-        if (match[2] !== match[4]) {
-          setError("Both formula references must use the same row.");
-          return;
-        }
-        const inputIndexes = [
-          spreadsheetColumnIndex(match[1]) - 1,
-          spreadsheetColumnIndex(match[3]) - 1,
-        ];
-        const inputs = inputIndexes.map((index) => questions[index]?.name);
-        if (inputs.some((input) => !input)) {
+        try {
+          formula = parseDivisionFormula(formulaExpression, questions);
+        } catch (caught) {
           setError(
-            "Formula references must point to visible research fields, not the entity column.",
+            caught instanceof Error ? caught.message : "Invalid formula",
           );
           return;
         }
-        formula = {
-          operation: "divide",
-          inputs,
-          expression: formulaExpression.trim().toUpperCase(),
-        };
       } else if (computed) {
         if (formulaInputs.length === 0) {
           setError(
@@ -2949,13 +2955,17 @@ type RevisionPreview = {
 
 function EditQuestionDialog({
   question,
+  questions,
   onClose,
   onSaved,
 }: {
   question: Question;
+  questions: Question[];
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const originalFormula = question.definition.formula as
+    { operation?: string; inputs?: string[]; expression?: string } | undefined;
   const isEnum = question.value_type.startsWith("Enum[");
   const [label, setLabel] = useState(
     String(question.definition.label ?? question.name),
@@ -2977,6 +2987,26 @@ function EditQuestionDialog({
   );
   const [guidance, setGuidance] = useState(
     String(question.definition.research_guidance ?? ""),
+  );
+  const [computed, setComputed] = useState(Boolean(originalFormula));
+  const [formulaOperation, setFormulaOperation] = useState(
+    String(originalFormula?.operation ?? "sum"),
+  );
+  const [formulaInputs, setFormulaInputs] = useState<string[]>(
+    Array.isArray(originalFormula?.inputs) ? originalFormula.inputs : [],
+  );
+  const inferredExpression =
+    originalFormula?.operation === "divide" &&
+    originalFormula.inputs?.length === 2
+      ? `=${originalFormula.inputs
+          .map((input) => {
+            const index = questions.findIndex((item) => item.name === input);
+            return index >= 0 ? `${spreadsheetColumn(index + 1)}1` : "";
+          })
+          .join("/")}`
+      : "";
+  const [formulaExpression, setFormulaExpression] = useState(
+    String(originalFormula?.expression ?? inferredExpression),
   );
   const [reason, setReason] = useState("");
   const [preview, setPreview] = useState<RevisionPreview | null>(null);
@@ -3006,6 +3036,20 @@ function EditQuestionDialog({
           ),
         ].join(",")}]`
       : type;
+  let revisedFormula: Record<string, unknown> | undefined;
+  let formulaError = "";
+  if (computed && formulaExpression.trim()) {
+    try {
+      revisedFormula = parseDivisionFormula(formulaExpression, questions);
+    } catch (caught) {
+      formulaError =
+        caught instanceof Error ? caught.message : "Invalid formula";
+    }
+  } else if (computed) {
+    revisedFormula = { operation: formulaOperation, inputs: formulaInputs };
+    if (!formulaInputs.length)
+      formulaError = "Choose at least one input field.";
+  }
   const definition = {
     ...question.definition,
     label: label.trim() || question.name,
@@ -3013,10 +3057,15 @@ function EditQuestionDialog({
     volatility,
     freshness_days: freshnessDays ? Number(freshnessDays) : null,
     research_guidance: guidance.trim(),
+    formula: revisedFormula,
   };
   const body = { value_type: valueType, definition, reason };
   const review = async (event: FormEvent) => {
     event.preventDefault();
+    if (formulaError) {
+      setError(formulaError);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -3130,6 +3179,79 @@ function EditQuestionDialog({
             onChange={(event) => setFreshnessDays(event.target.value)}
           />
         </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={computed}
+            onChange={(event) => setComputed(event.target.checked)}
+          />
+          Calculate this field from other fields
+        </label>
+        {computed && (
+          <div className="formula-builder">
+            <label className="formula-expression-field">
+              Spreadsheet formula
+              <input
+                value={formulaExpression}
+                onChange={(event) => setFormulaExpression(event.target.value)}
+                placeholder="=B1/C1"
+              />
+              <span className="field-hint">
+                Editing creates a new field version; stable field-name
+                references are stored beneath the spreadsheet notation.
+              </span>
+            </label>
+            <div className="formula-column-key">
+              <span>
+                <code>A</code> Row identity
+              </span>
+              {questions.map((candidate, index) => (
+                <span key={candidate.question_id}>
+                  <code>{spreadsheetColumn(index + 1)}</code>{" "}
+                  {String(candidate.definition.label ?? candidate.name)}
+                </span>
+              ))}
+            </div>
+            <div className="formula-or">
+              <span>or use the builder</span>
+            </div>
+            <label>
+              Operation
+              <select
+                value={formulaOperation}
+                onChange={(event) => setFormulaOperation(event.target.value)}
+              >
+                {["sum", "avg", "min", "max", "count", "divide"].map(
+                  (operation) => (
+                    <option key={operation}>{operation}</option>
+                  ),
+                )}
+              </select>
+            </label>
+            <fieldset>
+              <legend>Input fields</legend>
+              {questions
+                .filter((candidate) => candidate.name !== question.name)
+                .map((candidate) => (
+                  <label className="checkbox" key={candidate.question_id}>
+                    <input
+                      type="checkbox"
+                      checked={formulaInputs.includes(candidate.name)}
+                      onChange={(event) =>
+                        setFormulaInputs((current) =>
+                          event.target.checked
+                            ? [...current, candidate.name]
+                            : current.filter((item) => item !== candidate.name),
+                        )
+                      }
+                    />
+                    {String(candidate.definition.label ?? candidate.name)}
+                    <code>{candidate.value_type}</code>
+                  </label>
+                ))}
+            </fieldset>
+          </div>
+        )}
         <label>
           Instructions for researchers <span>Optional</span>
           <textarea
