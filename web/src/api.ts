@@ -130,7 +130,7 @@ export interface SchemaAdaptation {
   label: string;
   current_cardinality: "one";
   proposed_cardinality: "many";
-  status: "pending" | "accepted";
+  status: "pending" | "applying" | "applied" | "rejected";
   successor_question_id?: string;
 }
 

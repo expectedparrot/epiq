@@ -1747,7 +1747,160 @@ class Store:
                         error.suggestion,
                     ) from error
                 claim_ids.append(claim_id)
-        return claim_ids
+            return claim_ids
+
+    def apply_change_set(self, change_set: dict[str, Any], actor: str) -> dict[str, Any]:
+        """Apply a reviewed schema revision and its dependent writes atomically.
+
+        Change-set IDs are idempotency keys: retrying an applied set returns the
+        original result without creating another schema version or duplicate writes.
+        """
+        change_set_id = str(change_set.get("change_set_id") or "").strip()
+        if not change_set_id:
+            raise EpiqError("change_set_id_required", "A change set ID is required")
+        if change_set.get("kind") != "relationship_cardinality":
+            raise EpiqError(
+                "unsupported_change_set", f"Unsupported change set kind: {change_set.get('kind')}"
+            )
+        findings = list(change_set.get("findings") or [])
+        if not findings:
+            raise EpiqError("empty_change_set", "A change set must contain at least one finding")
+        with self.transaction() as connection:
+            existing = connection.execute(
+                """SELECT payload_json FROM events
+                   WHERE event_type='change_set.apply'
+                     AND json_extract(payload_json,'$.change_set_id')=?
+                   ORDER BY seq DESC LIMIT 1""",
+                (change_set_id,),
+            ).fetchone()
+            if existing:
+                return dict(json.loads(str(existing["payload_json"]))["result"])
+
+            predecessor = self._resolve_question(
+                connection, str(change_set["predecessor_question_id"])
+            )
+            value_type = str(predecessor["value_type"])
+            if not (value_type.startswith("Ref[") and value_type.endswith("]")):
+                raise EpiqError(
+                    "invalid_change_set_question",
+                    "Relationship cardinality changes require a Ref field",
+                )
+            target_kind = value_type[4:-1]
+            definition = json.loads(str(predecessor["definition_json"]))
+            definition["cardinality"] = "many"
+            successor, _ = self._add_question_tx(
+                connection,
+                str(predecessor["name"]),
+                str(predecessor["subject_kind"]),
+                value_type,
+                definition,
+                actor,
+            )
+            reason = str(
+                change_set.get("reason")
+                or "Bulk-approved agent finding: observed multiple related rows"
+            ).strip()
+            evolution_seq, _, _ = self._event(
+                connection,
+                "question.evolve",
+                actor,
+                {
+                    "predecessor_question_id": str(predecessor["question_id"]),
+                    "successor_question_ids": [successor],
+                    "relationship": "refines",
+                    "reason": reason,
+                    "retired_predecessor": True,
+                },
+            )
+            connection.execute(
+                "INSERT INTO question_lineage VALUES(?,?,?,?,?)",
+                (
+                    str(predecessor["question_id"]),
+                    successor,
+                    "refines",
+                    reason,
+                    evolution_seq,
+                ),
+            )
+
+            accepted = []
+            for finding in findings:
+                target_id = finding.get("target_entity_id")
+                if target_id:
+                    target = self._resolve_entity(connection, str(target_id))
+                    if str(target["kind"]) != target_kind:
+                        raise EpiqError(
+                            "reference_type_mismatch",
+                            f"Expected reference to {target_kind}, not {target['kind']}",
+                        )
+                    target_id = str(target["entity_id"])
+                else:
+                    target = self._find_entity_by_identity(
+                        connection, str(finding["target_name"]), target_kind
+                    )
+                    target_id = (
+                        str(target["entity_id"])
+                        if target
+                        else self._add_entity_tx(
+                            connection,
+                            target_kind,
+                            str(finding["target_name"]),
+                            {"suggested_by": "relationship_research"},
+                            actor,
+                        )
+                    )
+                source_type = str(finding.get("source_type") or "web")
+                _, evidence_id = self._add_evidence_tx(
+                    connection,
+                    str(finding.get("source_url") or f"urn:epiq:{source_type}"),
+                    str(finding.get("source_title") or "Source"),
+                    str(finding["retrieved_at"]),
+                    str(finding["excerpt"]),
+                    actor,
+                    finding.get("source_published_at"),
+                    source_type,
+                )
+                valid_from = str(
+                    finding.get("observed_as_of")
+                    or finding.get("source_published_at")
+                    or finding["retrieved_at"]
+                )
+                claim_id, _, _ = self._assert_claim_tx(
+                    connection,
+                    str(finding["subject_entity_id"]),
+                    successor,
+                    target_id,
+                    valid_from,
+                    evidence_id,
+                    actor,
+                    confidence=str(finding.get("confidence") or "medium"),
+                    temporal_basis=(
+                        "observed"
+                        if finding.get("observed_as_of")
+                        else "source"
+                        if finding.get("source_published_at")
+                        else "unknown"
+                    ),
+                )
+                accepted.append(
+                    {
+                        "suggestion_id": str(finding["suggestion_id"]),
+                        "target_entity_id": target_id,
+                        "claim_id": claim_id,
+                    }
+                )
+            result = {
+                "question_id": successor,
+                "accepted_relationships": len(accepted),
+                "accepted": accepted,
+            }
+            self._event(
+                connection,
+                "change_set.apply",
+                actor,
+                {"change_set_id": change_set_id, "kind": change_set["kind"], "result": result},
+            )
+            return result
 
     def write_batch(self, operations: list[dict[str, Any]], actor: str) -> list[dict[str, Any]]:
         """Atomically add evidence and dependent claims using batch-local evidence references."""

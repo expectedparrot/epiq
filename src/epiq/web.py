@@ -1750,58 +1750,51 @@ def create_app(
                 (job_id, job)
                 for job_id, job in app.state.research_jobs.items()
                 if (job.get("schema_adaptation") or {}).get("question_id") == question_id
-                and (job.get("schema_adaptation") or {}).get("status") == "pending"
+                and (job.get("schema_adaptation") or {}).get("status")
+                in {"pending", "applying"}
             ]
         if not matching:
             raise EpiqError(
                 "schema_adaptation_not_found",
                 "No pending schema adaptation was found for this field",
             )
-        project = store()
-        with project.connect() as connection:
-            question = project._resolve_question(connection, question_id)
-            definition = json.loads(str(question["definition_json"]))
-        definition["cardinality"] = "many"
-        successor = project.evolve_question(
-            question_id,
-            [
-                {
-                    "name": str(question["name"]),
-                    "value_type": str(question["value_type"]),
-                    "definition": definition,
-                }
-            ],
-            "refines",
-            "Bulk-approved agent finding: observed multiple related rows",
-            body.actor,
-        )[0]
-        accepted_count = 0
-        job_ids = []
-        for job_id, job in matching:
-            with app.state.research_lock:
-                suggestion_ids = []
-                for suggestion in job.get("relationship_suggestions", []):
-                    if suggestion["status"] == "pending":
-                        suggestion["question_id"] = successor
-                        suggestion_ids.append(str(suggestion["suggestion_id"]))
-                job["question_id"] = successor
-                job["schema_adaptation"]["status"] = "accepted"
-                job["schema_adaptation"]["successor_question_id"] = successor
+        job_ids = [job_id for job_id, _ in matching]
+        with app.state.research_lock:
+            for job_id, job in matching:
+                job["schema_adaptation"]["status"] = "applying"
                 persist_job(job_id)
-            if suggestion_ids:
-                result = accept_relationship_suggestions(
-                    job_id,
-                    AcceptRelationshipSuggestionsCreate(
-                        suggestion_ids=suggestion_ids, actor=body.actor
-                    ),
-                )
-                accepted_count += int(result["count"])
-            job_ids.append(job_id)
-        return {
-            "question_id": successor,
-            "jobs": job_ids,
-            "accepted_relationships": accepted_count,
+        findings = [
+            {**dict(suggestion), "retrieved_at": datetime.now(UTC).date().isoformat()}
+            for _, job in matching
+            for suggestion in job.get("relationship_suggestions", [])
+            if suggestion["status"] == "pending"
+        ]
+        result = store().apply_change_set(
+            {
+                "change_set_id": f"cs_relationship_cardinality_{question_id}",
+                "kind": "relationship_cardinality",
+                "predecessor_question_id": question_id,
+                "reason": "Bulk-approved agent finding: observed multiple related rows",
+                "findings": findings,
+            },
+            body.actor,
+        )
+        accepted_by_id = {
+            item["suggestion_id"]: item for item in result.get("accepted", [])
         }
+        with app.state.research_lock:
+            for job_id, job in matching:
+                job["question_id"] = result["question_id"]
+                job["schema_adaptation"]["status"] = "applied"
+                job["schema_adaptation"]["successor_question_id"] = result["question_id"]
+                for suggestion in job.get("relationship_suggestions", []):
+                    accepted = accepted_by_id.get(suggestion["suggestion_id"])
+                    if accepted:
+                        suggestion.update(accepted)
+                        suggestion["question_id"] = result["question_id"]
+                        suggestion["status"] = "accepted"
+                persist_job(job_id)
+        return {**result, "jobs": job_ids}
 
     @app.post("/api/research/rows", status_code=202)
     def launch_row_research(body: RowResearchCreate) -> dict[str, Any]:

@@ -787,6 +787,82 @@ def test_bulk_claim_assertion_rolls_back_entire_batch_on_late_error(store: Store
     assert store.matrix("Company")["rows"][0]["cells"]["employees"]["state"] == "Unasked"
 
 
+def test_relationship_change_set_is_atomic_and_idempotent(store: Store) -> None:
+    paper = store.add_entity("Paper", "Markets", {}, "test")
+    question = store.add_question(
+        "authors", "Paper", "Ref[Author]", {"cardinality": "one"}, "test"
+    )
+    finding = {
+        "suggestion_id": "rel_ada",
+        "subject_entity_id": paper,
+        "target_name": "Ada",
+        "source_type": "web",
+        "source_url": "https://example.test/markets",
+        "source_title": "Markets title page",
+        "retrieved_at": "2026-08-17",
+        "excerpt": "Markets was written by Ada.",
+        "confidence": "high",
+    }
+    change_set = {
+        "change_set_id": "cs_markets_authors",
+        "kind": "relationship_cardinality",
+        "predecessor_question_id": question,
+        "findings": [finding],
+    }
+
+    first = store.apply_change_set(change_set, "human:reviewer")
+    second = store.apply_change_set(change_set, "human:reviewer")
+    assert second == first
+    assert first["accepted_relationships"] == 1
+    matrix = store.matrix("Paper")
+    assert matrix["questions"][0]["definition"]["cardinality"] == "many"
+    assert matrix["rows"][0]["cells"]["authors"]["references"][0]["name"] == "Ada"
+    assert [event["event_type"] for event in store.history()].count("change_set.apply") == 1
+
+
+def test_relationship_change_set_rolls_back_schema_and_writes_on_late_error(
+    store: Store,
+) -> None:
+    paper = store.add_entity("Paper", "Markets", {}, "test")
+    question = store.add_question(
+        "authors", "Paper", "Ref[Author]", {"cardinality": "one"}, "test"
+    )
+    before = len(store.history())
+    change_set = {
+        "change_set_id": "cs_broken_authors",
+        "kind": "relationship_cardinality",
+        "predecessor_question_id": question,
+        "findings": [
+            {
+                "suggestion_id": "rel_ada",
+                "subject_entity_id": paper,
+                "target_name": "Ada",
+                "source_type": "web",
+                "source_url": "https://example.test/markets",
+                "source_title": "Markets title page",
+                "retrieved_at": "2026-08-17",
+                "excerpt": "Markets was written by Ada.",
+            },
+            {
+                "suggestion_id": "rel_missing",
+                "subject_entity_id": "ent_missing",
+                "target_name": "Grace",
+                "source_type": "web",
+                "source_url": "https://example.test/missing",
+                "source_title": "Missing paper",
+                "retrieved_at": "2026-08-17",
+                "excerpt": "A missing paper was written by Grace.",
+            },
+        ],
+    }
+
+    with pytest.raises(EpiqError, match="Entity not found"):
+        store.apply_change_set(change_set, "human:reviewer")
+    assert len(store.history()) == before
+    assert store.matrix("Paper")["questions"][0]["question_id"] == question
+    assert store.matrix("Author")["rows"] == []
+
+
 def test_atomic_write_batch_links_new_evidence_and_rolls_it_back_on_claim_error(
     store: Store,
 ) -> None:

@@ -452,12 +452,8 @@ def test_relationship_cardinality_mismatches_are_bulk_approved(tmp_path: Path) -
         create_app(tmp_path / "bulk-relationship.sqlite", tmp_path / "missing", researcher)
     )
     client.post("/api/project", json={"name": "Bulk relationship adaptation"})
-    papers = [
-        client.post("/api/entities", json={"kind": "Paper", "name": name}).json()[
-            "entity_id"
-        ]
-        for name in ["Paper One", "Paper Two"]
-    ]
+    for name in ["Paper One", "Paper Two"]:
+        client.post("/api/entities", json={"kind": "Paper", "name": name})
     question = client.post(
         "/api/questions",
         json={
@@ -487,7 +483,7 @@ def test_relationship_cardinality_mismatches_are_bulk_approved(tmp_path: Path) -
         for row in matrix["rows"]
     ] == [{"Ada", "Grace"}, {"Grace", "Katherine"}]
     refreshed = client.get("/api/research/jobs").json()
-    assert all(job["schema_adaptation"]["status"] == "accepted" for job in refreshed)
+    assert all(job["schema_adaptation"]["status"] == "applied" for job in refreshed)
 
 
 def test_agent_discovery_diagnostics_and_derivation_api(tmp_path: Path) -> None:

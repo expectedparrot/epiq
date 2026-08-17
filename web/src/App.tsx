@@ -21,6 +21,7 @@ import {
   api,
   post,
 } from "./api";
+import { SchemaAdaptationReviews } from "./SchemaAdaptationReview";
 
 type Selection = {
   entityId: string;
@@ -3066,27 +3067,6 @@ function ActivityPanel({
   onCancel: (jobId: string) => Promise<void>;
   onRetry: (jobId: string) => Promise<void>;
 }) {
-  const schemaGroups = useMemo(() => {
-    const groups = new Map<
-      string,
-      { label: string; jobs: number; findings: number }
-    >();
-    for (const job of jobs) {
-      const proposal = job.schema_adaptation;
-      if (!proposal || proposal.status !== "pending") continue;
-      const current = groups.get(proposal.question_id) ?? {
-        label: proposal.label,
-        jobs: 0,
-        findings: 0,
-      };
-      current.jobs += 1;
-      current.findings +=
-        job.relationship_suggestions?.filter((item) => item.status === "pending")
-          .length ?? 0;
-      groups.set(proposal.question_id, current);
-    }
-    return [...groups.entries()];
-  }, [jobs]);
   return (
     <aside className="activity-panel">
       <div className="drawer-head">
@@ -3098,16 +3078,7 @@ function ActivityPanel({
         <p>The spreadsheet remains stable while agents work.</p>
       </div>
       <div className="activity-list">
-        {schemaGroups.map(([questionId, group]) => (
-          <SchemaAdaptationReview
-            key={questionId}
-            questionId={questionId}
-            label={group.label}
-            jobs={group.jobs}
-            findings={group.findings}
-            onAccept={onAcceptSchemaAdaptation}
-          />
-        ))}
+        <SchemaAdaptationReviews jobs={jobs} onAccept={onAcceptSchemaAdaptation} />
         {jobs.length === 0 && (
           <div className="drawer-empty">
             <div>✦</div>
@@ -3204,53 +3175,6 @@ function ActivityPanel({
         ))}
       </div>
     </aside>
-  );
-}
-
-function SchemaAdaptationReview({
-  questionId,
-  label,
-  jobs,
-  findings,
-  onAccept,
-}: {
-  questionId: string;
-  label: string;
-  jobs: number;
-  findings: number;
-  onAccept: (questionId: string) => Promise<void>;
-}) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <article className="activity-job schema-adaptation-review">
-      <div className="activity-job-head">
-        <span className="job-status completed">review</span>
-        <code>{questionId.replace(/^q_|_v\d+$/g, "")}</code>
-      </div>
-      <b>Agent findings do not fit the field schema</b>
-      <p>
-        {jobs} researched row{jobs === 1 ? "" : "s"} found multiple {label.toLowerCase()}.
-        Change this field from one related row to multiple related rows and add all {findings}
-        {" "}staged relationship{findings === 1 ? "" : "s"}?
-      </p>
-      <small>
-        Epiq will create a new field version and preserve every source and finding.
-      </small>
-      <button
-        className="primary add-relationship-proposals"
-        disabled={busy || findings === 0}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            await onAccept(questionId);
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {busy ? "Applying change set…" : `Approve change + ${findings} findings`}
-      </button>
-    </article>
   );
 }
 
