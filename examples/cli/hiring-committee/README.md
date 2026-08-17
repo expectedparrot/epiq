@@ -15,6 +15,7 @@ epiq init --name "Hiring committee tutorial"
 epiq entity Candidate "Alex Rivera"
 epiq entity Candidate "Morgan Lee"
 epiq entity Role "Product Engineer"
+epiq entity Role "Research Engineer"
 ```
 
 `epiq use` selects this file for the workspace, so the rest of the tutorial does not need to repeat
@@ -116,17 +117,51 @@ The same matrix now looks like this:
 | Morgan Lee | Unasked | Unasked | Unasked | Unasked |
 
 Three claims populated three cells in Alex's row. The committee column remains `Unasked` because
-none of those commands asserted a committee decision. Each displayed value still links back to
-`MAYA_NOTES`; the table is only the current projection, not the whole record.
+none of those commands asserted a committee decision. Each displayed value still links back to the
+first interview evidence; the table is only the current projection, not the whole record.
 
-Now add another interviewer's note and claims using `--actor interviewer:...`. Because these fields
-have `cardinality: many`, Epiq retains both reviewers' evidence and values rather than averaging
-them or choosing a winner.
+Now record a second interviewer's independent assessment:
 
 ```bash
-epiq dossier "Alex Rivera"
+epiq --actor interviewer:liam record \
+  --subject "Alex Rivera" \
+  --source-type interview \
+  --source-title "Alex Rivera systems interview" \
+  --retrieved-at 2026-08-18 \
+  --excerpt "Alex showed strong systems reasoning but communicated tradeoffs less clearly. Confidence: 0.68. Recommended for Research Engineer." \
+  --valid-from 2026-08-18 \
+  --answer technical_strength "Strong systems reasoning; tradeoffs less clearly communicated" \
+  --answer interviewer_rating 0.68 \
+  --answer recommended_role "Research Engineer"
+
 epiq matrix --kind Candidate
+epiq dossier "Alex Rivera"
 ```
+
+Because those three fields have `cardinality: many`, the matrix retains both observations:
+
+| Candidate | Technical strength | Interviewer confidence | Recommended role | Committee recommendation |
+| --- | --- | ---: | --- | --- |
+| Alex Rivera | Clear decomposition of queueing problems; Strong systems reasoning, tradeoffs less clearly communicated | 0.82; 0.68 | Product Engineer; Research Engineer | Unasked |
+| Morgan Lee | Unasked | Unasked | Unasked | Unasked |
+
+Epiq did not average `0.82` and `0.68`, select the newer role, or mark the cells contested. These
+fields explicitly permit several supported observations. The matrix's JSON represents them in each
+cell's `values` array.
+
+The dossier then exposes the provenance hidden by that compact projection. Its lineage includes:
+
+| Field | Value | Actor | Evidence |
+| --- | --- | --- | --- |
+| Technical strength | Clear decomposition of queueing problems | `interviewer:maya` | Alex Rivera technical interview |
+| Technical strength | Strong systems reasoning; tradeoffs less clearly communicated | `interviewer:liam` | Alex Rivera systems interview |
+| Interviewer confidence | 0.82 | `interviewer:maya` | Alex Rivera technical interview |
+| Interviewer confidence | 0.68 | `interviewer:liam` | Alex Rivera systems interview |
+| Recommended role | Product Engineer | `interviewer:maya` | Alex Rivera technical interview |
+| Recommended role | Research Engineer | `interviewer:liam` | Alex Rivera systems interview |
+
+The exact claim and evidence IDs also appear in the dossier JSON, allowing later review,
+assessment, retraction, or supersession of one observation without disturbing the others.
 
 ## 5. Stage agent output for human review
 
