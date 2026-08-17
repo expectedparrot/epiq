@@ -1397,12 +1397,17 @@ def create_app(
                     value = finding["value"]
                     if body.mode == "add_evidence":
                         target = targets_by_id[entity_id]
-                        evidence = [*target["existing_evidence_ids"], evidence_id]
-                        value = target["existing_value"]
+                        if value == target["existing_value"]:
+                            evidence = [*target["existing_evidence_ids"], evidence_id]
+                        else:
+                            result_message = (
+                                f"Found a conflicting value for {target['name']}: "
+                                f"existing {target['existing_value']!r}, new source {value!r}"
+                            )
                     valid_from = str(
                         (
                             target.get("existing_valid_from")
-                            if body.mode == "add_evidence"
+                            if body.mode == "add_evidence" and value == target["existing_value"]
                             else finding.get("observed_as_of") or finding.get("source_published_at")
                         )
                         or datetime.now(UTC).date().isoformat()

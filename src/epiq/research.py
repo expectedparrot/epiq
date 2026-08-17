@@ -243,9 +243,10 @@ Rows: {json.dumps(entities, sort_keys=True)}
 
 Task mode and user instructions are included in the question object. Treat explicit user source
 instructions as binding: if the user names a site or database, search that source specifically. If
-it cannot be accessed or does not support the value, return not_found and explain that limitation
-instead of silently substituting an unrelated aggregator. In add_evidence mode, find a
-new independent source supporting the supplied existing_value; do not propose a different value.
+it cannot be accessed, return not_found and explain that limitation instead of silently
+substituting an unrelated aggregator. In add_evidence mode, inspect a new independent source and
+return the value that source actually reports. It may support the existing_value or conflict with
+it; never suppress, coerce, or discard a conflicting observation.
 Each row supplies existing_evidence with every URL, title, and excerpt already attached. Do not
 return any existing URL, the same page under another URL variant, or merely another excerpt from an
 existing source. If no independent source can be found, return not_found rather than duplicating it.

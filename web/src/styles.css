@@ -266,6 +266,21 @@ button:hover {
   padding: 11px 14px;
   color: #66511c;
   font-size: 11px;
+  line-height: 1.5;
+}
+.job-notice span {
+  display: block;
+  max-height: 7.5em;
+  overflow: auto;
+}
+.job-notice button {
+  margin-top: 8px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #765718;
+  font-size: 10px;
+  font-weight: 700;
 }
 .grid {
   border-collapse: separate;
@@ -1519,6 +1534,18 @@ button:hover {
   padding: 8px 9px;
   font-size: 9px;
   line-height: 1.45;
+}
+.job-result b {
+  display: block;
+}
+.job-result p {
+  margin: 5px 0 0;
+  line-height: 1.5;
+}
+.job-result small {
+  display: block;
+  margin-top: 5px;
+  font: 8px DM Mono;
 }
 .job-result.no-change {
   background: #fff5d9;

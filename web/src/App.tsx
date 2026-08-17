@@ -287,16 +287,18 @@ export default function App() {
               ["completed", "failed", "cancelled"].includes(job.status),
           );
           if (justFinished) {
+            const finalMessage = justFinished.messages.at(-1)?.message;
             const notice =
               justFinished.status === "failed"
                 ? `Research failed: ${justFinished.error ?? "unknown error"}`
                 : justFinished.status === "cancelled"
                   ? "Research cancelled"
                   : justFinished.outcome === "no_change"
-                    ? "Research finished: no new independent evidence was found"
+                    ? finalMessage ??
+                      "Research finished: no new independent evidence was found"
                     : `Research finished${justFinished.written ? `: ${justFinished.written} answer${justFinished.written === 1 ? "" : "s"} updated` : ""}`;
             setJobNotice(notice);
-            window.setTimeout(() => setJobNotice(""), 6000);
+            window.setTimeout(() => setJobNotice(""), 12000);
           }
           jobsRef.current = next;
           const hasActive = next.some(
@@ -985,7 +987,19 @@ export default function App() {
             {clipboardNotice && (
               <span className="clipboard-notice">✓ {clipboardNotice}</span>
             )}
-            {jobNotice && <span className="job-notice">{jobNotice}</span>}
+            {jobNotice && (
+              <div className="job-notice">
+                <span>{jobNotice}</span>
+                <button
+                  onClick={() => {
+                    setShowActivity(true);
+                    setJobNotice("");
+                  }}
+                >
+                  View details
+                </button>
+              </div>
+            )}
           </div>
           {error && (
             <div className="error-banner">
@@ -2921,9 +2935,14 @@ function ActivityPanel({
             {job.error && <div className="form-error">{job.error}</div>}
             {job.status === "completed" && job.outcome === "no_change" && (
               <div className="job-result no-change">
-                No new independent evidence was added.
-                {job.no_result ? ` ${job.no_result} search returned no result.` : ""}
-                {job.rejected ? ` ${job.rejected} duplicate source was rejected.` : ""}
+                <b>No new independent evidence was added.</b>
+                <p>
+                  {job.messages.at(-1)?.message ??
+                    `${job.no_result ?? 0} search returned no result.`}
+                </p>
+                {job.rejected ? (
+                  <small>{job.rejected} duplicate source was rejected.</small>
+                ) : null}
               </div>
             )}
             {job.status === "completed" && job.outcome === "changed" && (

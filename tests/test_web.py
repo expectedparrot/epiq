@@ -865,7 +865,7 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
             {
                 "entity_id": entity["entity_id"],
                 "status": "answered",
-                "value": True,
+                "value": entity.get("existing_value", True),
                 "source_type": "web",
                 "source_url": f"https://example.test/{entity['entity_id']}",
                 "source_title": "Biography",
@@ -883,7 +883,9 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
     first = client.post("/api/entities", json={"kind": "Investor", "name": "Ada"}).json()[
         "entity_id"
     ]
-    client.post("/api/entities", json={"kind": "Investor", "name": "Grace"})
+    second = client.post("/api/entities", json={"kind": "Investor", "name": "Grace"}).json()[
+        "entity_id"
+    ]
     question = client.post(
         "/api/questions",
         json={"name": "has_mba", "subject_kind": "Investor", "value_type": "Bool"},
@@ -967,6 +969,42 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
     duplicate_cell = next(row for row in duplicate_rows if row["name"] == "Ada")["cells"]["has_mba"]
     assert len(duplicate_cell["lineage"]) == 2
 
+    def conflicting_researcher(_kind, _question, entities, progress=None):
+        return [
+            {
+                "entity_id": entities[0]["entity_id"],
+                "status": "answered",
+                "value": True,
+                "source_type": "web",
+                "source_url": "https://semantic-scholar.example/paper",
+                "source_title": "Semantic Scholar",
+                "excerpt": "This source reports a different value.",
+                "confidence": "high",
+                "notes": "",
+            }
+        ]
+
+    client.app.state.research_runner = conflicting_researcher
+    conflict = client.post(
+        "/api/research/jobs",
+        json={
+            "entity_kind": "Investor",
+            "question": question,
+            "mode": "add_evidence",
+            "instructions": "Use Semantic Scholar",
+            "entity_ids": [first],
+        },
+    ).json()
+    conflict_job = wait_for_job(client, conflict["job_id"])
+    assert conflict_job["outcome"] == "changed"
+    assert any("conflicting value" in item["message"] for item in conflict_job["messages"])
+    contested = next(
+        row for row in client.get("/api/matrix/Investor").json()["rows"] if row["name"] == "Ada"
+    )["cells"]["has_mba"]
+    assert contested["state"] == "Contested"
+    assert set(contested["values"]) == {False, True}
+
+    client.app.state.research_runner = researcher
     no_source = client.post(
         "/api/research/jobs",
         json={
@@ -974,7 +1012,7 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
             "question": question,
             "mode": "add_evidence",
             "instructions": "No Scholar access",
-            "entity_ids": [first],
+            "entity_ids": [second],
         },
     ).json()
     no_source_job = wait_for_job(client, no_source["job_id"])
