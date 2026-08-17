@@ -36,7 +36,7 @@ In Epiq, a column is a typed question about an entity kind:
 ```bash
 epiq question api_access --for Product \
   --type 'Enum[none,limited,full]' \
-  --definition '{"label":"API access","cardinality":"one","volatility":"medium"}'
+  --definition '{"label":"API access","cardinality":"one","volatility":"dynamic","freshness_days":90}'
 
 epiq question starting_price --for Product \
   --type 'Quantity[USD/month]' \
@@ -52,7 +52,7 @@ At this point the matrix has two rows and two columns, but its cells are `Unaske
 epiq matrix --kind Product
 ```
 
-Conceptually, that projection is:
+The CLI returns JSON containing the schema and rows. Rendered as a table, its result is:
 
 | Product | API access (`Enum`) | Starting monthly price (`Quantity[USD/month]`) |
 | --- | --- | ---: |
@@ -73,14 +73,26 @@ epiq --actor agent:market-research record \
   --source-type web \
   --url "https://example.test/acorn/pricing" \
   --source-title "Acorn Interview pricing" \
-  --retrieved-at 2026-08-17 \
+  --retrieved-at 2026-07-01 \
   --excerpt "The Starter plan costs $249 per month and includes limited API access." \
-  --valid-from 2026-08-17 \
+  --valid-from 2026-07-01 \
   --answer starting_price 249 \
   --answer api_access limited
 ```
 
-The response reports one evidence ID and two claim IDs. Internally, evidence remains separate from
+The response shows exactly what was written (IDs vary by project):
+
+```json
+{
+  "answer_count": 2,
+  "claim_ids": ["clm_...", "clm_..."],
+  "evidence_id": "evd_...",
+  "ok": true,
+  "source_id": "src_..."
+}
+```
+
+Internally, evidence remains separate from
 the answers: the source passage is stored once and linked to both independently typed claims. The
 operation is atomic, so a misspelled enum or invalid price would cause all three records to roll
 back.
@@ -93,9 +105,9 @@ epiq --actor agent:market-research record \
   --source-type web \
   --url "https://example.test/beacon/pricing" \
   --source-title "Beacon Research plans" \
-  --retrieved-at 2026-08-17 \
+  --retrieved-at 2026-07-01 \
   --excerpt "Beacon Pro costs $599 per month and provides full API access." \
-  --valid-from 2026-08-17 \
+  --valid-from 2026-07-01 \
   --answer starting_price 599 \
   --answer api_access full
 ```
@@ -121,6 +133,13 @@ The matrix is convenient, but it is not the whole database. The dossier shows th
 values came from the same excerpt, along with the source URL, retrieval date, observation date,
 confidence, actor, claim IDs, and evidence ID.
 
+An abridged rendering of the dossier lineage is:
+
+| Field | Value | Confidence | As of | Actor | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| API access | limited | high | 2026-07-01 | `agent:market-research` | Acorn Interview pricing |
+| Starting monthly price | 249 | high | 2026-07-01 | `agent:market-research` | Acorn Interview pricing |
+
 ## 6. Ask a database question
 
 ```bash
@@ -128,9 +147,24 @@ epiq query --kind Product \
   --where 'starting_price <= 300' --where 'api_access != none'
 ```
 
-This returns Acorn Interview but not Beacon Research: Acorn satisfies both predicates, while
-Beacon's price exceeds 300. The query operates only on current supported claims. It does not scrape
-missing cells or infer answers.
+The response includes the parsed predicates and the one matching row. Abridged:
+
+```json
+{
+  "entity_kind": "Product",
+  "query": {
+    "matched": 1,
+    "predicates": [
+      {"question": "starting_price", "op": "lte", "value": 300},
+      {"question": "api_access", "op": "ne", "value": "none"}
+    ]
+  },
+  "rows": [{"name": "Acorn Interview"}]
+}
+```
+
+Acorn satisfies both predicates, while Beacon's price exceeds 300. The query operates only on
+current supported claims. It does not scrape missing cells or infer answers.
 
 ## 7. Notice when the schema is wrong
 
@@ -166,6 +200,24 @@ epiq evolve-question has_sso \
 epiq question-lineage has_sso
 ```
 
+Output:
+
+```json
+{
+  "name": "has_sso",
+  "predecessors": [],
+  "question_id": "q_has_sso_v1",
+  "successors": [
+    {
+      "name": "sso_availability",
+      "question_id": "q_sso_availability_v1",
+      "reason": "Boolean cannot distinguish how SSO is offered",
+      "relationship": "replaces"
+    }
+  ]
+}
+```
+
 Old Boolean claims remain auditable but are not silently coerced. Research the successor field—the
 same source passage is deduplicated automatically:
 
@@ -184,9 +236,15 @@ epiq --actor agent:market-research record \
 epiq matrix --kind Product
 ```
 
-The active table now has an `SSO availability` column where Beacon reads `paid_addon`; Acorn
-remains `Unasked`. The question lineage still connects that improved field to the retired Boolean
-and its historical claim.
+The active matrix output, rendered as a table, is now:
+
+| Product | API access | Starting monthly price | SSO availability |
+| --- | --- | ---: | --- |
+| Acorn Interview | limited | $249/month | Unasked |
+| Beacon Research | full | $599/month | paid_addon |
+
+The question lineage still connects that improved field to the retired Boolean and its historical
+claim.
 
 ## 8. Identify facts that need refreshing
 
@@ -197,7 +255,45 @@ epiq stale --kind Product
 epiq refresh-plan --kind Product --include stale
 ```
 
-`stale` reports outdated cells. `refresh-plan` emits research tasks for an external agent; Epiq
+Because the price observations in this tutorial are from July 1, `stale` reports both price cells
+after the 30-day window. Abridged output:
+
+```json
+{
+  "count": 2,
+  "entity_kind": "Product",
+  "cells": [
+    {"entity_name": "Acorn Interview", "question": "starting_price", "state": "Answered"},
+    {"entity_name": "Beacon Research", "question": "starting_price", "state": "Answered"}
+  ]
+}
+```
+
+`refresh-plan` turns those cells into tasks rather than doing research itself:
+
+```json
+{
+  "count": 2,
+  "tasks": [
+    {
+      "entity_name": "Acorn Interview",
+      "question": "starting_price",
+      "reasons": ["stale"],
+      "suggested_query": "\"Acorn Interview\" Starting monthly price",
+      "existing_source_urls": ["https://example.test/acorn/pricing"]
+    },
+    {
+      "entity_name": "Beacon Research",
+      "question": "starting_price",
+      "reasons": ["stale"],
+      "suggested_query": "\"Beacon Research\" Starting monthly price",
+      "existing_source_urls": ["https://example.test/beacon/pricing"]
+    }
+  ]
+}
+```
+
+An external agent can execute those tasks and write new observations back with `record`; Epiq
 itself remains deterministic and does not browse or call a model.
 
 ## Finished fixture and next experiments
