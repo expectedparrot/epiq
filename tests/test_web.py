@@ -198,7 +198,7 @@ def test_health_doctor_and_online_backup_endpoints(tmp_path: Path) -> None:
 
     health = client.get("/api/health").json()
     assert health["project"] == "ready"
-    assert health["schema_version"] == "5"
+    assert health["schema_version"] == "6"
     assert client.get("/api/doctor").json()["ok"] is True
 
     backup = client.get("/api/export/project.sqlite")
@@ -206,6 +206,28 @@ def test_health_doctor_and_online_backup_endpoints(tmp_path: Path) -> None:
     restored = tmp_path / "restored.sqlite"
     restored.write_bytes(backup.content)
     assert Store(restored).overview()["project"]["name"] == "Operational test"
+
+
+def test_web_can_retire_and_restore_a_field_without_erasing_history(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path / "retire.sqlite", tmp_path / "missing-frontend"))
+    client.post("/api/project", json={"name": "Field lifecycle"})
+    client.post("/api/entities", json={"kind": "Office", "name": "Example"})
+    question = client.post(
+        "/api/questions",
+        json={"name": "rating", "subject_kind": "Office", "value_type": "Float"},
+    ).json()["question_id"]
+
+    retired = client.post(f"/api/questions/{question}/retire", json={"reason": "Wrong semantics"})
+    assert retired.status_code == 200
+    assert client.get("/api/matrix/Office").json()["questions"] == []
+    history = client.get("/api/history?event_type=question.retire").json()
+    assert history[0]["payload"]["reason"] == "Wrong semantics"
+
+    restored = client.post(
+        f"/api/questions/{question}/restore", json={"reason": "Redesigned and useful"}
+    )
+    assert restored.status_code == 200
+    assert client.get("/api/matrix/Office").json()["questions"][0]["name"] == "rating"
 
 
 def test_whole_table_research_launches_each_question_with_gaps(tmp_path: Path) -> None:

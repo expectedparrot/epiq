@@ -197,6 +197,62 @@ button:hover {
   flex: 1;
   position: relative;
 }
+.view-toolbar {
+  align-items: center;
+  background: #faf9f5;
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 9px;
+  min-height: 46px;
+  padding: 6px 12px;
+}
+.table-search {
+  align-items: center;
+  background: white;
+  border: 1px solid #cbc9c0;
+  border-radius: 6px;
+  display: flex;
+  gap: 6px;
+  max-width: 420px;
+  padding: 0 9px;
+  width: min(38vw, 420px);
+}
+.table-search span {
+  color: var(--muted);
+  font-size: 18px;
+}
+.table-search input {
+  border: 0;
+  min-width: 0;
+  outline: 0;
+  padding: 8px 0;
+  width: 100%;
+}
+.view-toolbar select,
+.clear-view-button {
+  background: white;
+  border: 1px solid #cbc9c0;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.clear-view-button {
+  color: var(--green);
+}
+.keyboard-hint {
+  color: #858880;
+  font: 10px DM Mono;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.clipboard-notice {
+  background: #e4f2e9;
+  border-radius: 12px;
+  color: #216248;
+  font-size: 10px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
 .grid {
   border-collapse: separate;
   border-spacing: 0;
@@ -260,6 +316,20 @@ button:hover {
 }
 .data-cell:hover {
   background: #f1f7f3;
+}
+.data-cell.active-cell {
+  box-shadow: inset 0 0 0 2px #247354;
+  outline: 0;
+  z-index: 1;
+}
+.data-cell.active-cell:after {
+  background: #247354;
+  bottom: -3px;
+  content: "";
+  height: 6px;
+  position: absolute;
+  right: -3px;
+  width: 6px;
 }
 .cell-value {
   overflow: hidden;
@@ -935,9 +1005,10 @@ button:hover {
   gap: 8px;
 }
 .row-agent-button {
-  opacity: 0;
-  border: 0;
-  background: transparent;
+  opacity: 1;
+  border: 1px solid #c9d8cf;
+  border-radius: 6px;
+  background: #f4faf6;
   color: #28664e;
   padding: 5px;
   font-size: 9px;
@@ -946,6 +1017,103 @@ button:hover {
 .grid tr:hover .row-agent-button,
 .row-agent-button:focus {
   opacity: 1;
+}
+
+/* Two-tier spreadsheet header: field identity above, column actions below. */
+.grid .field-header-row th {
+  height: 62px;
+  top: 0;
+  vertical-align: middle;
+}
+.grid .column-action-row th {
+  background: #faf9f5;
+  height: 43px;
+  top: 62px;
+  z-index: 3;
+}
+.grid .field-header-row .reorderable-column,
+.grid .field-header-row .entity-column-head,
+.grid .field-header-row .row-action-column {
+  padding-right: 12px;
+}
+.grid .entity-action-head {
+  background: #edf4ef;
+  box-shadow: inset 3px 0 0 #7fa68f;
+  padding: 0 8px;
+  z-index: 4;
+}
+.entity-action-head .suggest-entities-button {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  position: static;
+  text-overflow: ellipsis;
+}
+.row-action-column,
+.row-action-cell {
+  background: #f8f7f2;
+  min-width: 118px;
+  text-align: center !important;
+  width: 118px;
+}
+.row-action-column span {
+  font-weight: 700;
+}
+.action-row-label {
+  color: #8b8e87;
+  font: 9px DM Mono !important;
+  padding: 0 6px !important;
+  text-transform: uppercase;
+}
+.row-action-cell {
+  padding: 0 7px !important;
+}
+.row-action-cell .row-agent-button {
+  width: 100%;
+}
+.field-action-cell {
+  padding: 0 6px !important;
+}
+.field-action-cell .column-actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  position: static;
+}
+.field-action-cell .agent-button {
+  min-width: 72px;
+}
+.retire-field-button {
+  color: #a34f42;
+}
+.retire-field-button:hover {
+  background: #fff0ed;
+  border-color: #d8a096;
+}
+.retire-field-explanation {
+  background: #f6f3eb;
+  border: 1px solid #ddd7c8;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  padding: 13px;
+}
+.retire-field-explanation > span {
+  font-weight: 700;
+}
+.retire-field-explanation p {
+  color: #636861;
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+.danger-button {
+  background: #a94f40;
+  border-color: #a94f40;
+  color: white;
+}
+.column-action-row .table-research-corner {
+  top: 62px;
 }
 .row-research-summary {
   display: flex;
@@ -1213,7 +1381,7 @@ button:hover {
   box-shadow: inset 3px 0 0 #7fa68f;
 }
 .grid .entity-column-head {
-  padding-right: 104px;
+  padding-right: 12px;
 }
 .entity-column-label span {
   font-weight: 700;
@@ -1224,9 +1392,7 @@ button:hover {
   letter-spacing: 0.06em;
 }
 .suggest-entities-button {
-  position: absolute;
-  right: 7px;
-  top: 10px;
+  position: static;
   border: 1px solid #aec4b5;
   background: #e9f2ec;
   color: #28664e;
@@ -1250,6 +1416,16 @@ button:hover {
   min-width: 132px;
   width: 132px;
 }
+.grid td.row-number {
+  background: #faf9f5;
+  left: 0;
+  position: sticky;
+  z-index: 2;
+}
+.grid th.row-number {
+  left: 0;
+  z-index: 5;
+}
 .grid .name-column,
 .grid .entity-name {
   left: 132px;
@@ -1257,6 +1433,34 @@ button:hover {
 .table-research-corner {
   padding: 0 7px !important;
   z-index: 4 !important;
+}
+.column-sort-button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: inline-flex;
+  font-size: inherit;
+  font-weight: 700;
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.column-sort-button:hover {
+  color: #1d7151;
+}
+.column-sort-button i {
+  color: #247354;
+  font-style: normal;
+}
+.filtered-empty {
+  background: rgba(255, 254, 250, 0.94);
+  bottom: auto;
+  min-height: 260px;
+  top: 0;
 }
 .table-research-corner button {
   width: 100%;

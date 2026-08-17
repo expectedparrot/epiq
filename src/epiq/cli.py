@@ -121,6 +121,18 @@ def parser() -> argparse.ArgumentParser:
     question.add_argument("--type", dest="value_type", required=True)
     question.add_argument("--definition", default="{}")
 
+    retire_question = commands.add_parser(
+        "retire-question", help="Remove a field from current projections without erasing history"
+    )
+    retire_question.add_argument("question")
+    retire_question.add_argument("--reason", required=True)
+
+    restore_question = commands.add_parser(
+        "restore-question", help="Restore a previously retired field"
+    )
+    restore_question.add_argument("question")
+    restore_question.add_argument("--reason", required=True)
+
     evidence = commands.add_parser("evidence", help="Add a source and evidence fragment")
     evidence.add_argument("--url", required=True)
     evidence.add_argument("--title", required=True)
@@ -452,6 +464,14 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             args.name, args.subject_kind, args.value_type, definition, args.actor
         )
         return {"ok": True, "question_id": question_id}
+    if args.command in {"retire-question", "restore-question"}:
+        visible = args.command == "restore-question"
+        question_id = store.set_question_visibility(args.question, visible, args.reason, args.actor)
+        return {
+            "ok": True,
+            "question_id": question_id,
+            "status": "active" if visible else "retired",
+        }
     if args.command == "evidence":
         source_id, evidence_id = store.add_evidence(
             args.url, args.title, args.retrieved_at, args.excerpt, args.actor

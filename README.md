@@ -778,7 +778,18 @@ The application currently supports:
 - inspecting confidence, excerpts, source links, and claim tokens in a cell drawer;
 - displaying `Answered`, `Contested`, `NotFound`, and `Unasked` as distinct states;
 - recording unsuccessful research without asserting a negative answer; and
-- retracting claims while preserving their event history.
+- retracting claims while preserving their event history;
+- sorting any column, filtering rows by text or research status, and preserving view preferences;
+- keyboard navigation with arrows/Tab, Enter or double-click inspection, and clipboard copy;
+- frozen headers and identity columns, draggable column order, resizable columns, and compact or
+  wrapped row density; and
+- exporting the visible research domain to Excel or downloading a consistent project backup.
+
+Single-click selects a cell without changing the sheet layout. Use the arrow keys or Tab to move,
+Enter (or double-click) to open its evidence inspector, Escape to clear selection, and
+Command/Ctrl+C to copy the displayed value. Pasting values is deliberately not yet a generic grid
+operation: an Epiq answer needs evidence, confidence, and temporal context rather than an unsourced
+scalar silently entering the database.
 
 Install both development environments:
 

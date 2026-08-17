@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS questions (
     UNIQUE(name, version)
 );
 
+CREATE TABLE IF NOT EXISTS question_visibility (
+    name TEXT PRIMARY KEY,
+    visible INTEGER NOT NULL CHECK(visible IN (0, 1)),
+    reason TEXT NOT NULL,
+    question_id TEXT NOT NULL REFERENCES questions(question_id),
+    changed_seq INTEGER NOT NULL REFERENCES events(seq)
+);
+
 CREATE TABLE IF NOT EXISTS sources (
     source_id TEXT PRIMARY KEY,
     url TEXT NOT NULL,
@@ -259,7 +267,7 @@ class Store:
                 [
                     ("project_id", _id("prj")),
                     ("name", name),
-                    ("schema_version", "5"),
+                    ("schema_version", "6"),
                     ("created_at", _now()),
                 ],
             )
@@ -359,6 +367,15 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_agent_jobs_updated ON agent_jobs(updated_at);
                 UPDATE meta SET value='5'
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<5;
+                CREATE TABLE IF NOT EXISTS question_visibility (
+                    name TEXT PRIMARY KEY,
+                    visible INTEGER NOT NULL CHECK(visible IN (0, 1)),
+                    reason TEXT NOT NULL,
+                    question_id TEXT NOT NULL REFERENCES questions(question_id),
+                    changed_seq INTEGER NOT NULL REFERENCES events(seq)
+                );
+                UPDATE meta SET value='6'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<6;
                 """
             )
             connection.commit()
@@ -414,6 +431,7 @@ class Store:
                     "events",
                     "entities",
                     "questions",
+                    "question_visibility",
                     "sources",
                     "evidence",
                     "claims",
@@ -612,6 +630,49 @@ class Store:
             )
         return question_id
 
+    def set_question_visibility(
+        self, reference: str, visible: bool, reason: str, actor: str
+    ) -> str:
+        """Retire or restore a field through an append-only visibility event."""
+        normalized_reason = reason.strip()
+        if not normalized_reason:
+            raise EpiqError("reason_required", "A reason is required")
+        with self.transaction() as connection:
+            question = self._resolve_question(connection, reference)
+            current = connection.execute(
+                "SELECT visible FROM question_visibility WHERE name=?", (question["name"],)
+            ).fetchone()
+            currently_visible = current is None or bool(current["visible"])
+            if currently_visible == visible:
+                state = "active" if visible else "retired"
+                raise EpiqError("question_visibility_unchanged", f"Field is already {state}")
+            event_type = "question.restore" if visible else "question.retire"
+            seq, _, _ = self._event(
+                connection,
+                event_type,
+                actor,
+                {
+                    "question_id": str(question["question_id"]),
+                    "name": str(question["name"]),
+                    "reason": normalized_reason,
+                },
+            )
+            connection.execute(
+                """INSERT INTO question_visibility(name,visible,reason,question_id,changed_seq)
+                   VALUES(?,?,?,?,?)
+                   ON CONFLICT(name) DO UPDATE SET visible=excluded.visible,
+                     reason=excluded.reason,question_id=excluded.question_id,
+                     changed_seq=excluded.changed_seq""",
+                (
+                    str(question["name"]),
+                    int(visible),
+                    normalized_reason,
+                    str(question["question_id"]),
+                    seq,
+                ),
+            )
+        return str(question["question_id"])
+
     @staticmethod
     def _check_type_declaration(value_type: str) -> None:
         if value_type in {"Int", "Float", "Probability", "Bool", "String", "Json"}:
@@ -749,6 +810,15 @@ class Store:
     ) -> tuple[str, int, bool]:
         entity = self._resolve_entity(connection, subject)
         q = self._resolve_question(connection, question)
+        visibility = connection.execute(
+            "SELECT visible FROM question_visibility WHERE name=?", (q["name"],)
+        ).fetchone()
+        if visibility is not None and not bool(visibility["visible"]):
+            raise EpiqError(
+                "question_retired",
+                f"Field is retired: {q['name']}",
+                "Restore the field before asserting new claims.",
+            )
         if entity["kind"] != q["subject_kind"]:
             raise EpiqError(
                 "subject_type_mismatch",
@@ -1368,10 +1438,14 @@ class Store:
             kinds = connection.execute(
                 """SELECT k.kind,
                           COUNT(DISTINCT e.entity_id) AS entities,
-                          COUNT(DISTINCT q.question_id) AS questions
+                          COUNT(DISTINCT q.name) AS questions
                    FROM entity_kinds k
                    LEFT JOIN entities e ON e.kind=k.kind
                    LEFT JOIN questions q ON q.subject_kind=k.kind
+                     AND NOT EXISTS (
+                       SELECT 1 FROM question_visibility qv
+                       WHERE qv.name=q.name AND qv.visible=0
+                     )
                    GROUP BY k.kind ORDER BY questions DESC, entities DESC, k.kind"""
             ).fetchall()
         return {
@@ -1407,7 +1481,9 @@ class Store:
                         JOIN (SELECT name, MAX(version) version, MIN(created_seq) first_seq
                               FROM questions GROUP BY name) latest
                         ON latest.name=q.name AND latest.version=q.version
-                        WHERE q.name IN ({placeholders}) ORDER BY latest.first_seq""",
+                        LEFT JOIN question_visibility qv ON qv.name=q.name
+                        WHERE q.name IN ({placeholders}) AND COALESCE(qv.visible,1)=1
+                        ORDER BY latest.first_seq""",
                     question_names,
                 ).fetchall()
             else:
@@ -1416,7 +1492,9 @@ class Store:
                        JOIN (SELECT name, MAX(version) version, MIN(created_seq) first_seq
                              FROM questions GROUP BY name) latest
                        ON latest.name=q.name AND latest.version=q.version
-                       WHERE q.subject_kind=? ORDER BY latest.first_seq""",
+                       LEFT JOIN question_visibility qv ON qv.name=q.name
+                       WHERE q.subject_kind=? AND COALESCE(qv.visible,1)=1
+                       ORDER BY latest.first_seq""",
                     (entity_kind,),
                 ).fetchall()
             rows: list[dict[str, Any]] = []

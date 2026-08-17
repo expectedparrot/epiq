@@ -67,6 +67,11 @@ class QuestionPolicyCreate(BaseModel):
     actor: str = "human:web"
 
 
+class QuestionVisibilityCreate(BaseModel):
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
 class QuestionChallengeCreate(BaseModel):
     problem: str
     explanation: str = Field(min_length=1)
@@ -456,6 +461,16 @@ def create_app(
         )
         return {"question_id": next_id}
 
+    @app.post("/api/questions/{question_id}/retire")
+    def retire_question(question_id: str, body: QuestionVisibilityCreate) -> dict[str, str]:
+        resolved = store().set_question_visibility(question_id, False, body.reason, body.actor)
+        return {"question_id": resolved, "status": "retired"}
+
+    @app.post("/api/questions/{question_id}/restore")
+    def restore_question(question_id: str, body: QuestionVisibilityCreate) -> dict[str, str]:
+        resolved = store().set_question_visibility(question_id, True, body.reason, body.actor)
+        return {"question_id": resolved, "status": "active"}
+
     @app.post("/api/questions/{question_id}/challenges", status_code=201)
     def challenge_question(question_id: str, body: QuestionChallengeCreate) -> dict[str, str]:
         challenge_id = store().challenge_question(
@@ -660,6 +675,7 @@ def create_app(
                             "entity_id": row["entity_id"],
                             "name": row["name"],
                             "existing_value": cell.get("value", cell.get("values")),
+                            "existing_valid_from": first.get("as_of"),
                             "claim_id": first["claim_id"],
                             "primary_evidence_id": first["evidence_id"],
                             "existing_evidence": existing_evidence,
@@ -739,15 +755,19 @@ def create_app(
                         target = targets_by_id[entity_id]
                         evidence = [*target["existing_evidence_ids"], evidence_id]
                         value = target["existing_value"]
+                    valid_from = str(
+                        (
+                            target.get("existing_valid_from")
+                            if body.mode == "add_evidence"
+                            else finding.get("observed_as_of") or finding.get("source_published_at")
+                        )
+                        or datetime.now(UTC).date().isoformat()
+                    )
                     project.assert_claim(
                         entity_id,
                         question["question_id"],
                         value,
-                        str(
-                            finding.get("observed_as_of")
-                            or finding.get("source_published_at")
-                            or datetime.now(UTC).date().isoformat()
-                        ),
+                        valid_from,
                         evidence,
                         "agent:codex",
                         confidence=str(finding["confidence"]),

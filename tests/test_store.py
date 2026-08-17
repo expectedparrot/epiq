@@ -237,7 +237,36 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "5"
+    assert store.overview()["project"]["schema_version"] == "6"
+
+
+def test_question_retirement_hides_projection_but_preserves_and_restores_history(
+    store: Store,
+) -> None:
+    company = store.add_entity("Company", "Example", {}, "test")
+    question = store.add_question("rating", "Company", "Float", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/rating", "Rating", "2026-08-17", "Rated 4.8.", "test"
+    )
+    claim = store.assert_claim(company, question, 4.8, "2026-08-17", evidence, "test")
+
+    store.set_question_visibility(question, False, "Wrong field semantics", "reviewer")
+    assert store.matrix("Company")["questions"] == []
+    assert store.matrix("Company", ["rating"])["questions"] == []
+    assert store.overview()["entity_kinds"][0]["questions"] == 0
+    assert any(
+        event["event_type"] == "question.retire" and event["payload"]["question_id"] == question
+        for event in store.history()
+    )
+    with pytest.raises(EpiqError) as retired:
+        store.assert_claim(company, question, 4.9, "2026-08-17", evidence, "test")
+    assert retired.value.code == "question_retired"
+
+    store.set_question_visibility(question, True, "Needed after redesign", "reviewer")
+    cell = store.matrix("Company")["rows"][0]["cells"]["rating"]
+    assert cell["value"] == 4.8
+    assert cell["lineage"][0]["claim_id"] == claim
+    assert [event["event_type"] for event in store.history()][-1] == "question.restore"
 
 
 def test_agent_jobs_persist_replaceable_operational_state(store: Store) -> None:

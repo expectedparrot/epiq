@@ -18,6 +18,10 @@ type Selection = {
   question: Question;
   cell: Cell;
 };
+type SortState = {
+  key: string;
+  direction: "asc" | "desc";
+};
 type Dialog =
   | "entity"
   | "question"
@@ -30,6 +34,7 @@ type Dialog =
   | "policy"
   | "challenge"
   | "schemaChallenge"
+  | "retireQuestion"
   | "researchChallenge"
   | null;
 
@@ -44,6 +49,13 @@ const display = (value: unknown) => {
   if (typeof value === "number" && Number.isInteger(value))
     return integerFormat.format(value);
   return String(value);
+};
+const cellDisplay = (cell: Cell) => {
+  if (cell.state === "Answered") return display(cell.value ?? cell.values);
+  if (cell.state === "Contested")
+    return `${cell.values.length} competing answers`;
+  if (cell.state === "NotFound") return "No evidence found";
+  return "";
 };
 
 function parseValue(raw: string, type: string): unknown {
@@ -91,10 +103,22 @@ export default function App() {
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
   const [schemaChallengeQuestion, setSchemaChallengeQuestion] =
     useState<Question | null>(null);
+  const [retireQuestion, setRetireQuestion] = useState<Question | null>(null);
   const [questionChallenges, setQuestionChallenges] = useState<
     QuestionChallenge[]
   >([]);
   const [showSchemaReview, setShowSchemaReview] = useState(false);
+  const [filterText, setFilterText] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sort, setSort] = useState<SortState>({
+    key: "__entity__",
+    direction: "asc",
+  });
+  const [activeGridCell, setActiveGridCell] = useState<{
+    entityId: string;
+    questionId: string;
+  } | null>(null);
+  const [clipboardNotice, setClipboardNotice] = useState("");
   const layoutKey = `epiq-layout:${overview?.project.project_id ?? "project"}:${kind}`;
 
   const loadOverview = useCallback(async () => {
@@ -161,10 +185,22 @@ export default function App() {
       setWrapText(saved.wrapText ?? true);
       setColumnOrder(Array.isArray(saved.columnOrder) ? saved.columnOrder : []);
       setColumnWidths(saved.columnWidths ?? {});
+      setSort(
+        saved.sort?.key && ["asc", "desc"].includes(saved.sort.direction)
+          ? saved.sort
+          : { key: "__entity__", direction: "asc" },
+      );
+      setStatusFilter(
+        ["all", "answered", "unanswered", "review"].includes(saved.statusFilter)
+          ? saved.statusFilter
+          : "all",
+      );
     } catch {
       setWrapText(true);
       setColumnOrder([]);
       setColumnWidths({});
+      setSort({ key: "__entity__", direction: "asc" });
+      setStatusFilter("all");
     }
   }, [kind, overview, layoutKey]);
   useEffect(() => {
@@ -456,15 +492,66 @@ export default function App() {
   const tableWidth =
     132 +
     (columnWidths.__entity__ ?? 220) +
+    118 +
     displayedQuestions.reduce(
       (total, question) => total + (columnWidths[question.name] ?? 180),
       0,
     ) +
     50;
+  const displayedRows = useMemo(() => {
+    const rows = [...(matrix?.rows ?? [])];
+    const query = filterText.trim().toLocaleLowerCase();
+    const filtered = rows.filter((row) => {
+      const cells = Object.values(row.cells);
+      const matchesText =
+        !query ||
+        row.name.toLocaleLowerCase().includes(query) ||
+        cells.some((cell) =>
+          cellDisplay(cell).toLocaleLowerCase().includes(query),
+        );
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "answered" &&
+          cells.some((cell) => cell.state === "Answered")) ||
+        (statusFilter === "unanswered" &&
+          cells.some((cell) => cell.state === "Unasked")) ||
+        (statusFilter === "review" &&
+          cells.some(
+            (cell) =>
+              cell.state === "Contested" ||
+              cell.state === "NotFound" ||
+              cell.temporal?.freshness === "stale",
+          ));
+      return matchesText && matchesStatus;
+    });
+    const direction = sort.direction === "asc" ? 1 : -1;
+    return filtered.sort((left, right) => {
+      const leftValue =
+        sort.key === "__entity__"
+          ? left.name
+          : (left.cells[sort.key]?.value ?? left.cells[sort.key]?.values ?? "");
+      const rightValue =
+        sort.key === "__entity__"
+          ? right.name
+          : (right.cells[sort.key]?.value ??
+            right.cells[sort.key]?.values ??
+            "");
+      if (typeof leftValue === "number" && typeof rightValue === "number")
+        return (leftValue - rightValue) * direction;
+      return (
+        String(leftValue).localeCompare(String(rightValue), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }) * direction
+      );
+    });
+  }, [matrix, filterText, statusFilter, sort]);
   const saveLayout = (
     nextWrapText: boolean,
     nextOrder: string[],
     nextWidths: Record<string, number>,
+    nextSort: SortState = sort,
+    nextStatusFilter: string = statusFilter,
   ) => {
     localStorage.setItem(
       layoutKey,
@@ -472,8 +559,22 @@ export default function App() {
         wrapText: nextWrapText,
         columnOrder: nextOrder,
         columnWidths: nextWidths,
+        sort: nextSort,
+        statusFilter: nextStatusFilter,
       }),
     );
+  };
+  const toggleSort = (key: string) => {
+    const next: SortState = {
+      key,
+      direction: sort.key === key && sort.direction === "asc" ? "desc" : "asc",
+    };
+    setSort(next);
+    saveLayout(wrapText, columnOrder, columnWidths, next);
+  };
+  const updateStatusFilter = (value: string) => {
+    setStatusFilter(value);
+    saveLayout(wrapText, columnOrder, columnWidths, sort, value);
   };
   const toggleRows = () => {
     const next = !wrapText;
@@ -516,6 +617,84 @@ export default function App() {
     setColumnOrder(names);
     saveLayout(wrapText, names, columnWidths);
     setDraggedColumn(null);
+  };
+  const activateCell = (rowIndex: number, columnIndex: number) => {
+    const row = displayedRows[rowIndex];
+    const question = displayedQuestions[columnIndex];
+    if (!row || !question) return;
+    setActiveGridCell({
+      entityId: row.entity_id,
+      questionId: question.question_id,
+    });
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(
+          `[data-grid-row="${row.entity_id}"][data-grid-column="${question.question_id}"]`,
+        )
+        ?.focus();
+    });
+  };
+  const handleCellKey = async (
+    event: React.KeyboardEvent<HTMLTableCellElement>,
+    rowIndex: number,
+    columnIndex: number,
+    cell: Cell,
+  ) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+      event.preventDefault();
+      try {
+        await navigator.clipboard.writeText(cellDisplay(cell));
+        setClipboardNotice("Copied cell value");
+        window.setTimeout(() => setClipboardNotice(""), 1600);
+      } catch {
+        setError("Clipboard access was unavailable");
+      }
+      return;
+    }
+    const movement: Record<string, [number, number]> = {
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+      ArrowLeft: [0, -1],
+      ArrowRight: [0, 1],
+      Tab: [0, event.shiftKey ? -1 : 1],
+    };
+    if (event.key === "Escape") {
+      setSelection(null);
+      setActiveGridCell(null);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const row = displayedRows[rowIndex];
+      const question = displayedQuestions[columnIndex];
+      if (row && question) {
+        setSelection({
+          entityId: row.entity_id,
+          entityName: row.name,
+          question,
+          cell,
+        });
+      }
+      return;
+    }
+    const delta = movement[event.key];
+    if (!delta) return;
+    event.preventDefault();
+    let nextRow = rowIndex + delta[0];
+    let nextColumn = columnIndex + delta[1];
+    if (event.key === "Tab") {
+      if (nextColumn >= displayedQuestions.length) {
+        nextColumn = 0;
+        nextRow += 1;
+      } else if (nextColumn < 0) {
+        nextColumn = displayedQuestions.length - 1;
+        nextRow -= 1;
+      }
+    }
+    activateCell(
+      Math.max(0, Math.min(displayedRows.length - 1, nextRow)),
+      Math.max(0, Math.min(displayedQuestions.length - 1, nextColumn)),
+    );
   };
 
   if (loading)
@@ -607,8 +786,11 @@ export default function App() {
             <div>
               <h1>{kind}</h1>
               <p>
-                {matrix?.rows.length ?? 0} rows ·{" "}
-                {matrix?.questions.length ?? 0} research fields
+                {displayedRows.length}
+                {displayedRows.length !== (matrix?.rows.length ?? 0)
+                  ? ` of ${matrix?.rows.length ?? 0}`
+                  : ""}{" "}
+                rows · {matrix?.questions.length ?? 0} research fields
               </p>
             </div>
             <div className="actions">
@@ -629,6 +811,45 @@ export default function App() {
               </button>
             </div>
           </div>
+          <div className="view-toolbar" aria-label="Table view controls">
+            <label className="table-search">
+              <span>⌕</span>
+              <input
+                type="search"
+                value={filterText}
+                onChange={(event) => setFilterText(event.target.value)}
+                placeholder={`Filter ${kind.toLowerCase()} rows or values…`}
+                aria-label="Filter rows"
+              />
+            </label>
+            <select
+              value={statusFilter}
+              onChange={(event) => updateStatusFilter(event.target.value)}
+              aria-label="Filter by research status"
+            >
+              <option value="all">All rows</option>
+              <option value="answered">Has answers</option>
+              <option value="unanswered">Has unanswered fields</option>
+              <option value="review">Needs review</option>
+            </select>
+            {(filterText || statusFilter !== "all") && (
+              <button
+                className="clear-view-button"
+                onClick={() => {
+                  setFilterText("");
+                  updateStatusFilter("all");
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+            <span className="keyboard-hint">
+              Arrows move · Enter inspects · ⌘/Ctrl+C copies
+            </span>
+            {clipboardNotice && (
+              <span className="clipboard-notice">✓ {clipboardNotice}</span>
+            )}
+          </div>
           {error && (
             <div className="error-banner">
               {error}
@@ -643,6 +864,7 @@ export default function App() {
               <colgroup>
                 <col style={{ width: 132 }} />
                 <col style={{ width: columnWidths.__entity__ ?? 220 }} />
+                <col style={{ width: 118 }} />
                 {displayedQuestions.map((question) => (
                   <col
                     key={question.name}
@@ -652,34 +874,32 @@ export default function App() {
                 <col style={{ width: 50 }} />
               </colgroup>
               <thead>
-                <tr>
-                  <th className="row-number table-research-corner">
-                    <button
-                      title="Research every unanswered cell"
-                      onClick={() => void launchTableResearch()}
-                    >
-                      ✦ Research whole table
-                    </button>
-                  </th>
+                <tr className="field-header-row">
+                  <th className="row-number">#</th>
                   <th className="name-column entity-column-head">
                     <div className="entity-column-label">
-                      <span>{kind}</span>
+                      <button
+                        className="column-sort-button"
+                        onClick={() => toggleSort("__entity__")}
+                        title={`Sort by ${kind}`}
+                      >
+                        {kind}
+                        {sort.key === "__entity__" && (
+                          <i>{sort.direction === "asc" ? "↑" : "↓"}</i>
+                        )}
+                      </button>
                       <small>Entity · row identity</small>
                     </div>
-                    <button
-                      className="suggest-entities-button"
-                      title={`Find more ${kind.toLowerCase()} rows`}
-                      onClick={() => setDialog("suggestEntities")}
-                    >
-                      ✦ Suggest more
-                    </button>
                     <span
                       className="column-resizer"
                       onMouseDown={(event) => resizeColumn("__entity__", event)}
                     />
                   </th>
+                  <th className="row-action-column">
+                    <span>Row research</span>
+                    <small>Agent action</small>
+                  </th>
                   {displayedQuestions.map((question) => {
-                    const job = activeJobs.get(question.question_id);
                     return (
                       <th
                         key={question.question_id}
@@ -700,9 +920,16 @@ export default function App() {
                         onDrop={() => reorderColumn(question.name)}
                         onDragEnd={() => setDraggedColumn(null)}
                       >
-                        <span>
+                        <button
+                          className="column-sort-button"
+                          onClick={() => toggleSort(question.name)}
+                          title={`Sort by ${String(question.definition.label ?? question.name)}`}
+                        >
                           {String(question.definition.label ?? question.name)}
-                        </span>
+                          {sort.key === question.name && (
+                            <i>{sort.direction === "asc" ? "↑" : "↓"}</i>
+                          )}
+                        </button>
                         <small>
                           {question.value_type}
                           {question.definition.volatility &&
@@ -710,6 +937,47 @@ export default function App() {
                             ? ` · ${question.definition.volatility}`
                             : ""}
                         </small>
+                        <span
+                          className="column-resizer"
+                          onMouseDown={(event) =>
+                            resizeColumn(question.name, event)
+                          }
+                        />
+                      </th>
+                    );
+                  })}
+                  <th className="add-column">
+                    <button onClick={() => setDialog("question")}>＋</button>
+                  </th>
+                </tr>
+                <tr className="column-action-row">
+                  <th className="row-number table-research-corner">
+                    <button
+                      title="Research every unanswered cell"
+                      onClick={() => void launchTableResearch()}
+                    >
+                      ✦ Research all
+                    </button>
+                  </th>
+                  <th className="name-column entity-action-head">
+                    <button
+                      className="suggest-entities-button"
+                      title={`Find more ${kind.toLowerCase()} rows`}
+                      onClick={() => setDialog("suggestEntities")}
+                    >
+                      ✦ Suggest more {kind.toLowerCase()}s
+                    </button>
+                  </th>
+                  <th className="row-action-column action-row-label">
+                    Per row ↓
+                  </th>
+                  {displayedQuestions.map((question) => {
+                    const job = activeJobs.get(question.question_id);
+                    return (
+                      <th
+                        className="field-action-cell"
+                        key={question.question_id}
+                      >
                         <div className="column-actions">
                           <button
                             className={
@@ -749,23 +1017,25 @@ export default function App() {
                           >
                             {question.schema_state === "challenged" ? "⚠" : "?"}
                           </button>
+                          <button
+                            className="policy-button retire-field-button"
+                            title="Remove this field from the table"
+                            onClick={() => {
+                              setRetireQuestion(question);
+                              setDialog("retireQuestion");
+                            }}
+                          >
+                            ×
+                          </button>
                         </div>
-                        <span
-                          className="column-resizer"
-                          onMouseDown={(event) =>
-                            resizeColumn(question.name, event)
-                          }
-                        />
                       </th>
                     );
                   })}
-                  <th className="add-column">
-                    <button onClick={() => setDialog("question")}>＋</button>
-                  </th>
+                  <th className="add-column" />
                 </tr>
               </thead>
               <tbody>
-                {matrix?.rows.map((row, index) => {
+                {displayedRows.map((row, index) => {
                   const isResearching = activeRowEntityIds.has(row.entity_id);
                   return (
                     <tr
@@ -782,53 +1052,77 @@ export default function App() {
                       <td className="entity-name">
                         <div className="entity-inner">
                           <span>{row.name}</span>
-                          <button
-                            className="row-agent-button"
-                            title={`Research unanswered fields for ${row.name}`}
-                            onClick={() => {
-                              setRowResearchTarget({
-                                entityId: row.entity_id,
-                                entityName: row.name,
-                                missing: matrix.questions.filter(
-                                  (question) =>
-                                    row.cells[question.name].state ===
-                                    "Unasked",
-                                ).length,
-                              });
-                              setDialog("rowResearch");
-                            }}
-                          >
-                            ✦ Research row
-                          </button>
                         </div>
+                      </td>
+                      <td className="row-action-cell">
+                        <button
+                          className="row-agent-button"
+                          title={`Research unanswered fields for ${row.name}`}
+                          onClick={() => {
+                            setRowResearchTarget({
+                              entityId: row.entity_id,
+                              entityName: row.name,
+                              missing: displayedQuestions.filter(
+                                (question) =>
+                                  row.cells[question.name].state === "Unasked",
+                              ).length,
+                            });
+                            setDialog("rowResearch");
+                          }}
+                        >
+                          ✦ Research
+                        </button>
                       </td>
                       {displayedQuestions.map((question) => {
                         const cell = row.cells[question.name];
                         return (
                           <td
                             key={question.question_id}
-                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""}`}
-                            onClick={() =>
+                            data-grid-row={row.entity_id}
+                            data-grid-column={question.question_id}
+                            tabIndex={
+                              activeGridCell?.entityId === row.entity_id &&
+                              activeGridCell?.questionId ===
+                                question.question_id
+                                ? 0
+                                : -1
+                            }
+                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
+                            onFocus={() =>
+                              setActiveGridCell({
+                                entityId: row.entity_id,
+                                questionId: question.question_id,
+                              })
+                            }
+                            onKeyDown={(event) =>
+                              void handleCellKey(
+                                event,
+                                index,
+                                displayedQuestions.indexOf(question),
+                                cell,
+                              )
+                            }
+                            onClick={() => {
+                              setActiveGridCell({
+                                entityId: row.entity_id,
+                                questionId: question.question_id,
+                              });
+                            }}
+                            onDoubleClick={() => {
                               setSelection({
                                 entityId: row.entity_id,
                                 entityName: row.name,
                                 question,
                                 cell,
-                              })
-                            }
+                              });
+                            }}
                           >
                             <div className="cell-value">
                               {isCellResearching(
                                 row.entity_id,
                                 question.question_id,
                               ) && <span className="cell-spinner" />}
-                              {cell.state === "Answered"
-                                ? display(cell.value ?? cell.values)
-                                : cell.state === "Contested"
-                                  ? `${cell.values.length} competing answers`
-                                  : cell.state === "NotFound"
-                                    ? "No evidence found"
-                                    : ""}
+                              {cellDisplay(cell)}
                             </div>
                             {cell.state !== "Unasked" && (
                               <span className="state-dot" title={cell.state} />
@@ -847,7 +1141,7 @@ export default function App() {
                 })}
                 <tr className="add-row">
                   <td />
-                  <td colSpan={(matrix?.questions.length ?? 0) + 2}>
+                  <td colSpan={(matrix?.questions.length ?? 0) + 3}>
                     <button onClick={() => setDialog("entity")}>
                       ＋ Add row
                     </button>
@@ -865,6 +1159,21 @@ export default function App() {
                 </p>
                 <button className="primary" onClick={() => setDialog("entity")}>
                   Add first {kind.toLowerCase()}
+                </button>
+              </div>
+            )}
+            {(matrix?.rows.length ?? 0) > 0 && displayedRows.length === 0 && (
+              <div className="empty filtered-empty">
+                <div>⌕</div>
+                <h2>No rows match this view</h2>
+                <p>Try a different search or clear the status filter.</p>
+                <button
+                  onClick={() => {
+                    setFilterText("");
+                    updateStatusFilter("all");
+                  }}
+                >
+                  Clear filters
                 </button>
               </div>
             )}
@@ -1013,6 +1322,20 @@ export default function App() {
           onSaved={async () => {
             setDialog(null);
             await loadQuestionChallenges();
+            await loadMatrix();
+          }}
+        />
+      )}
+      {dialog === "retireQuestion" && retireQuestion && (
+        <RetireQuestionDialog
+          question={retireQuestion}
+          onClose={() => setDialog(null)}
+          onSaved={async () => {
+            setDialog(null);
+            setRetireQuestion(null);
+            setSelection(null);
+            setActiveGridCell(null);
+            await loadOverview();
             await loadMatrix();
           }}
         />
@@ -2231,6 +2554,70 @@ function SuggestFieldsDialog({
           Design fields →
         </button>
       </div>
+    </Modal>
+  );
+}
+
+function RetireQuestionDialog({
+  question,
+  onClose,
+  onSaved,
+}: {
+  question: Question;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const label = String(question.definition.label ?? question.name);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await post(`/api/questions/${question.question_id}/retire`, { reason });
+      await onSaved();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not remove field",
+      );
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal
+      title={`Remove “${label}”?`}
+      subtitle="The field disappears from the current spreadsheet, but its answers, evidence, and event history are preserved."
+      onClose={onClose}
+    >
+      <form onSubmit={(event) => void submit(event)}>
+        <div className="retire-field-explanation">
+          <span>Archive, don’t erase</span>
+          <p>
+            This records a <code>question.retire</code> event. Agents cannot add
+            new answers to the retired field. It can be restored later with
+            <code> epiq restore-question {question.name}</code>.
+          </p>
+        </div>
+        <label>
+          Why are you removing this field?
+          <textarea
+            required
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="For example: this asks for an aggregate rating, not a probability distribution."
+          />
+        </label>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="danger-button" disabled={saving || !reason.trim()}>
+            {saving ? "Removing…" : "Remove field"}
+          </button>
+        </div>
+      </form>
     </Modal>
   );
 }
