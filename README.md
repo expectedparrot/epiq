@@ -790,6 +790,19 @@ would bypass validation and the event log.
 
 ## Packaged examples
 
+### CLI-only scenario tutorials
+
+Four buildable, database-only tutorials live in [`examples/cli`](examples/cli/README.md): hiring
+committee feedback, investment opportunities, competitor feature comparison, and a public figure
+with one-to-many writing records. Build all four with:
+
+```bash
+uv run examples/cli/build-all.sh /tmp/epiq-cli-examples
+```
+
+Each tutorial is Markdown, every fixture enters through actual CLI commands, and the test suite
+rebuilds all four projects from scratch and runs their integrity checks.
+
 ### Patriots and transaction time
 
 The Patriots fixture demonstrates cells changing as results become known:

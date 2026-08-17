@@ -1,0 +1,44 @@
+[
+  {
+    "op": "evidence.add",
+    "ref": "alex_resume",
+    "url": "urn:epiq:synthetic-resume:alex-rivera",
+    "title": "Alex Rivera synthetic resume",
+    "retrieved_at": "2026-08-17",
+    "excerpt": "Alex Rivera is currently a machine-learning engineer and has led two applied modeling projects."
+  },
+  {
+    "op": "evidence.add",
+    "ref": "alex_interview_1",
+    "url": "urn:epiq:synthetic-interview:alex-rivera:technical",
+    "title": "Technical interview notes",
+    "retrieved_at": "2026-08-17",
+    "excerpt": "Interviewer A rated the technical performance strong, assigned 0.78 confidence in hire, and recommended Applied Scientist."
+  },
+  {
+    "op": "evidence.add",
+    "ref": "alex_interview_2",
+    "url": "urn:epiq:synthetic-interview:alex-rivera:systems",
+    "title": "Systems interview notes",
+    "retrieved_at": "2026-08-17",
+    "excerpt": "Interviewer B rated the technical performance mixed, assigned 0.58 confidence in hire, and recommended Research Engineer."
+  },
+  {
+    "op": "evidence.add",
+    "ref": "morgan_packet",
+    "url": "urn:epiq:synthetic-committee-packet:morgan-lee",
+    "title": "Morgan Lee synthetic committee packet",
+    "retrieved_at": "2026-08-17",
+    "excerpt": "Morgan is a research engineer. The committee assessed technical strength as exceptional and reached a hire recommendation."
+  },
+  {"op":"claim.assert","subject":"Alex Rivera","question":"current_role","value":"Machine-learning engineer","valid_from":"2026-08-17","evidence_refs":["alex_resume"]},
+  {"op":"claim.assert","subject":"Alex Rivera","question":"technical_strength","value":"strong","valid_from":"2026-08-17","evidence_refs":["alex_interview_1"]},
+  {"op":"claim.assert","subject":"Alex Rivera","question":"technical_strength","value":"mixed","valid_from":"2026-08-17","evidence_refs":["alex_interview_2"]},
+  {"op":"claim.assert","subject":"Alex Rivera","question":"interviewer_rating","value":0.78,"valid_from":"2026-08-17","evidence_refs":["alex_interview_1"]},
+  {"op":"claim.assert","subject":"Alex Rivera","question":"interviewer_rating","value":0.58,"valid_from":"2026-08-17","evidence_refs":["alex_interview_2"]},
+  {"op":"claim.assert","subject":"Alex Rivera","question":"recommended_role","value":"Applied Scientist","valid_from":"2026-08-17","evidence_refs":["alex_interview_1"]},
+  {"op":"claim.assert","subject":"Alex Rivera","question":"recommended_role","value":"Research Engineer","valid_from":"2026-08-17","evidence_refs":["alex_interview_2"]},
+  {"op":"claim.assert","subject":"Morgan Lee","question":"current_role","value":"Research engineer","valid_from":"2026-08-17","evidence_refs":["morgan_packet"]},
+  {"op":"claim.assert","subject":"Morgan Lee","question":"technical_strength","value":"exceptional","valid_from":"2026-08-17","evidence_refs":["morgan_packet"]},
+  {"op":"claim.assert","subject":"Morgan Lee","question":"committee_recommendation","value":"hire","valid_from":"2026-08-17","evidence_refs":["morgan_packet"]}
+]

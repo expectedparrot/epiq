@@ -1,0 +1,23 @@
+[
+  {"op":"evidence.add","ref":"atlas_docs","url":"https://example.test/atlas/docs","title":"Atlas product documentation","retrieved_at":"2026-08-17","excerpt":"Atlas provides a full API, user-selected language models, cloud deployment, and SSO on enterprise plans."},
+  {"op":"evidence.add","ref":"atlas_pricing","url":"https://example.test/atlas/pricing","title":"Atlas pricing","retrieved_at":"2026-08-17","excerpt":"Atlas plans start at $499 per month."},
+  {"op":"evidence.add","ref":"beacon_docs","url":"https://example.test/beacon/docs","title":"Beacon product documentation","retrieved_at":"2026-08-17","excerpt":"Beacon offers a limited API, selects models for customers, supports hybrid deployment, and includes SSO as a paid add-on."},
+  {"op":"evidence.add","ref":"beacon_pricing","url":"https://example.test/beacon/pricing","title":"Beacon pricing","retrieved_at":"2026-08-17","excerpt":"Beacon plans start at $299 per month."},
+  {"op":"evidence.add","ref":"cobalt_docs","url":"https://example.test/cobalt/docs","title":"Cobalt product documentation","retrieved_at":"2026-08-17","excerpt":"Cobalt has no public API, uses a fixed model, is cloud-only, and does not offer SSO."},
+  {"op":"evidence.add","ref":"cobalt_pricing","url":"https://example.test/cobalt/pricing","title":"Cobalt pricing","retrieved_at":"2026-08-17","excerpt":"Cobalt plans start at $99 per month."},
+  {"op":"claim.assert","subject":"Atlas Research","question":"api_access","value":"full","valid_from":"2026-08-17","evidence_refs":["atlas_docs"]},
+  {"op":"claim.assert","subject":"Atlas Research","question":"model_selection","value":"user_selected","valid_from":"2026-08-17","evidence_refs":["atlas_docs"]},
+  {"op":"claim.assert","subject":"Atlas Research","question":"starting_price","value":499,"valid_from":"2026-08-17","evidence_refs":["atlas_pricing"]},
+  {"op":"claim.assert","subject":"Atlas Research","question":"deployment","value":"cloud","valid_from":"2026-08-17","evidence_refs":["atlas_docs"]},
+  {"op":"claim.assert","subject":"Atlas Research","question":"sso_support","value":true,"valid_from":"2026-08-17","evidence_refs":["atlas_docs"]},
+  {"op":"claim.assert","subject":"Beacon Insights","question":"api_access","value":"limited","valid_from":"2026-08-17","evidence_refs":["beacon_docs"]},
+  {"op":"claim.assert","subject":"Beacon Insights","question":"model_selection","value":"vendor_selected","valid_from":"2026-08-17","evidence_refs":["beacon_docs"]},
+  {"op":"claim.assert","subject":"Beacon Insights","question":"starting_price","value":299,"valid_from":"2026-08-17","evidence_refs":["beacon_pricing"]},
+  {"op":"claim.assert","subject":"Beacon Insights","question":"deployment","value":"hybrid","valid_from":"2026-08-17","evidence_refs":["beacon_docs"]},
+  {"op":"claim.assert","subject":"Beacon Insights","question":"sso_support","value":true,"valid_from":"2026-08-17","evidence_refs":["beacon_docs"]},
+  {"op":"claim.assert","subject":"Cobalt Interviewer","question":"api_access","value":"none","valid_from":"2026-08-17","evidence_refs":["cobalt_docs"]},
+  {"op":"claim.assert","subject":"Cobalt Interviewer","question":"model_selection","value":"fixed","valid_from":"2026-08-17","evidence_refs":["cobalt_docs"]},
+  {"op":"claim.assert","subject":"Cobalt Interviewer","question":"starting_price","value":99,"valid_from":"2026-08-17","evidence_refs":["cobalt_pricing"]},
+  {"op":"claim.assert","subject":"Cobalt Interviewer","question":"deployment","value":"cloud","valid_from":"2026-08-17","evidence_refs":["cobalt_docs"]},
+  {"op":"claim.assert","subject":"Cobalt Interviewer","question":"sso_support","value":false,"valid_from":"2026-08-17","evidence_refs":["cobalt_docs"]}
+]
