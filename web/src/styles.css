@@ -652,6 +652,60 @@ button:hover {
 .data-cell.selected-cell {
   background: #eaf4ee;
 }
+.paste-preview {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 14px;
+  max-height: 240px;
+  overflow: auto;
+}
+.paste-preview-heading,
+.paste-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr 1fr 110px;
+  padding: 8px 10px;
+}
+.paste-preview-heading {
+  background: #f5f4ef;
+  grid-template-columns: 1fr auto;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.paste-preview-heading span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.paste-row {
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+.paste-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paste-row small {
+  color: var(--muted);
+}
+.paste-row.invalid {
+  background: #fff1ed;
+}
+.paste-row.invalid small {
+  color: #a74739;
+}
+.form-warning {
+  background: #fff7d9;
+  border: 1px solid #dfc36a;
+  border-radius: 7px;
+  color: #72550c;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+}
 .data-cell.active-cell {
   box-shadow: inset 0 0 0 2px #247354;
   outline: 0;

@@ -53,6 +53,15 @@ type SavedView = {
   columnWidths: Record<string, number>;
   hiddenColumns: string[];
 };
+type PastedClaim = {
+  entityId: string;
+  entityName: string;
+  question: Question;
+  rawValue: string;
+  existingState: string;
+  value?: unknown;
+  error?: string;
+};
 type Dialog =
   | "entity"
   | "entityKind"
@@ -69,6 +78,7 @@ type Dialog =
   | "editQuestion"
   | "retireQuestion"
   | "researchChallenge"
+  | "paste"
   | null;
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -101,9 +111,21 @@ function parseValue(raw: string, type: string): unknown {
     type.startsWith("Ref[")
   )
     return raw;
-  if (type === "Int") return Number.parseInt(raw, 10);
-  if (type === "Float" || type === "Probability") return Number(raw);
-  if (type === "Bool") return raw.toLowerCase() === "true";
+  if (type === "Int") {
+    if (!/^-?\d+$/.test(raw.trim())) throw new Error("Expected a whole number");
+    return Number.parseInt(raw, 10);
+  }
+  if (type === "Float" || type === "Probability") {
+    const value = Number(raw);
+    if (!Number.isFinite(value)) throw new Error("Expected a number");
+    return value;
+  }
+  if (type === "Bool") {
+    const normalized = raw.trim().toLowerCase();
+    if (["true", "yes", "1"].includes(normalized)) return true;
+    if (["false", "no", "0"].includes(normalized)) return false;
+    throw new Error("Expected Yes/No or True/False");
+  }
   return JSON.parse(raw);
 }
 
@@ -151,6 +173,7 @@ export default function App() {
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeViewId, setActiveViewId] = useState("");
+  const [pastedClaims, setPastedClaims] = useState<PastedClaim[]>([]);
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
   const [schemaChallengeQuestion, setSchemaChallengeQuestion] =
     useState<Question | null>(null);
@@ -1063,6 +1086,53 @@ export default function App() {
       event.shiftKey,
     );
   };
+  const preparePaste = (
+    event: React.ClipboardEvent<HTMLTableCellElement>,
+    startRow: number,
+    startColumn: number,
+  ) => {
+    const text = event.clipboardData.getData("text/plain");
+    if (!text.trim()) return;
+    event.preventDefault();
+    const grid = text
+      .replace(/\r\n?/g, "\n")
+      .replace(/\n$/, "")
+      .split("\n")
+      .map((line) => line.split("\t"));
+    const claims: PastedClaim[] = [];
+    grid.forEach((values, rowOffset) => {
+      values.forEach((rawValue, columnOffset) => {
+        const row = displayedRows[startRow + rowOffset];
+        const question = displayedQuestions[startColumn + columnOffset];
+        if (!row || !question || !rawValue.trim()) return;
+        try {
+          claims.push({
+            entityId: row.entity_id,
+            entityName: row.name,
+            question,
+            rawValue,
+            existingState: row.cells[question.name].state,
+            value: parseValue(rawValue, question.value_type),
+          });
+        } catch (caught) {
+          claims.push({
+            entityId: row.entity_id,
+            entityName: row.name,
+            question,
+            rawValue,
+            existingState: row.cells[question.name].state,
+            error: caught instanceof Error ? caught.message : "Invalid value",
+          });
+        }
+      });
+    });
+    if (!claims.length) {
+      setError("The pasted range did not contain values within the table");
+      return;
+    }
+    setPastedClaims(claims);
+    setDialog("paste");
+  };
 
   if (loading)
     return (
@@ -1347,7 +1417,7 @@ export default function App() {
               </button>
             )}
             <span className="keyboard-hint">
-              Arrows move · Enter inspects · ⌘/Ctrl+C copies
+              Arrows move · Enter inspects · ⌘/Ctrl+C copies · ⌘/Ctrl+V pastes
             </span>
           </div>
           {activeSelection && (
@@ -1695,6 +1765,9 @@ export default function App() {
                                 columnIndex,
                                 cell,
                               )
+                            }
+                            onPaste={(event) =>
+                              preparePaste(event, index, columnIndex)
                             }
                             onClick={(event) => {
                               const clicked = {
@@ -2097,6 +2170,21 @@ export default function App() {
           onSaved={async (job) => {
             setJobs((current) => [job, ...current]);
             setDialog(null);
+            await refresh();
+          }}
+        />
+      )}
+      {dialog === "paste" && pastedClaims.length > 0 && (
+        <PasteDialog
+          claims={pastedClaims}
+          onClose={() => {
+            setDialog(null);
+            setPastedClaims([]);
+          }}
+          onSaved={async () => {
+            setDialog(null);
+            setPastedClaims([]);
+            setClipboardNotice(`Added ${pastedClaims.length} sourced values`);
             await refresh();
           }}
         />
@@ -3180,6 +3268,176 @@ function ClaimDialog({
             Cancel
           </button>
           <button className="primary">Save evidence-backed answer</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function PasteDialog({
+  claims,
+  onClose,
+  onSaved,
+}: {
+  claims: PastedClaim[];
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [sourceType, setSourceType] = useState("report");
+  const [title, setTitle] = useState("Pasted spreadsheet data");
+  const [url, setUrl] = useState("");
+  const [excerpt, setExcerpt] = useState("");
+  const [confidence, setConfidence] = useState("high");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const invalid = claims.filter((claim) => claim.error);
+  const existing = claims.filter(
+    (claim) =>
+      claim.existingState !== "Unasked" && claim.existingState !== "NotFound",
+  );
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (invalid.length) return;
+    setBusy(true);
+    setError("");
+    try {
+      const evidenceRef = "pasted_source";
+      await post("/api/batch", {
+        actor: "human:web-paste",
+        operations: [
+          {
+            op: "evidence.add",
+            ref: evidenceRef,
+            source_type: sourceType,
+            url: sourceType === "web" ? url : `urn:epiq:${sourceType}`,
+            title,
+            retrieved_at: today(),
+            excerpt,
+          },
+          ...claims.map((claim) => ({
+            op: "claim.assert",
+            subject: claim.entityId,
+            question: claim.question.question_id,
+            value: claim.value,
+            valid_from: today(),
+            evidence_refs: [evidenceRef],
+            confidence,
+            temporal_basis:
+              sourceType === "web" || sourceType === "report"
+                ? "source"
+                : "observed",
+          })),
+        ],
+      });
+      await onSaved();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not paste values",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={`Paste ${claims.length} sourced value${claims.length === 1 ? "" : "s"}`}
+      subtitle="Review type conversion and attach shared evidence. The entire paste commits atomically."
+      onClose={onClose}
+    >
+      <form onSubmit={(event) => void submit(event)}>
+        <div className="paste-preview">
+          <div className="paste-preview-heading">
+            <b>Preview</b>
+            <span>
+              {invalid.length
+                ? `${invalid.length} invalid`
+                : "All values valid"}
+            </span>
+          </div>
+          {claims.map((claim, index) => (
+            <div
+              className={claim.error ? "paste-row invalid" : "paste-row"}
+              key={`${claim.entityId}:${claim.question.question_id}:${index}`}
+            >
+              <span>{claim.entityName}</span>
+              <span>
+                {String(claim.question.definition.label ?? claim.question.name)}
+              </span>
+              <code>{claim.rawValue}</code>
+              <small>{claim.error ?? claim.question.value_type}</small>
+            </div>
+          ))}
+        </div>
+        {existing.length > 0 && (
+          <div className="form-warning">
+            {existing.length} value{existing.length === 1 ? "" : "s"} will be
+            added to cells that already have research. Epiq preserves the
+            existing claims and may mark conflicting answers as contested.
+          </div>
+        )}
+        <div className="form-grid">
+          <label>
+            Evidence kind
+            <select
+              value={sourceType}
+              onChange={(event) => setSourceType(event.target.value)}
+            >
+              <option value="report">Report or document</option>
+              <option value="web">Web page</option>
+              <option value="personal">Personal knowledge</option>
+              <option value="model">Model output</option>
+              <option value="interview">Interview or conversation</option>
+              <option value="other">Other evidence</option>
+            </select>
+          </label>
+          <label>
+            Source title
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              required
+            />
+          </label>
+        </div>
+        {sourceType === "web" && (
+          <label>
+            Source URL
+            <input
+              type="url"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              required
+            />
+          </label>
+        )}
+        <label>
+          Evidence excerpt or provenance note
+          <textarea
+            value={excerpt}
+            onChange={(event) => setExcerpt(event.target.value)}
+            placeholder="Describe where this pasted table came from and what the values represent."
+            required
+          />
+        </label>
+        <label>
+          Confidence
+          <select
+            value={confidence}
+            onChange={(event) => setConfidence(event.target.value)}
+          >
+            <option>high</option>
+            <option>medium</option>
+            <option>low</option>
+          </select>
+        </label>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary" disabled={busy || invalid.length > 0}>
+            {busy ? "Writing batch…" : `Add ${claims.length} sourced values`}
+          </button>
         </div>
       </form>
     </Modal>
