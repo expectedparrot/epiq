@@ -15,6 +15,13 @@ If you are new to Epiq, read them in this order:
 4. [Public figure and writing](public-figure-writing/README.md) — multiple entity kinds and
    one-to-many relationships.
 
+Then use the stress tests to find the edges of the current product:
+
+5. [Forecasting tournament](forecasting-tournament/README.md) — repeated observations and derived scores.
+6. [SaaS pricing](saas-pricing/README.md) — multidimensional facts and join entities.
+7. [Literature review](literature-review/README.md) — findings, citations, and claims about claims.
+8. [Supply-chain risk](supply-chain-risk/README.md) — recursive relationships and risk propagation.
+
 Every tutorial has two ways to run it:
 
 - **Learning path:** type the displayed `epiq` commands in order and inspect each result. This is

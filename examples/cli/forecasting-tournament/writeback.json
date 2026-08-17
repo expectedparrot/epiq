@@ -1,0 +1,17 @@
+[
+  {"op":"evidence.add","ref":"alice17","url":"urn:epiq:model:alice-2026-08-17","source_type":"model","title":"Alice forecast submission","retrieved_at":"2026-08-17","excerpt":"Alice assigns a 0.30 probability to rain in Boston on August 20."},
+  {"op":"evidence.add","ref":"alice18","url":"urn:epiq:model:alice-2026-08-18","source_type":"model","title":"Alice revised forecast","retrieved_at":"2026-08-18","excerpt":"After new weather guidance, Alice assigns a 0.55 probability."},
+  {"op":"evidence.add","ref":"bob17","url":"urn:epiq:model:bob-2026-08-17","source_type":"model","title":"Bob forecast submission","retrieved_at":"2026-08-17","excerpt":"Bob assigns a 0.40 probability to rain in Boston on August 20."},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-17","question":"forecaster","value":"Alice","valid_from":"2026-08-17","evidence_refs":["alice17"]},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-17","question":"forecast_event","value":"Rain in Boston on August 20","valid_from":"2026-08-17","evidence_refs":["alice17"]},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-17","question":"probability","value":0.30,"valid_from":"2026-08-17","evidence_refs":["alice17"]},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-17","question":"issued_at","value":"2026-08-17T09:00:00-04:00","valid_from":"2026-08-17","evidence_refs":["alice17"]},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-18","question":"forecaster","value":"Alice","valid_from":"2026-08-18","evidence_refs":["alice18"]},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-18","question":"forecast_event","value":"Rain in Boston on August 20","valid_from":"2026-08-18","evidence_refs":["alice18"]},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-18","question":"probability","value":0.55,"valid_from":"2026-08-18","evidence_refs":["alice18"]},
+  {"op":"claim.assert","subject":"Alice forecast 2026-08-18","question":"issued_at","value":"2026-08-18T09:00:00-04:00","valid_from":"2026-08-18","evidence_refs":["alice18"]},
+  {"op":"claim.assert","subject":"Bob forecast 2026-08-17","question":"forecaster","value":"Bob","valid_from":"2026-08-17","evidence_refs":["bob17"]},
+  {"op":"claim.assert","subject":"Bob forecast 2026-08-17","question":"forecast_event","value":"Rain in Boston on August 20","valid_from":"2026-08-17","evidence_refs":["bob17"]},
+  {"op":"claim.assert","subject":"Bob forecast 2026-08-17","question":"probability","value":0.40,"valid_from":"2026-08-17","evidence_refs":["bob17"]},
+  {"op":"claim.assert","subject":"Bob forecast 2026-08-17","question":"issued_at","value":"2026-08-17T10:00:00-04:00","valid_from":"2026-08-17","evidence_refs":["bob17"]}
+]

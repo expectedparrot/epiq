@@ -1,0 +1,9 @@
+[
+{"op":"evidence.add","ref":"bom","url":"https://example.test/acorn/bom","title":"Acorn Sensor bill of materials","retrieved_at":"2026-08-17","excerpt":"The Acorn Sensor contains a Control Board; the board contains a Timing Chip supplied by Northstar Semiconductor."},
+{"op":"evidence.add","ref":"risk","url":"https://example.test/risk/northstar","title":"Supplier risk bulletin","retrieved_at":"2026-08-17","excerpt":"Northstar Semiconductor operates in East Asia and is currently rated high risk."},
+{"op":"claim.assert","subject":"Acorn Sensor","question":"component","value":"Control Board","valid_from":"2026-08-17","evidence_refs":["bom"]},
+{"op":"claim.assert","subject":"Control Board","question":"subcomponent","value":"Timing Chip","valid_from":"2026-08-17","evidence_refs":["bom"]},
+{"op":"claim.assert","subject":"Timing Chip","question":"supplier","value":"Northstar Semiconductor","valid_from":"2026-08-17","evidence_refs":["bom"]},
+{"op":"claim.assert","subject":"Northstar Semiconductor","question":"supplier_region","value":"East_Asia","valid_from":"2026-08-17","evidence_refs":["risk"]},
+{"op":"claim.assert","subject":"Northstar Semiconductor","question":"risk_level","value":"high","valid_from":"2026-08-17","evidence_refs":["risk"]}
+]

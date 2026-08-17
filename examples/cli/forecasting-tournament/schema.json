@@ -1,0 +1,18 @@
+{
+  "project": {"name": "Synthetic Forecasting Tournament"},
+  "entity_kinds": ["ForecastEvent", "Forecaster", "Forecast"],
+  "entities": [
+    {"kind":"ForecastEvent","name":"Rain in Boston on August 20"},
+    {"kind":"Forecaster","name":"Alice"},
+    {"kind":"Forecaster","name":"Bob"},
+    {"kind":"Forecast","name":"Alice forecast 2026-08-17"},
+    {"kind":"Forecast","name":"Alice forecast 2026-08-18"},
+    {"kind":"Forecast","name":"Bob forecast 2026-08-17"}
+  ],
+  "questions": [
+    {"name":"forecaster","subject_kind":"Forecast","value_type":"Ref[Forecaster]","definition":{"label":"Forecaster"}},
+    {"name":"forecast_event","subject_kind":"Forecast","value_type":"Ref[ForecastEvent]","definition":{"label":"Event"}},
+    {"name":"probability","subject_kind":"Forecast","value_type":"Probability","definition":{"label":"Probability"}},
+    {"name":"issued_at","subject_kind":"Forecast","value_type":"DateTime","definition":{"label":"Issued at"}}
+  ]
+}

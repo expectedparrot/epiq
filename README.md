@@ -840,17 +840,17 @@ would bypass validation and the event log.
 
 ## Packaged CLI tutorials
 
-Four narrated, executable tutorials live in [`examples/cli`](examples/cli/README.md). Each teaches
-the model with incremental CLI commands before showing the JSON used for repeatable fixtures: hiring
-committee feedback, investment opportunities, competitor feature comparison, and a public figure
-with one-to-many writing records. Build all four with:
+Eight narrated, executable tutorials live in [`examples/cli`](examples/cli/README.md). Four teach
+the model with incremental CLI commands; four stress-test repeated forecasts, multidimensional
+pricing, literature findings, and recursive supply chains while documenting product gaps. Build all
+eight with:
 
 ```bash
 uv run examples/cli/build-all.sh /tmp/epiq-cli-examples
 ```
 
 Each tutorial is Markdown, every fixture enters through actual CLI commands, and the test suite
-rebuilds all four projects from scratch and runs their integrity checks.
+rebuilds all eight projects from scratch and runs their integrity checks.
 
 ### Patriots and transaction time
 
