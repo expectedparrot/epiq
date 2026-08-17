@@ -106,6 +106,15 @@ CREATE TABLE IF NOT EXISTS question_visibility (
     changed_seq INTEGER NOT NULL REFERENCES events(seq)
 );
 
+CREATE TABLE IF NOT EXISTS question_lineage (
+    predecessor_question_id TEXT NOT NULL REFERENCES questions(question_id),
+    successor_question_id TEXT NOT NULL REFERENCES questions(question_id),
+    relationship TEXT NOT NULL CHECK(relationship IN ('replaces', 'splits', 'refines')),
+    reason TEXT NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    PRIMARY KEY(predecessor_question_id, successor_question_id)
+);
+
 CREATE TABLE IF NOT EXISTS sources (
     source_id TEXT PRIMARY KEY,
     url TEXT NOT NULL,
@@ -313,7 +322,7 @@ class Store:
                 [
                     ("project_id", _id("prj")),
                     ("name", name),
-                    ("schema_version", "8"),
+                    ("schema_version", "9"),
                     ("created_at", _now()),
                 ],
             )
@@ -465,6 +474,17 @@ class Store:
                 ON claim_proposals(status, created_seq);
                 UPDATE meta SET value='8'
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<8;
+                CREATE TABLE IF NOT EXISTS question_lineage (
+                    predecessor_question_id TEXT NOT NULL REFERENCES questions(question_id),
+                    successor_question_id TEXT NOT NULL REFERENCES questions(question_id),
+                    relationship TEXT NOT NULL
+                        CHECK(relationship IN ('replaces', 'splits', 'refines')),
+                    reason TEXT NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq),
+                    PRIMARY KEY(predecessor_question_id, successor_question_id)
+                );
+                UPDATE meta SET value='9'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<9;
                 """
             )
             connection.commit()
@@ -523,6 +543,7 @@ class Store:
                     "entity_redirects",
                     "entity_visibility",
                     "questions",
+                    "question_lineage",
                     "question_visibility",
                     "sources",
                     "evidence",
@@ -833,25 +854,156 @@ class Store:
         """Add the next immutable version of a typed question."""
         self._check_type_declaration(value_type)
         with self.transaction() as connection:
-            row = connection.execute(
-                "SELECT COALESCE(MAX(version),0)+1 AS version FROM questions WHERE name=?", (name,)
-            ).fetchone()
-            version = int(row["version"])
-            question_id = f"q_{name}_v{version}"
-            payload = {
-                "question_id": question_id,
-                "name": name,
-                "version": version,
-                "subject_kind": subject_kind,
-                "value_type": value_type,
-                "definition": definition,
-            }
-            seq, _, _ = self._event(connection, "question.define", actor, payload)
-            connection.execute(
-                "INSERT INTO questions VALUES(?,?,?,?,?,?,?)",
-                (question_id, name, version, subject_kind, value_type, _json(definition), seq),
+            return self._add_question_tx(
+                connection, name, subject_kind, value_type, definition, actor
+            )[0]
+
+    def _add_question_tx(
+        self,
+        connection: sqlite3.Connection,
+        name: str,
+        subject_kind: str,
+        value_type: str,
+        definition: dict[str, Any],
+        actor: str,
+    ) -> tuple[str, int]:
+        self._check_type_declaration(value_type)
+        if not name.strip():
+            raise EpiqError("invalid_question_name", "Question name cannot be empty")
+        row = connection.execute(
+            "SELECT COALESCE(MAX(version),0)+1 AS version FROM questions WHERE name=?", (name,)
+        ).fetchone()
+        version = int(row["version"])
+        question_id = f"q_{name}_v{version}"
+        payload = {
+            "question_id": question_id,
+            "name": name,
+            "version": version,
+            "subject_kind": subject_kind,
+            "value_type": value_type,
+            "definition": definition,
+        }
+        seq, _, _ = self._event(connection, "question.define", actor, payload)
+        connection.execute(
+            "INSERT INTO questions VALUES(?,?,?,?,?,?,?)",
+            (question_id, name, version, subject_kind, value_type, _json(definition), seq),
+        )
+        return question_id, seq
+
+    def evolve_question(
+        self,
+        predecessor: str,
+        replacements: list[dict[str, Any]],
+        relationship: str,
+        reason: str,
+        actor: str,
+        retire_predecessor: bool = True,
+    ) -> list[str]:
+        """Atomically replace, refine, or split a field with explicit schema lineage."""
+        if relationship not in {"replaces", "splits", "refines"}:
+            raise EpiqError("invalid_schema_relationship", f"Unknown relationship: {relationship}")
+        if not reason.strip():
+            raise EpiqError("reason_required", "A schema-evolution reason is required")
+        if not replacements:
+            raise EpiqError("replacement_required", "At least one successor question is required")
+        if relationship != "splits" and len(replacements) != 1:
+            raise EpiqError(
+                "invalid_schema_evolution",
+                f"{relationship} requires exactly one successor; use splits for several",
             )
-        return question_id
+        successor_ids: list[str] = []
+        with self.transaction() as connection:
+            old = self._resolve_question(connection, predecessor)
+            for index, replacement in enumerate(replacements):
+                try:
+                    subject_kind = str(replacement.get("subject_kind", old["subject_kind"]))
+                    if subject_kind != old["subject_kind"]:
+                        raise EpiqError(
+                            "subject_type_mismatch",
+                            "Schema evolution cannot change the field's subject entity kind",
+                        )
+                    question_id, _ = self._add_question_tx(
+                        connection,
+                        str(replacement["name"]),
+                        subject_kind,
+                        str(replacement["value_type"]),
+                        dict(replacement.get("definition", {})),
+                        actor,
+                    )
+                except KeyError as error:
+                    raise EpiqError(
+                        "invalid_replacement",
+                        f"Replacement {index} is missing {error.args[0]}",
+                    ) from error
+                successor_ids.append(question_id)
+            seq, _, _ = self._event(
+                connection,
+                "question.evolve",
+                actor,
+                {
+                    "predecessor_question_id": str(old["question_id"]),
+                    "successor_question_ids": successor_ids,
+                    "relationship": relationship,
+                    "reason": reason.strip(),
+                    "retired_predecessor": retire_predecessor,
+                },
+            )
+            connection.executemany(
+                "INSERT INTO question_lineage VALUES(?,?,?,?,?)",
+                [
+                    (str(old["question_id"]), successor, relationship, reason.strip(), seq)
+                    for successor in successor_ids
+                ],
+            )
+            successor_names = {str(item["name"]) for item in replacements}
+            if retire_predecessor and str(old["name"]) not in successor_names:
+                connection.execute(
+                    """INSERT INTO question_visibility VALUES(?,?,?,?,?)
+                       ON CONFLICT(name) DO UPDATE SET visible=excluded.visible,
+                         reason=excluded.reason,question_id=excluded.question_id,
+                         changed_seq=excluded.changed_seq""",
+                    (str(old["name"]), 0, reason.strip(), str(old["question_id"]), seq),
+                )
+        return successor_ids
+
+    def question_lineage(self, reference: str) -> dict[str, Any]:
+        """Describe incoming and outgoing schema-evolution edges for a field version."""
+        with self.connect() as connection:
+            question = self._resolve_question(connection, reference)
+            outgoing = connection.execute(
+                """SELECT l.*,q.name successor_name FROM question_lineage l
+                   JOIN questions q ON q.question_id=l.successor_question_id
+                   WHERE l.predecessor_question_id=? ORDER BY l.created_seq""",
+                (question["question_id"],),
+            ).fetchall()
+            incoming = connection.execute(
+                """SELECT l.*,q.name predecessor_name FROM question_lineage l
+                   JOIN questions q ON q.question_id=l.predecessor_question_id
+                   WHERE l.successor_question_id=? ORDER BY l.created_seq""",
+                (question["question_id"],),
+            ).fetchall()
+        return {
+            "question_id": str(question["question_id"]),
+            "name": str(question["name"]),
+            "predecessors": [
+                {
+                    "question_id": str(row["predecessor_question_id"]),
+                    "name": str(row["predecessor_name"]),
+                    "relationship": str(row["relationship"]),
+                    "reason": str(row["reason"]),
+                }
+                for row in incoming
+            ],
+            "successors": [
+                {
+                    "question_id": str(row["successor_question_id"]),
+                    "name": str(row["successor_name"]),
+                    "relationship": str(row["relationship"]),
+                    "reason": str(row["reason"]),
+                }
+                for row in outgoing
+            ],
+        }
 
     def set_question_visibility(
         self, reference: str, visible: bool, reason: str, actor: str

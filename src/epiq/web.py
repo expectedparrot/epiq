@@ -88,6 +88,21 @@ class QuestionVisibilityCreate(BaseModel):
     actor: str = "human:web"
 
 
+class QuestionReplacement(BaseModel):
+    name: str = Field(pattern=r"^[a-z_][a-z0-9_]*$")
+    value_type: str = Field(min_length=1)
+    subject_kind: str | None = None
+    definition: dict[str, Any] = Field(default_factory=dict)
+
+
+class QuestionEvolutionCreate(BaseModel):
+    replacements: list[QuestionReplacement] = Field(min_length=1)
+    relationship: Literal["replaces", "splits", "refines"]
+    reason: str = Field(min_length=1)
+    retire_predecessor: bool = True
+    actor: str = "human:web"
+
+
 class QuestionChallengeCreate(BaseModel):
     problem: str
     explanation: str = Field(min_length=1)
@@ -522,6 +537,23 @@ def create_app(
     def restore_question(question_id: str, body: QuestionVisibilityCreate) -> dict[str, str]:
         resolved = store().set_question_visibility(question_id, True, body.reason, body.actor)
         return {"question_id": resolved, "status": "active"}
+
+    @app.post("/api/questions/{question_id}/evolve", status_code=201)
+    def evolve_question(question_id: str, body: QuestionEvolutionCreate) -> dict[str, Any]:
+        replacements = [item.model_dump(exclude_none=True) for item in body.replacements]
+        successors = store().evolve_question(
+            question_id,
+            replacements,
+            body.relationship,
+            body.reason,
+            body.actor,
+            body.retire_predecessor,
+        )
+        return {"successor_question_ids": successors}
+
+    @app.get("/api/questions/{question_id}/lineage")
+    def question_lineage(question_id: str) -> dict[str, Any]:
+        return store().question_lineage(question_id)
 
     @app.post("/api/questions/{question_id}/challenges", status_code=201)
     def challenge_question(question_id: str, body: QuestionChallengeCreate) -> dict[str, str]:

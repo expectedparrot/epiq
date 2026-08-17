@@ -237,7 +237,7 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "8"
+    assert store.overview()["project"]["schema_version"] == "9"
 
 
 def test_entity_alias_merge_and_retirement_preserve_identity_history(store: Store) -> None:
@@ -412,6 +412,62 @@ def test_question_retirement_hides_projection_but_preserves_and_restores_history
     assert cell["value"] == 4.8
     assert cell["lineage"][0]["claim_id"] == claim
     assert [event["event_type"] for event in store.history()][-1] == "question.restore"
+
+
+def test_question_split_is_atomic_and_records_executable_lineage(store: Store) -> None:
+    store.add_entity("Boat", "Quest", {}, "test")
+    old = store.add_question("has_spinnaker", "Boat", "Bool", {}, "test")
+    successors = store.evolve_question(
+        old,
+        [
+            {
+                "name": "spinnaker_available",
+                "value_type": "Enum[standard,optional,unavailable,unknown]",
+                "definition": {"label": "Spinnaker availability"},
+            },
+            {
+                "name": "spinnaker_installed",
+                "value_type": "Bool",
+                "definition": {"label": "Spinnaker installed on this boat"},
+            },
+        ],
+        "splits",
+        "The Boolean conflated capability and current configuration",
+        "reviewer",
+    )
+    assert [item["name"] for item in store.matrix("Boat")["questions"]] == [
+        "spinnaker_available",
+        "spinnaker_installed",
+    ]
+    lineage = store.question_lineage(old)
+    assert [item["question_id"] for item in lineage["successors"]] == successors
+    assert all(item["relationship"] == "splits" for item in lineage["successors"])
+    assert store.question_lineage(successors[0])["predecessors"][0]["question_id"] == old
+    assert store.history()[-1]["event_type"] == "question.evolve"
+
+
+def test_invalid_question_evolution_rolls_back_created_successors(store: Store) -> None:
+    old = store.add_question("ambiguous", "Company", "Bool", {}, "test")
+    before = len(store.history())
+    with pytest.raises(EpiqError, match="Unknown or malformed"):
+        store.evolve_question(
+            old,
+            [
+                {"name": "valid_first", "value_type": "String"},
+                {"name": "bad_second", "value_type": "Nonsense"},
+            ],
+            "splits",
+            "Fix ambiguity",
+            "reviewer",
+        )
+    assert len(store.history()) == before
+    with store.connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM questions WHERE name IN ('valid_first','bad_second')"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_agent_jobs_persist_replaceable_operational_state(store: Store) -> None:

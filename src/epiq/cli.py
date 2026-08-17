@@ -162,6 +162,24 @@ def parser() -> argparse.ArgumentParser:
     restore_question.add_argument("question")
     restore_question.add_argument("--reason", required=True)
 
+    evolve_question = commands.add_parser(
+        "evolve-question", help="Replace, refine, or split a field with explicit lineage"
+    )
+    evolve_question.add_argument("question")
+    evolve_question.add_argument(
+        "--relationship", choices=["replaces", "splits", "refines"], required=True
+    )
+    evolve_question.add_argument(
+        "--replacement", action="append", required=True, help="JSON successor field definition"
+    )
+    evolve_question.add_argument("--reason", required=True)
+    evolve_question.add_argument("--keep-predecessor", action="store_true")
+
+    question_lineage = commands.add_parser(
+        "question-lineage", help="Show predecessor and successor fields"
+    )
+    question_lineage.add_argument("question")
+
     evidence = commands.add_parser("evidence", help="Add a source and evidence fragment")
     evidence.add_argument("--url", required=True)
     evidence.add_argument("--title", required=True)
@@ -548,6 +566,19 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "question_id": question_id,
             "status": "active" if visible else "retired",
         }
+    if args.command == "evolve-question":
+        replacements = [_attributes(item) for item in args.replacement]
+        successor_ids = store.evolve_question(
+            args.question,
+            replacements,
+            args.relationship,
+            args.reason,
+            args.actor,
+            not args.keep_predecessor,
+        )
+        return {"ok": True, "successor_question_ids": successor_ids}
+    if args.command == "question-lineage":
+        return store.question_lineage(args.question)
     if args.command == "evidence":
         source_id, evidence_id = store.add_evidence(
             args.url, args.title, args.retrieved_at, args.excerpt, args.actor

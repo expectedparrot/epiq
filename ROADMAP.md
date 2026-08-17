@@ -17,13 +17,15 @@ tables.
 - Reversible field retirement: `question.retire` removes an unsuitable column from current
   projections and agent work without deleting its schema, claims, evidence, or history;
   `question.restore` brings it back.
-- Schema-versioned automatic migrations (currently v8).
+- Schema-versioned automatic migrations (currently v9).
 - Stable entity identity with normalized duplicate rejection, aliases, merge redirects, and
   reversible entity retirement. Historical claims keep their original subject IDs while current
   projections unify merged identities.
 - Typed relationships (`Ref[EntityKind]`) and unit-bearing numeric measurements (`Quantity[unit]`).
 - Durable, validated claim proposals with atomic multi-selection approval/rejection, plus atomic
   direct claim batches that roll back every event and projection when any item fails.
+- Executable schema evolution for replacing, refining, or splitting fields atomically, with typed
+  successor definitions, predecessor/successor lineage, and reversible old-field retirement.
 - Durable agent jobs and proposals. Completed jobs survive restarts; interrupted jobs become explicit
   failures rather than remaining permanently “running.”
 - Consistent online SQLite backups and a `doctor` integrity command.
@@ -53,7 +55,8 @@ tables.
 - Deterministic contradiction reports, entity dossiers, timelines, and change-since-baseline reports.
 - Rich duplicate suggestions and interactive merge review on top of the implemented alias/merge
   primitives.
-- Schema evolution assistant for splitting or replacing challenged questions while retaining lineage.
+- A schema evolution assistant UI that turns challenge proposals into the implemented evolution
+  operation.
 
 ## P3 — spreadsheet interaction
 

@@ -350,6 +350,25 @@ epiq --actor agent:research bulk-assert --input claims.json
 # Use --input - to read the JSON array from stdin.
 ```
 
+### Evolve a field without losing its history
+
+A category error can be resolved as an executable schema transformation. For example, split one
+ambiguous Boolean into two separately answerable fields:
+
+```bash
+epiq evolve-question has_spinnaker \
+  --relationship splits \
+  --reason "Capability and installed configuration are distinct" \
+  --replacement '{"name":"spinnaker_available","value_type":"Enum[standard,optional,unavailable,unknown]"}' \
+  --replacement '{"name":"spinnaker_installed","value_type":"Bool"}'
+
+epiq question-lineage has_spinnaker
+```
+
+The successor definitions, lineage edges, and predecessor retirement commit together. Existing
+claims remain attached to the old question version and therefore remain historically inspectable;
+Epiq does not guess how to migrate semantically ambiguous answers.
+
 ### 7. Inspect the projection
 
 ```bash
@@ -917,6 +936,8 @@ The principal endpoints are:
 | `POST` | `/api/questions` | Add a typed, versioned column |
 | `POST` | `/api/questions/{id}/retire` | Hide a field while preserving its history |
 | `POST` | `/api/questions/{id}/restore` | Restore a retired field and its prior values |
+| `POST` | `/api/questions/{id}/evolve` | Atomically replace, refine, or split a field |
+| `GET` | `/api/questions/{id}/lineage` | Read schema predecessor/successor lineage |
 | `POST` | `/api/questions/{id}/challenges` | Record a schema/category challenge |
 | `GET` | `/api/question-challenges` | List and filter schema challenges |
 | `POST` | `/api/question-challenges/{id}/resolve` | Resolve or dismiss a challenge |
