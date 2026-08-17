@@ -229,6 +229,11 @@ def parser() -> argparse.ArgumentParser:
     )
     bulk_assert.add_argument("--input", required=True, help="JSON file, or - for standard input")
 
+    batch_write = commands.add_parser(
+        "batch-write", help="Atomically add evidence and claims with local references"
+    )
+    batch_write.add_argument("--input", required=True, help="JSON file, or - for standard input")
+
     propose_claim = commands.add_parser(
         "propose-claim", help="Stage a validated claim for human review"
     )
@@ -667,6 +672,12 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             raise EpiqError("invalid_batch", "Bulk assertion input must be a JSON array")
         claim_ids = store.assert_claims_bulk(items, args.actor)
         return {"ok": True, "count": len(claim_ids), "claim_ids": claim_ids}
+    if args.command == "batch-write":
+        operations = _json_file(args.input)
+        if not isinstance(operations, list):
+            raise EpiqError("invalid_batch", "Batch write input must be a JSON array")
+        results = store.write_batch(operations, args.actor)
+        return {"ok": True, "count": len(results), "results": results}
     if args.command == "propose-claim":
         proposal_id = store.propose_claim(
             args.subject,

@@ -1334,6 +1334,21 @@ class Store:
         published_at: str | None = None,
     ) -> tuple[str, str]:
         """Atomically add a source and an immutable evidence fragment."""
+        with self.transaction() as connection:
+            return self._add_evidence_tx(
+                connection, url, title, retrieved_at, excerpt, actor, published_at
+            )
+
+    def _add_evidence_tx(
+        self,
+        connection: sqlite3.Connection,
+        url: str,
+        title: str,
+        retrieved_at: str,
+        excerpt: str,
+        actor: str,
+        published_at: str | None = None,
+    ) -> tuple[str, str]:
         canonical_url = canonicalize_url(url)
         normalized_excerpt = _normalize_excerpt(excerpt)
         if not normalized_excerpt:
@@ -1342,46 +1357,45 @@ class Store:
         evidence_hash = hashlib.sha256(
             f"{canonical_url}\n{normalized_excerpt}".encode()
         ).hexdigest()
-        with self.transaction() as connection:
-            existing = connection.execute(
-                "SELECT evidence_id, source_id FROM evidence WHERE content_hash=?", (evidence_hash,)
-            ).fetchone()
-            if existing:
-                return str(existing["source_id"]), str(existing["evidence_id"])
-            source_id, evidence_id = _id("src"), _id("evd")
-            seq, _, _ = self._event(
-                connection,
-                "evidence.add",
-                actor,
-                {
-                    "source_id": source_id,
-                    "evidence_id": evidence_id,
-                    "url": canonical_url,
-                    "title": title,
-                    "retrieved_at": retrieved_at,
-                    "published_at": published_at,
-                    "excerpt": normalized_excerpt,
-                    "content_hash": evidence_hash,
-                },
-            )
-            connection.execute(
-                """INSERT INTO sources
-                   (source_id,url,title,retrieved_at,published_at,content_hash,created_seq)
-                   VALUES(?,?,?,?,?,?,?)""",
-                (
-                    source_id,
-                    canonical_url,
-                    title,
-                    retrieved_at,
-                    published_at,
-                    source_hash,
-                    seq,
-                ),
-            )
-            connection.execute(
-                "INSERT INTO evidence VALUES(?,?,?,?,?)",
-                (evidence_id, source_id, normalized_excerpt, evidence_hash, seq),
-            )
+        existing = connection.execute(
+            "SELECT evidence_id, source_id FROM evidence WHERE content_hash=?", (evidence_hash,)
+        ).fetchone()
+        if existing:
+            return str(existing["source_id"]), str(existing["evidence_id"])
+        source_id, evidence_id = _id("src"), _id("evd")
+        seq, _, _ = self._event(
+            connection,
+            "evidence.add",
+            actor,
+            {
+                "source_id": source_id,
+                "evidence_id": evidence_id,
+                "url": canonical_url,
+                "title": title,
+                "retrieved_at": retrieved_at,
+                "published_at": published_at,
+                "excerpt": normalized_excerpt,
+                "content_hash": evidence_hash,
+            },
+        )
+        connection.execute(
+            """INSERT INTO sources
+               (source_id,url,title,retrieved_at,published_at,content_hash,created_seq)
+               VALUES(?,?,?,?,?,?,?)""",
+            (
+                source_id,
+                canonical_url,
+                title,
+                retrieved_at,
+                published_at,
+                source_hash,
+                seq,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO evidence VALUES(?,?,?,?,?)",
+            (evidence_id, source_id, normalized_excerpt, evidence_hash, seq),
+        )
         return source_id, evidence_id
 
     def assess_evidence(self, evidence_id: str, status: str, reason: str, actor: str) -> str:
@@ -1560,6 +1574,83 @@ class Store:
                     ) from error
                 claim_ids.append(claim_id)
         return claim_ids
+
+    def write_batch(self, operations: list[dict[str, Any]], actor: str) -> list[dict[str, Any]]:
+        """Atomically add evidence and dependent claims using batch-local evidence references."""
+        if not operations:
+            raise EpiqError("empty_batch", "A write batch must contain at least one operation")
+        if len(operations) > 2000:
+            raise EpiqError("batch_too_large", "A write batch cannot exceed 2,000 operations")
+        evidence_refs: dict[str, str] = {}
+        results: list[dict[str, Any]] = []
+        with self.transaction() as connection:
+            for index, operation in enumerate(operations):
+                try:
+                    kind = str(operation["op"])
+                    if kind == "evidence.add":
+                        reference = str(operation.get("ref", "")).strip()
+                        if reference and reference in evidence_refs:
+                            raise EpiqError(
+                                "duplicate_batch_ref", f"Duplicate evidence ref: {reference}"
+                            )
+                        source_id, evidence_id = self._add_evidence_tx(
+                            connection,
+                            str(operation["url"]),
+                            str(operation["title"]),
+                            str(operation["retrieved_at"]),
+                            str(operation["excerpt"]),
+                            actor,
+                            (
+                                str(operation["published_at"])
+                                if operation.get("published_at") is not None
+                                else None
+                            ),
+                        )
+                        if reference:
+                            evidence_refs[reference] = evidence_id
+                        results.append(
+                            {
+                                "op": kind,
+                                "ref": reference or None,
+                                "source_id": source_id,
+                                "evidence_id": evidence_id,
+                            }
+                        )
+                    elif kind == "claim.assert":
+                        evidence_ids = [str(item) for item in operation.get("evidence_ids", [])]
+                        for reference in operation.get("evidence_refs", []):
+                            key = str(reference)
+                            if key not in evidence_refs:
+                                raise EpiqError(
+                                    "batch_ref_not_found", f"Evidence ref not found: {key}"
+                                )
+                            evidence_ids.append(evidence_refs[key])
+                        claim_id, _, _ = self._assert_claim_tx(
+                            connection,
+                            str(operation["subject"]),
+                            str(operation["question"]),
+                            operation["value"],
+                            str(operation["valid_from"]),
+                            evidence_ids,
+                            actor,
+                            confidence=str(operation.get("confidence", "high")),
+                            temporal_basis=str(operation.get("temporal_basis", "observed")),
+                        )
+                        results.append({"op": kind, "claim_id": claim_id})
+                    else:
+                        raise EpiqError("unsupported_batch_operation", f"Unknown operation: {kind}")
+                except KeyError as error:
+                    raise EpiqError(
+                        "invalid_batch_item",
+                        f"Write batch item {index} is missing {error.args[0]}",
+                    ) from error
+                except EpiqError as error:
+                    raise EpiqError(
+                        error.code,
+                        f"Write batch item {index}: {error.message}",
+                        error.suggestion,
+                    ) from error
+        return results
 
     def propose_claim(
         self,

@@ -23,7 +23,8 @@ tables.
   projections unify merged identities.
 - Typed relationships (`Ref[EntityKind]`) and unit-bearing numeric measurements (`Quantity[unit]`).
 - Durable, validated claim proposals with atomic multi-selection approval/rejection, plus atomic
-  direct claim batches that roll back every event and projection when any item fails.
+  direct claim batches and evidence-plus-claim writebacks with batch-local references. Any invalid
+  operation rolls back every source, evidence fragment, event, and claim in the batch.
 - Executable schema evolution for replacing, refining, or splitting fields atomically, with typed
   successor definitions, predecessor/successor lineage, and reversible old-field retirement.
 - Bitemporal fact endings (`claim.validity_end`) that preserve what the database believed before it

@@ -350,6 +350,33 @@ epiq --actor agent:research bulk-assert --input claims.json
 # Use --input - to read the JSON array from stdin.
 ```
 
+When evidence and claims are both new, use `batch-write`. An `evidence.add` operation can define a
+batch-local `ref`; later `claim.assert` operations consume it through `evidence_refs`:
+
+```json
+[
+  {
+    "op": "evidence.add",
+    "ref": "funding_announcement",
+    "url": "https://example.com/news",
+    "title": "Funding announcement",
+    "retrieved_at": "2026-08-17",
+    "excerpt": "Acme has raised $12 million."
+  },
+  {
+    "op": "claim.assert",
+    "subject": "Acme",
+    "question": "funding",
+    "value": 12000000,
+    "valid_from": "2026-08-17",
+    "evidence_refs": ["funding_announcement"]
+  }
+]
+```
+
+Run it with `epiq --actor agent:research batch-write --input writeback.json`. A bad local reference,
+invalid evidence, or invalid claim rolls back every evidence, source, event, and claim in the batch.
+
 ### Evolve a field without losing its history
 
 A category error can be resolved as an executable schema transformation. For example, split one
@@ -970,6 +997,7 @@ The principal endpoints are:
 | `GET` | `/api/evidence/{id}/assessments` | Read evidence assessment history |
 | `POST` | `/api/claims` | Assert an evidence-backed cell answer |
 | `POST` | `/api/claims/bulk` | Assert up to 1,000 claims atomically |
+| `POST` | `/api/batch` | Atomically add evidence and dependent claims |
 | `POST` | `/api/claim-proposals` | Stage a validated claim outside the live matrix |
 | `GET` | `/api/claim-proposals` | Read the durable claim review queue |
 | `POST` | `/api/claim-proposals/review` | Approve or reject a selection atomically |

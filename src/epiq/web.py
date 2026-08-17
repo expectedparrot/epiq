@@ -156,6 +156,11 @@ class ClaimBatchCreate(BaseModel):
     actor: str = "agent:web"
 
 
+class WriteBatchCreate(BaseModel):
+    operations: list[dict[str, Any]] = Field(min_length=1, max_length=2000)
+    actor: str = "agent:web"
+
+
 class ClaimProposalCreate(ClaimCreate):
     rationale: str = ""
 
@@ -673,6 +678,11 @@ def create_app(
         items = [item.model_dump(exclude={"actor"}) for item in body.claims]
         claim_ids = store().assert_claims_bulk(items, body.actor)
         return {"count": len(claim_ids), "claim_ids": claim_ids}
+
+    @app.post("/api/batch", status_code=201)
+    def write_batch(body: WriteBatchCreate) -> dict[str, Any]:
+        results = store().write_batch(body.operations, body.actor)
+        return {"count": len(results), "results": results}
 
     @app.post("/api/claim-proposals", status_code=201)
     def propose_claim(body: ClaimProposalCreate) -> dict[str, str]:

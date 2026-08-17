@@ -534,6 +534,61 @@ def test_bulk_claim_assertion_rolls_back_entire_batch_on_late_error(store: Store
     assert store.matrix("Company")["rows"][0]["cells"]["employees"]["state"] == "Unasked"
 
 
+def test_atomic_write_batch_links_new_evidence_and_rolls_it_back_on_claim_error(
+    store: Store,
+) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("employees", "Company", "Int", {}, "test")
+    operations = [
+        {
+            "op": "evidence.add",
+            "ref": "staff_page",
+            "url": "https://example.test/staff",
+            "title": "Staff",
+            "retrieved_at": "2026-08-17",
+            "excerpt": "Acme has twelve employees.",
+        },
+        {
+            "op": "claim.assert",
+            "subject": company,
+            "question": "employees",
+            "value": 12,
+            "valid_from": "2026-08-17",
+            "evidence_refs": ["staff_page"],
+        },
+    ]
+    results = store.write_batch(operations, "agent:test")
+    assert results[1]["claim_id"]
+    evidence_id = results[0]["evidence_id"]
+    lineage = store.matrix("Company")["rows"][0]["cells"]["employees"]["lineage"]
+    assert lineage[0]["evidence_id"] == evidence_id
+
+    failing = [
+        {
+            "op": "evidence.add",
+            "ref": "bad_page",
+            "url": "https://example.test/bad",
+            "title": "Bad",
+            "retrieved_at": "2026-08-17",
+            "excerpt": "Malformed interpretation.",
+        },
+        {
+            "op": "claim.assert",
+            "subject": company,
+            "question": "employees",
+            "value": "twelve",
+            "valid_from": "2026-08-17",
+            "evidence_refs": ["bad_page"],
+        },
+    ]
+    before = store.doctor()["counts"]
+    with pytest.raises(EpiqError, match="Write batch item 1"):
+        store.write_batch(failing, "agent:test")
+    after = store.doctor()["counts"]
+    assert after["evidence"] == before["evidence"]
+    assert after["events"] == before["events"]
+
+
 def test_question_retirement_hides_projection_but_preserves_and_restores_history(
     store: Store,
 ) -> None:
