@@ -2604,15 +2604,19 @@ class Store:
         valid_from: str,
         actor: str,
         subjects: list[str] | None = None,
+        questions: list[str] | None = None,
     ) -> dict[str, Any]:
         """Evaluate declarative per-row formulas stored in question definitions."""
         projection = self.matrix(kind)
         selected = set(subjects or [])
         rows = [row for row in projection["rows"] if not selected or row["name"] in selected]
         formulas = []
+        selected_questions = set(questions or [])
         for question in projection["questions"]:
             formula = question["definition"].get("formula")
-            if formula is not None:
+            if formula is not None and (
+                not selected_questions or question["name"] in selected_questions
+            ):
                 if not isinstance(formula, dict):
                     raise EpiqError(
                         "invalid_formula", f"Formula for {question['name']} must be an object"

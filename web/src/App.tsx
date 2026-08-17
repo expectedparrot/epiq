@@ -8,6 +8,7 @@ import {
   QuestionChallenge,
   Question,
   ResearchJob,
+  StaleDerivation,
   api,
   post,
 } from "./api";
@@ -119,6 +120,7 @@ export default function App() {
     questionId: string;
   } | null>(null);
   const [clipboardNotice, setClipboardNotice] = useState("");
+  const [staleDerivations, setStaleDerivations] = useState<StaleDerivation[]>([]);
   const layoutKey = `epiq-layout:${overview?.project.project_id ?? "project"}:${kind}`;
 
   const loadOverview = useCallback(async () => {
@@ -151,13 +153,24 @@ export default function App() {
   const loadMatrix = useCallback(async () => {
     if (!kind || needsInit) return;
     try {
-      setMatrix(await api<Matrix>(`/api/matrix/${encodeURIComponent(kind)}`));
+      const [nextMatrix, stale] = await Promise.all([
+        api<Matrix>(`/api/matrix/${encodeURIComponent(kind)}`),
+        api<{ stale_derivations: StaleDerivation[] }>(
+          `/api/stale-derivations?entity_kind=${encodeURIComponent(kind)}`,
+        ),
+      ]);
+      setMatrix(nextMatrix);
+      setStaleDerivations(stale.stale_derivations);
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not load table",
       );
     }
   }, [kind, needsInit]);
+  const staleDerivedClaimIds = useMemo(
+    () => new Set(staleDerivations.map((item) => item.claim_id)),
+    [staleDerivations],
+  );
   const loadQuestionChallenges = useCallback(async () => {
     if (needsInit || projectClosed) return;
     try {
@@ -274,6 +287,20 @@ export default function App() {
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not close project",
+      );
+    }
+  };
+  const materializeFormula = async (question: Question) => {
+    try {
+      await post("/api/materialize", {
+        entity_kind: kind,
+        question: question.name,
+        valid_from: today(),
+      });
+      await loadMatrix();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not calculate field",
       );
     }
   };
@@ -979,6 +1006,15 @@ export default function App() {
                         key={question.question_id}
                       >
                         <div className="column-actions">
+                          {Boolean(question.definition.formula) && (
+                            <button
+                              className="formula-button"
+                              title="Calculate this formula for every ready row"
+                              onClick={() => void materializeFormula(question)}
+                            >
+                              ƒ Calculate
+                            </button>
+                          )}
                           <button
                             className={
                               job ? "agent-button running" : "agent-button"
@@ -1075,6 +1111,12 @@ export default function App() {
                       </td>
                       {displayedQuestions.map((question) => {
                         const cell = row.cells[question.name];
+                        const derivedClaims = cell.lineage.filter(
+                          (item) => item.derivation,
+                        );
+                        const derivedIsStale = derivedClaims.some((item) =>
+                          staleDerivedClaimIds.has(item.claim_id),
+                        );
                         return (
                           <td
                             key={question.question_id}
@@ -1087,7 +1129,7 @@ export default function App() {
                                 ? 0
                                 : -1
                             }
-                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
+                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
                             onFocus={() =>
                               setActiveGridCell({
                                 entityId: row.entity_id,
@@ -1130,6 +1172,18 @@ export default function App() {
                             {cell.lineage.length > 0 && (
                               <span className="source-count">
                                 {cell.lineage.length} src
+                              </span>
+                            )}
+                            {derivedClaims.length > 0 && (
+                              <span
+                                className="derivation-badge"
+                                title={
+                                  derivedIsStale
+                                    ? "Derived value has changed dependencies"
+                                    : `Derived with ${derivedClaims[0].derivation?.operation}`
+                                }
+                              >
+                                {derivedIsStale ? "⚠ ƒ" : "ƒ"}
                               </span>
                             )}
                           </td>
@@ -1182,6 +1236,7 @@ export default function App() {
         {selection && (
           <CellDrawer
             selection={selection}
+            staleDerivedClaimIds={staleDerivedClaimIds}
             isResearching={isCellResearching(
               selection.entityId,
               selection.question.question_id,
@@ -1243,6 +1298,7 @@ export default function App() {
       {dialog === "question" && (
         <QuestionDialog
           kind={kind}
+          questions={matrix?.questions ?? []}
           onClose={() => setDialog(null)}
           onSaved={refresh}
         />
@@ -1647,10 +1703,12 @@ function EntityDialog({
 
 function QuestionDialog({
   kind,
+  questions,
   onClose,
   onSaved,
 }: {
   kind: string;
+  questions: Question[];
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -1660,6 +1718,9 @@ function QuestionDialog({
   const [enumChoices, setEnumChoices] = useState("");
   const [many, setMany] = useState(false);
   const [volatility, setVolatility] = useState("stable");
+  const [computed, setComputed] = useState(false);
+  const [formulaOperation, setFormulaOperation] = useState("sum");
+  const [formulaInputs, setFormulaInputs] = useState<string[]>([]);
   const [error, setError] = useState("");
   const freshness =
     volatility === "dynamic" ? 90 : volatility === "slow" ? 365 : null;
@@ -1684,6 +1745,10 @@ function QuestionDialog({
         setError("Enum choices cannot contain square brackets.");
         return;
       }
+      if (computed && formulaInputs.length === 0) {
+        setError("Calculated fields need at least one input field.");
+        return;
+      }
       const valueType =
         type === "Enum" ? `Enum[${distinctChoices.join(",")}]` : type;
       await post("/api/questions", {
@@ -1695,6 +1760,14 @@ function QuestionDialog({
           cardinality: many ? "many" : "one",
           volatility,
           freshness_days: freshness,
+          ...(computed
+            ? {
+                formula: {
+                  operation: formulaOperation,
+                  inputs: formulaInputs,
+                },
+              }
+            : {}),
         },
       });
       onClose();
@@ -1788,6 +1861,52 @@ function QuestionDialog({
           />
           Allow multiple simultaneous answers
         </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={computed}
+            onChange={(event) => setComputed(event.target.checked)}
+          />
+          Calculate this field from other fields
+        </label>
+        {computed && (
+          <div className="formula-builder">
+            <label>
+              Operation
+              <select
+                value={formulaOperation}
+                onChange={(event) => setFormulaOperation(event.target.value)}
+              >
+                {['sum', 'avg', 'min', 'max', 'count'].map((operation) => (
+                  <option key={operation}>{operation}</option>
+                ))}
+              </select>
+            </label>
+            <fieldset>
+              <legend>Input fields</legend>
+              {questions.length === 0 && (
+                <span className="field-hint">Add source fields first.</span>
+              )}
+              {questions.map((question) => (
+                <label className="checkbox" key={question.question_id}>
+                  <input
+                    type="checkbox"
+                    checked={formulaInputs.includes(question.name)}
+                    onChange={(event) =>
+                      setFormulaInputs((current) =>
+                        event.target.checked
+                          ? [...current, question.name]
+                          : current.filter((item) => item !== question.name),
+                      )
+                    }
+                  />
+                  {String(question.definition.label ?? question.name)}
+                  <code>{question.value_type}</code>
+                </label>
+              ))}
+            </fieldset>
+          </div>
+        )}
         {error && <div className="form-error">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="ghost" onClick={onClose}>
@@ -3111,6 +3230,7 @@ function SchemaReviewPanel({
 
 function CellDrawer({
   selection,
+  staleDerivedClaimIds,
   isResearching,
   onClose,
   onAdd,
@@ -3124,6 +3244,7 @@ function CellDrawer({
   onChanged,
 }: {
   selection: Selection;
+  staleDerivedClaimIds: Set<string>;
   isResearching: boolean;
   onClose: () => void;
   onAdd: () => void;
@@ -3227,7 +3348,10 @@ function CellDrawer({
           </div>
         )}
         {claims.map(({ claim, evidence }) => (
-          <article className="claim-card" key={claim.claim_id}>
+          <article
+            className={`claim-card ${staleDerivedClaimIds.has(claim.claim_id) ? "stale-derived-claim" : ""}`}
+            key={claim.claim_id}
+          >
             <div className="claim-top">
               <span className={`confidence ${claim.confidence}`}>
                 {claim.confidence}
@@ -3238,6 +3362,28 @@ function CellDrawer({
             {claim.as_of && (
               <div className="claim-as-of">
                 Claim observed as of {claim.as_of}
+              </div>
+            )}
+            {claim.derivation && (
+              <div className="derivation-panel">
+                <div>
+                  <b>ƒ Derived value</b>
+                  <code>{claim.derivation.operation}</code>
+                </div>
+                {staleDerivedClaimIds.has(claim.claim_id) && (
+                  <p className="derivation-stale-message">
+                    ⚠ One or more dependencies changed. Recalculate before
+                    treating this as current.
+                  </p>
+                )}
+                <ul>
+                  {claim.derivation.dependencies.map((dependency) => (
+                    <li key={`${dependency.role}:${dependency.claim_id}`}>
+                      <span>{dependency.role}</span>
+                      <code>{dependency.claim_id}</code>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
             <div className="evidence-heading">

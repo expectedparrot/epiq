@@ -208,6 +208,62 @@ def test_health_doctor_and_online_backup_endpoints(tmp_path: Path) -> None:
     assert Store(restored).overview()["project"]["name"] == "Operational test"
 
 
+def test_agent_discovery_diagnostics_and_derivation_api(tmp_path: Path) -> None:
+    database = tmp_path / "agent-api.sqlite"
+    uninitialized = TestClient(create_app(database, tmp_path / "missing-frontend"))
+    discovery = uninitialized.get("/api/capabilities", params={"command": "record"})
+    assert discovery.status_code == 200
+    assert discovery.json()["commands"][0]["name"] == "record"
+
+    project = Store(database)
+    project.initialize("Agent API")
+    project.add_entity("Quote", "Atlas", {}, "test")
+    project.add_question("price", "Quote", "Float", {}, "test")
+    project.add_question("shipping", "Quote", "Float", {}, "test")
+    project.add_question(
+        "total",
+        "Quote",
+        "Float",
+        {"formula": {"operation": "sum", "inputs": ["price", "shipping"]}},
+        "test",
+    )
+    _, evidence = project.add_evidence(
+        "urn:test:quote", "Quote", "2026-08-17", "Price 40, shipping 5", "test"
+    )
+    project.assert_claim("Atlas", "price", 40.0, "2026-08-17", evidence, "test")
+    project.assert_claim("Atlas", "shipping", 5.0, "2026-08-17", evidence, "test")
+
+    client = TestClient(create_app(database, tmp_path / "missing-frontend"))
+    schema = client.get("/api/schema").json()
+    assert [item["name"] for item in schema["tables"][0]["questions"]] == [
+        "price",
+        "shipping",
+        "total",
+    ]
+    assert client.get("/api/context", params={"budget": 1000}).json()["truncated"] is False
+    assert client.get("/api/gaps/Quote").json()["count"] == 1
+    assert client.get("/api/refresh-plan/Quote").json()["tasks"][0]["question"] == "total"
+    aggregate = client.post(
+        "/api/aggregate/Quote", json={"question": "price", "operation": "avg"}
+    ).json()
+    assert aggregate["groups"] == [{"group": "all", "value": 40.0, "count": 1}]
+
+    materialized = client.post(
+        "/api/materialize",
+        json={"entity_kind": "Quote", "valid_from": "2026-08-17"},
+    )
+    assert materialized.status_code == 201
+    assert materialized.json()["results"][0]["status"] == "materialized"
+    assert client.get("/api/stale-derivations").json()["count"] == 0
+
+    _, newer_evidence = project.add_evidence(
+        "urn:test:quote-update", "Update", "2026-08-18", "Price 42", "test"
+    )
+    project.assert_claim("Atlas", "price", 42.0, "2026-08-18", newer_evidence, "test")
+    assert client.get("/api/stale-derivations").json()["count"] == 1
+    assert client.get("/api/search", params={"text": "shipping"}).json()["count"] >= 1
+
+
 def test_web_can_retire_and_restore_a_field_without_erasing_history(tmp_path: Path) -> None:
     client = TestClient(create_app(tmp_path / "retire.sqlite", tmp_path / "missing-frontend"))
     client.post("/api/project", json={"name": "Field lifecycle"})

@@ -15,6 +15,15 @@ export interface Lineage {
   excerpt: string;
   as_of?: string;
   temporal_basis?: "observed" | "source" | "unknown";
+  derivation?: {
+    operation: string;
+    parameters: Record<string, unknown>;
+    input_claim_ids: string[];
+    dependencies: Array<{
+      claim_id: string;
+      role: "operand" | "parameter" | "path";
+    }>;
+  };
 }
 
 export interface Cell {
@@ -125,6 +134,21 @@ export interface EntitySuggestion {
   source_url: string;
   status: "pending" | "accepted" | "dismissed";
   entity_id?: string | null;
+}
+
+export interface StaleDerivation {
+  claim_id: string;
+  subject: string;
+  kind: string;
+  question: string;
+  reasons: Array<{
+    dependency_claim_id: string;
+    role: "operand" | "parameter" | "path";
+    reason:
+      | "dependency_stale"
+      | "dependency_inactive"
+      | "newer_claim_available";
+  }>;
 }
 
 export class ApiError extends Error {

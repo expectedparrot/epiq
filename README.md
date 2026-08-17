@@ -1079,7 +1079,16 @@ The principal endpoints are:
 | --- | --- | --- |
 | `GET` | `/api/project` | Project identity and available tables |
 | `POST` | `/api/project` | Initialize the selected SQLite file |
+| `GET` | `/api/capabilities` | Versioned agent/tool protocol, optionally with live schema |
+| `GET` | `/api/schema` | Current row types and typed fields |
+| `GET` | `/api/context` | Token-budgeted current state for an agent |
 | `GET` | `/api/matrix/{kind}` | Current entity-by-question projection |
+| `GET` | `/api/gaps/{kind}` | Unanswered and unsuccessful research cells |
+| `GET` | `/api/stale/{kind}` | Evidence made stale by field time policy |
+| `GET` | `/api/contradictions/{kind}` | Contested cells and their lineage |
+| `GET` | `/api/refresh-plan/{kind}` | Deterministic external-agent research tasks |
+| `GET` | `/api/stale-derivations` | Derived claims with changed dependencies |
+| `GET` | `/api/search` | Search identities, schema, evidence, and claims |
 | `POST` | `/api/entities` | Add a row |
 | `POST` | `/api/apply` | Atomically converge a declarative project document |
 | `POST` | `/api/entities/{id}/aliases` | Add an alternate stable identity |
@@ -1100,6 +1109,10 @@ The principal endpoints are:
 | `POST` | `/api/claims` | Assert an evidence-backed cell answer |
 | `POST` | `/api/claims/bulk` | Assert up to 1,000 claims atomically |
 | `POST` | `/api/batch` | Atomically add evidence and dependent claims |
+| `POST` | `/api/derive` | Persist a calculation with typed dependencies |
+| `POST` | `/api/materialize` | Calculate declared formulas for ready rows |
+| `POST` | `/api/propagate` | Materialize a claim through a relationship path |
+| `POST` | `/api/aggregate/{kind}` | Group and summarize current numeric values |
 | `POST` | `/api/claim-proposals` | Stage a validated claim outside the live matrix |
 | `GET` | `/api/claim-proposals` | Read the durable claim review queue |
 | `POST` | `/api/claim-proposals/review` | Approve or reject a selection atomically |

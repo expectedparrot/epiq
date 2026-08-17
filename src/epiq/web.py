@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from .cli import capabilities
 from .errors import EpiqError
 from .research import (
     EntitySuggestionRunner,
@@ -262,6 +263,45 @@ class AcceptFieldSuggestionsCreate(BaseModel):
     actor: str = "human:web"
 
 
+class AggregateCreate(BaseModel):
+    question: str
+    operation: Literal["count", "sum", "avg", "min", "max"]
+    group_by: str | None = None
+
+
+class DeriveCreate(BaseModel):
+    subject: str
+    question: str
+    operation: Literal["sum", "avg", "min", "max", "count", "weighted_avg", "linear"]
+    input_claim_ids: list[str] = Field(default_factory=list)
+    input_cells: list[tuple[str, str]] = Field(default_factory=list)
+    weight_cells: list[tuple[str, str]] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    valid_from: str
+    confidence: Literal["low", "medium", "high"] = "medium"
+    actor: str = "human:web"
+
+
+class MaterializeCreate(BaseModel):
+    entity_kind: str
+    valid_from: str
+    subjects: list[str] | None = None
+    question: str | None = None
+    actor: str = "human:web"
+
+
+class PropagateCreate(BaseModel):
+    subject: str
+    source_question: str
+    target_question: str
+    valid_from: str
+    via: str | None = None
+    direction: Literal["incoming", "outgoing"] = "outgoing"
+    depth: int = Field(default=1, ge=1, le=20)
+    confidence: Literal["low", "medium", "high"] = "medium"
+    actor: str = "human:web"
+
+
 def create_app(
     database: str | Path | None = None,
     frontend: str | Path | None = None,
@@ -400,6 +440,26 @@ def create_app(
             "schema_version": overview["project"]["schema_version"],
         }
 
+    @app.get("/api/capabilities")
+    def api_capabilities(
+        command: str | None = None, include_schema: bool = False
+    ) -> dict[str, Any]:
+        result = capabilities(command)
+        if include_schema:
+            project_store = store()
+            overview = project_store.overview()
+            result["project_schema"] = {
+                "project": overview["project"],
+                "tables": [
+                    {
+                        "entity_kind": item["kind"],
+                        "questions": project_store.matrix(str(item["kind"]))["questions"],
+                    }
+                    for item in overview["entity_kinds"]
+                ],
+            }
+        return result
+
     @app.get("/api/projects")
     def projects() -> list[dict[str, Any]]:
         return available_projects()
@@ -457,6 +517,73 @@ def create_app(
     def project() -> dict[str, Any]:
         return store().overview()
 
+    @app.get("/api/schema")
+    def schema(entity_kind: str | None = None) -> dict[str, Any]:
+        project_store = store()
+        overview = project_store.overview()
+        kinds = [str(item["kind"]) for item in overview["entity_kinds"]]
+        selected = [entity_kind] if entity_kind else kinds
+        return {
+            "project": overview["project"],
+            "value_types": capabilities()["value_types"],
+            "tables": [
+                {"entity_kind": kind, "questions": project_store.matrix(kind)["questions"]}
+                for kind in selected
+            ],
+        }
+
+    @app.get("/api/context")
+    def context(
+        entity_kind: str | None = None, budget: int = Query(default=4000, ge=100)
+    ) -> dict[str, Any]:
+        project_store = store()
+        overview = project_store.overview()
+        kinds = [str(item["kind"]) for item in overview["entity_kinds"]]
+        tables = [project_store.matrix(kind) for kind in ([entity_kind] if entity_kind else kinds)]
+        result: dict[str, Any] = {
+            "project": overview["project"],
+            "tables": tables,
+            "truncated": False,
+        }
+        if len(json.dumps(result, sort_keys=True)) <= budget * 4:
+            return result
+        compact_tables = []
+        used = 0
+        for table in tables:
+            compact: dict[str, Any] = {
+                "entity_kind": table["entity_kind"],
+                "questions": [
+                    {key: question[key] for key in ("name", "value_type", "definition")}
+                    for question in table["questions"]
+                ],
+                "rows": [],
+            }
+            for row in table["rows"]:
+                candidate = {
+                    "entity_id": row["entity_id"],
+                    "name": row["name"],
+                    "cells": {
+                        name: {
+                            "state": cell["state"],
+                            "value": cell.get("value"),
+                            "confidence": cell.get("confidence"),
+                        }
+                        for name, cell in row["cells"].items()
+                    },
+                }
+                size = len(json.dumps(candidate, sort_keys=True))
+                if used + size > budget * 4:
+                    break
+                compact["rows"].append(candidate)
+                used += size
+            compact_tables.append(compact)
+        return {
+            "project": overview["project"],
+            "tables": compact_tables,
+            "truncated": True,
+            "approximate_token_budget": budget,
+        }
+
     @app.post("/api/apply")
     def apply_document(body: ApplyCreate) -> dict[str, Any]:
         return store().apply_document(body.document, body.actor)
@@ -510,13 +637,156 @@ def create_app(
     def query_rows(entity_kind: str, body: RowQueryCreate) -> dict[str, Any]:
         return store().query_rows(entity_kind, body.predicates, body.known_at, body.valid_at)
 
+    def diagnostic_cells(entity_kind: str, diagnostic: str) -> dict[str, Any]:
+        projection = store().matrix(entity_kind)
+        cells = []
+        for row in projection["rows"]:
+            for question in projection["questions"]:
+                cell = row["cells"][question["name"]]
+                include = {
+                    "gaps": cell["state"] in {"Unasked", "NotFound"},
+                    "stale": cell.get("temporal", {}).get("freshness") == "stale",
+                    "contradictions": cell["state"] == "Contested",
+                }[diagnostic]
+                if include:
+                    cells.append(
+                        {
+                            "entity_id": row["entity_id"],
+                            "entity_name": row["name"],
+                            "question_id": question["question_id"],
+                            "question": question["name"],
+                            "state": cell["state"],
+                            "values": cell.get("values", []),
+                            "lineage": cell.get("lineage", []),
+                            "temporal": cell.get("temporal"),
+                        }
+                    )
+        return {"entity_kind": entity_kind, "count": len(cells), "cells": cells}
+
+    @app.get("/api/gaps/{entity_kind}")
+    def gaps(entity_kind: str) -> dict[str, Any]:
+        return diagnostic_cells(entity_kind, "gaps")
+
+    @app.get("/api/stale/{entity_kind}")
+    def stale(entity_kind: str) -> dict[str, Any]:
+        return diagnostic_cells(entity_kind, "stale")
+
+    @app.get("/api/contradictions/{entity_kind}")
+    def contradictions(entity_kind: str) -> dict[str, Any]:
+        return diagnostic_cells(entity_kind, "contradictions")
+
+    @app.get("/api/refresh-plan/{entity_kind}")
+    def refresh_plan(
+        entity_kind: str,
+        include: Literal["gaps", "stale", "contested", "all"] = "all",
+    ) -> dict[str, Any]:
+        projection = store().matrix(entity_kind)
+        tasks = []
+        for row in projection["rows"]:
+            for question in projection["questions"]:
+                cell = row["cells"][question["name"]]
+                reasons = []
+                if cell["state"] in {"Unasked", "NotFound"}:
+                    reasons.append("gap")
+                if cell.get("temporal", {}).get("freshness") == "stale":
+                    reasons.append("stale")
+                if cell["state"] == "Contested":
+                    reasons.append("contested")
+                allowed = (
+                    reasons
+                    if include == "all"
+                    else [item for item in reasons if item == include.rstrip("s")]
+                )
+                if not allowed:
+                    continue
+                label = str(question["definition"].get("label", question["name"]))
+                tasks.append(
+                    {
+                        "task_key": f"{row['entity_id']}:{question['question_id']}",
+                        "entity_kind": entity_kind,
+                        "entity_id": row["entity_id"],
+                        "entity_name": row["name"],
+                        "question_id": question["question_id"],
+                        "question": question["name"],
+                        "value_type": question["value_type"],
+                        "reasons": allowed,
+                        "suggested_query": f'"{row["name"]}" {label}',
+                        "research_guidance": question["definition"].get("research_guidance", ""),
+                        "existing_values": cell.get("values", []),
+                        "existing_source_urls": list(
+                            dict.fromkeys(item["source"]["url"] for item in cell.get("lineage", []))
+                        ),
+                    }
+                )
+        return {"entity_kind": entity_kind, "count": len(tasks), "tasks": tasks}
+
+    @app.get("/api/stale-derivations")
+    def stale_derivations(entity_kind: str | None = None) -> dict[str, Any]:
+        return store().stale_derivations(entity_kind)
+
+    @app.get("/api/search")
+    def search(text: str, limit: int = Query(default=50, ge=1, le=500)) -> dict[str, Any]:
+        results = store().search(text, limit)
+        return {"query": text, "count": len(results), "results": results}
+
+    @app.post("/api/aggregate/{entity_kind}")
+    def aggregate(entity_kind: str, body: AggregateCreate) -> dict[str, Any]:
+        projection = store().matrix(entity_kind)
+        question_names = {str(item["name"]) for item in projection["questions"]}
+        for name in (body.question, body.group_by):
+            if name and name not in question_names:
+                raise EpiqError("question_not_found", f"Question not found: {name}")
+        grouped: dict[str, list[Any]] = {}
+        for row in projection["rows"]:
+            values = row["cells"][body.question].get("values", [])
+            if not values:
+                continue
+            keys = ["all"]
+            if body.group_by:
+                group_cell = row["cells"][body.group_by]
+                keys = [
+                    str(item.get("name", item)) if isinstance(item, dict) else str(item)
+                    for item in group_cell.get("display_values", group_cell.get("values", []))
+                ] or ["Unasked"]
+            for key in keys:
+                grouped.setdefault(key, []).extend(values)
+        groups = []
+        for key, values in sorted(grouped.items()):
+            if body.operation == "count":
+                value: Any = len(values)
+            else:
+                if not all(
+                    isinstance(item, int | float) and not isinstance(item, bool) for item in values
+                ):
+                    raise EpiqError(
+                        "non_numeric_aggregate", f"{body.question} contains non-numeric values"
+                    )
+                value = {
+                    "sum": sum,
+                    "avg": lambda items: sum(items) / len(items),
+                    "min": min,
+                    "max": max,
+                }[body.operation](values)
+            groups.append({"group": key, "value": value, "count": len(values)})
+        return {
+            "entity_kind": entity_kind,
+            "question": body.question,
+            "operation": body.operation,
+            "groups": groups,
+        }
+
     @app.get("/api/reports/dossier/{entity}")
     def dossier(entity: str) -> dict[str, Any]:
         return store().dossier(entity)
 
     @app.get("/api/related/{entity}")
-    def related(entity: str, via: str | None = None, direction: str = "both") -> dict[str, Any]:
-        return store().related(entity, via, direction)
+    def related(
+        entity: str,
+        via: str | None = None,
+        direction: str = "both",
+        depth: int = 1,
+    ) -> dict[str, Any]:
+        return store().related(entity, via, direction, depth)
 
     @app.get("/api/reports/timeline/{entity_kind}/{question}")
     def timeline(entity_kind: str, question: str) -> dict[str, Any]:
@@ -697,6 +967,65 @@ def create_app(
     def write_batch(body: WriteBatchCreate) -> dict[str, Any]:
         results = store().write_batch(body.operations, body.actor)
         return {"count": len(results), "results": results}
+
+    @app.post("/api/derive", status_code=201)
+    def derive(body: DeriveCreate) -> dict[str, Any]:
+        project_store = store()
+        input_claims = list(body.input_claim_ids)
+        for subject, question in body.input_cells:
+            input_claims.extend(project_store.active_claim_ids(subject, question))
+        weight_claims = []
+        for subject, question in body.weight_cells:
+            resolved = project_store.active_claim_ids(subject, question)
+            if len(resolved) != 1:
+                raise EpiqError(
+                    "ambiguous_weight_cell",
+                    f"Weight cell {subject} / {question} must have exactly one active claim",
+                )
+            weight_claims.extend(resolved)
+        claim_id = project_store.derive_claim(
+            body.subject,
+            body.question,
+            body.operation,
+            input_claims,
+            body.valid_from,
+            body.actor,
+            body.parameters,
+            body.confidence,
+            weight_claims,
+        )
+        return {
+            "ok": True,
+            "claim_id": claim_id,
+            "operation": body.operation,
+            "input_claim_ids": input_claims,
+            "parameter_claim_ids": weight_claims,
+        }
+
+    @app.post("/api/materialize", status_code=201)
+    def materialize(body: MaterializeCreate) -> dict[str, Any]:
+        return store().materialize_formulas(
+            body.entity_kind,
+            body.valid_from,
+            body.actor,
+            body.subjects,
+            [body.question] if body.question else None,
+        )
+
+    @app.post("/api/propagate", status_code=201)
+    def propagate(body: PropagateCreate) -> dict[str, Any]:
+        claim_id, source = store().propagate_claim(
+            body.subject,
+            body.via,
+            body.source_question,
+            body.target_question,
+            body.direction,
+            body.depth,
+            body.valid_from,
+            body.actor,
+            body.confidence,
+        )
+        return {"ok": True, "claim_id": claim_id, "source_entity": source}
 
     @app.post("/api/claim-proposals", status_code=201)
     def propose_claim(body: ClaimProposalCreate) -> dict[str, str]:

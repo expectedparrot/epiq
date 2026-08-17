@@ -351,6 +351,11 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
     }
 
 
+def capabilities(command: str | None = None) -> dict[str, Any]:
+    """Public versioned CLI protocol description shared by other interfaces."""
+    return _capabilities(command)
+
+
 def _project_schema(store: Store, kind: str | None = None) -> dict[str, Any]:
     """Return the authoritative current project schema."""
     overview = store.overview()
