@@ -5,7 +5,7 @@ claiming the papers themselves are contradictory.
 
 ```bash
 uv run examples/cli/literature-review/build.sh /tmp/epiq-literature.sqlite
-uv run epiq --db /tmp/epiq-literature.sqlite matrix --kind Finding
+uv run epiq --db /tmp/epiq-literature.sqlite --format table matrix --kind Finding
 ```
 
 | Finding | Paper | Research question | Effect | Interpretation |

@@ -6,7 +6,7 @@ submission as a `Forecast` row.
 
 ```bash
 uv run examples/cli/forecasting-tournament/build.sh /tmp/epiq-forecasting.sqlite
-uv run epiq --db /tmp/epiq-forecasting.sqlite matrix --kind Forecast
+uv run epiq --db /tmp/epiq-forecasting.sqlite --format table matrix --kind Forecast
 ```
 
 | Forecast | Forecaster | Event | Probability | Issued at |
@@ -17,15 +17,25 @@ uv run epiq --db /tmp/epiq-forecasting.sqlite matrix --kind Forecast
 
 ```bash
 uv run epiq --db /tmp/epiq-forecasting.sqlite query --kind Forecast --where 'forecaster=Alice'
-uv run epiq --db /tmp/epiq-forecasting.sqlite timeline --kind Forecast --question probability
+uv run epiq --db /tmp/epiq-forecasting.sqlite --format table timeline --kind Forecast --question probability
 ```
 
 The query reports `matched: 2`; the timeline orders 0.30, 0.40, then 0.55 by valid time.
 
+```bash
+uv run epiq --db /tmp/epiq-forecasting.sqlite --format table aggregate \
+  --kind Forecast --question probability --op avg --group-by forecaster
+```
+
+| group | avg | count |
+| --- | ---: | ---: |
+| Alice | 0.425 | 2 |
+| Bob | 0.4 | 1 |
+
 ## Product gaps surfaced
 
-- Forecast submissions must be promoted to entities; Epiq has no first-class observation-series type.
-- There is no `latest by forecaster and event`, grouping, or pivot operation.
+- Forecast submissions must still be promoted to entities; Epiq has no first-class observation-series type.
+- Grouped summaries exist, but there is no `latest by forecaster and event` or pivot operation.
 - There are no derived ensemble forecasts, Brier scores, resolution events, or calibration reports.
 - A forecast's identity is encoded in its name rather than a compound uniqueness constraint.
 

@@ -295,6 +295,17 @@ This is atomic syntactic sugar over `batch-write`: Epiq creates one evidence rec
 typed claim for each `--answer`. If any answer fails validation, none of the evidence or claims are
 written. For one answer, use `--question population --value 49568` instead of `--answer`.
 
+If one source supports cells on several rows, omit `--subject` and repeat
+`--cell SUBJECT QUESTION VALUE`. Evidence and all cross-row claims still commit atomically:
+
+```bash
+epiq record --source-type report --source-title "Regional prices" \
+  --retrieved-at 2026-08-17 --excerpt "Acorn: 10; Beacon: 20." \
+  --valid-from 2026-08-17 \
+  --cell Acorn price 10 \
+  --cell Beacon price 20
+```
+
 ### 6. Assert evidence-backed claims
 
 Use the same evidence fragment for both facts it supports:
@@ -498,6 +509,13 @@ and lineage. A shortened cell looks like this:
   "value": 49568,
   "values": [49568]
 }
+```
+
+Use compact terminal tables without changing the JSON-first default:
+
+```bash
+epiq --format table matrix --kind Town
+epiq --format table query --kind Town --where 'population > 10000'
 ```
 
 Select particular questions or historical cutoffs:
@@ -1111,6 +1129,15 @@ backlinks directly:
 
 ```bash
 epiq related "Paul Graham" --via author --direction incoming
+epiq --format table related "Paul Graham" --direction incoming --depth 3
+```
+
+`--depth` performs bounded recursive traversal with cycle protection. Summarize numeric fields,
+optionally grouping by another field:
+
+```bash
+epiq aggregate --kind PriceQuote --question price_usd --op avg --group-by region
+epiq --format table aggregate --kind Forecast --question probability --op avg --group-by forecaster
 ```
 
 For scripts, suppress successful output, select one JSON path, or request collected IDs:

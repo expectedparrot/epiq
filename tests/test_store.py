@@ -748,6 +748,18 @@ def test_atomic_write_batch_links_new_evidence_and_rolls_it_back_on_claim_error(
     assert after["events"] == before["events"]
 
 
+def test_dynamic_field_without_freshness_window_is_unknown(store: Store) -> None:
+    company = store.add_entity("Company", "Acorn", {}, "test")
+    store.add_question("status", "Company", "String", {"volatility": "dynamic"}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/status", "Status", "2026-08-17", "Acorn is active.", "test"
+    )
+    store.assert_claim(company, "status", "active", "2026-08-17", evidence, "test")
+    temporal = store.matrix("Company")["rows"][0]["cells"]["status"]["temporal"]
+    assert temporal["freshness"] == "unknown"
+    assert temporal["age_days"] is None
+
+
 def test_question_retirement_hides_projection_but_preserves_and_restores_history(
     store: Store,
 ) -> None:

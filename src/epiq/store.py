@@ -3120,15 +3120,17 @@ class Store:
         }
 
     def related(
-        self, entity: str, via: str | None = None, direction: str = "both"
+        self, entity: str, via: str | None = None, direction: str = "both", depth: int = 1
     ) -> dict[str, Any]:
         """Traverse current typed references in either direction."""
         if direction not in {"incoming", "outgoing", "both"}:
             raise EpiqError("invalid_direction", f"Unknown relationship direction: {direction}")
+        if depth < 1 or depth > 20:
+            raise EpiqError("invalid_depth", "Relationship depth must be between 1 and 20")
         with self.connect() as connection:
             target = self._resolve_entity(connection, entity)
         target_id = str(target["entity_id"])
-        edges: list[dict[str, Any]] = []
+        graph_edges: list[dict[str, Any]] = []
         overview = self.overview()
         for table in overview["entity_kinds"]:
             projection = self.matrix(str(table["kind"]))
@@ -3142,39 +3144,46 @@ class Store:
                 for question in ref_questions:
                     cell = row["cells"][question]
                     for reference in cell.get("references", []):
-                        if row["entity_id"] == target_id and direction in {"outgoing", "both"}:
-                            edges.append(
-                                {
-                                    "direction": "outgoing",
-                                    "question": question,
-                                    "from": {
-                                        "entity_id": target_id,
-                                        "name": str(target["name"]),
-                                        "kind": str(target["kind"]),
-                                    },
-                                    "to": reference,
-                                }
-                            )
-                        if reference["entity_id"] == target_id and direction in {
-                            "incoming",
-                            "both",
-                        }:
-                            edges.append(
-                                {
-                                    "direction": "incoming",
-                                    "question": question,
-                                    "from": {
-                                        "entity_id": row["entity_id"],
-                                        "name": row["name"],
-                                        "kind": projection["entity_kind"],
-                                    },
-                                    "to": {
-                                        "entity_id": target_id,
-                                        "name": str(target["name"]),
-                                        "kind": str(target["kind"]),
-                                    },
-                                }
-                            )
+                        graph_edges.append(
+                            {
+                                "question": question,
+                                "from": {
+                                    "entity_id": row["entity_id"],
+                                    "name": row["name"],
+                                    "kind": projection["entity_kind"],
+                                },
+                                "to": reference,
+                            }
+                        )
+        edges: list[dict[str, Any]] = []
+        frontier = {target_id}
+        visited_entities = {target_id}
+        visited_edges: set[tuple[str, str, str, str]] = set()
+        for level in range(1, depth + 1):
+            next_frontier: set[str] = set()
+            for edge in graph_edges:
+                candidates: list[tuple[str, str]] = []
+                if direction in {"outgoing", "both"} and edge["from"]["entity_id"] in frontier:
+                    candidates.append(("outgoing", str(edge["to"]["entity_id"])))
+                if direction in {"incoming", "both"} and edge["to"]["entity_id"] in frontier:
+                    candidates.append(("incoming", str(edge["from"]["entity_id"])))
+                for edge_direction, next_id in candidates:
+                    key = (
+                        str(edge["from"]["entity_id"]),
+                        str(edge["to"]["entity_id"]),
+                        str(edge["question"]),
+                        edge_direction,
+                    )
+                    if key in visited_edges:
+                        continue
+                    visited_edges.add(key)
+                    edges.append({"direction": edge_direction, "depth": level, **edge})
+                    if next_id not in visited_entities:
+                        next_frontier.add(next_id)
+                        visited_entities.add(next_id)
+            frontier = next_frontier
+            if not frontier:
+                break
         return {
             "entity": {
                 "entity_id": target_id,
@@ -3183,6 +3192,7 @@ class Store:
             },
             "via": via,
             "direction": direction,
+            "depth": depth,
             "count": len(edges),
             "edges": edges,
         }
@@ -3405,14 +3415,15 @@ class Store:
         freshness = "not_applicable" if volatility == "stable" else "unknown"
         age_days = None
         basis = str(claims[0]["temporal_basis"]) if claims else "unknown"
-        if volatility != "stable" and newest_as_of and basis != "unknown":
+        if (
+            volatility != "stable"
+            and newest_as_of
+            and basis != "unknown"
+            and isinstance(freshness_days, int)
+        ):
             try:
                 age_days = (date.today() - date.fromisoformat(newest_as_of[:10])).days
-                freshness = (
-                    "fresh"
-                    if isinstance(freshness_days, int) and age_days <= freshness_days
-                    else "stale"
-                )
+                freshness = "fresh" if age_days <= freshness_days else "stale"
             except ValueError:
                 freshness = "unknown"
         return {

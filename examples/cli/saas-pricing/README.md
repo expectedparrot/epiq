@@ -5,7 +5,7 @@ date. The current workaround makes each combination a `PriceQuote` row.
 
 ```bash
 uv run examples/cli/saas-pricing/build.sh /tmp/epiq-saas-pricing.sqlite
-uv run epiq --db /tmp/epiq-saas-pricing.sqlite matrix --kind PriceQuote
+uv run epiq --db /tmp/epiq-saas-pricing.sqlite --format table matrix --kind PriceQuote
 ```
 
 | Price quote | Product | Plan | Region | Period | Price | Effective |
@@ -19,12 +19,37 @@ uv run epiq --db /tmp/epiq-saas-pricing.sqlite query --kind PriceQuote --where '
 
 Output: `matched: 1`, returning the US monthly quote with its pricing-page evidence.
 
+One source can now update cells across both quote rows without JSON or evidence-ID plumbing:
+
+```bash
+uv run epiq --db /tmp/epiq-saas-pricing.sqlite --actor agent:pricing record \
+  --source-type web --url "https://example.test/acorn/pricing" \
+  --source-title "Acorn regional pricing" --retrieved-at 2026-08-17 \
+  --excerpt "Acorn Pro is $120 monthly in the US and $1,200 annually in the EU, effective August 1, 2026." \
+  --valid-from 2026-08-01 \
+  --cell "Acorn Pro US monthly 2026-08" price_usd 120 \
+  --cell "Acorn Pro EU annual 2026-08" price_usd 1200
+```
+
+The evidence and both claims commit atomically. Because the fixture already contains those exact
+claims, rerunning this command returns their existing IDs rather than duplicating them.
+
+```bash
+uv run epiq --db /tmp/epiq-saas-pricing.sqlite --format table aggregate \
+  --kind PriceQuote --question price_usd --op avg --group-by region
+```
+
+| group | avg | count |
+| --- | ---: | ---: |
+| EU | 1,200 | 1 |
+| US | 120 | 1 |
+
 ## Product gaps surfaced
 
-- N-ary facts require synthetic join entities and verbose names.
+- N-ary facts still require synthetic join entities and verbose names.
 - There are no compound uniqueness constraints over product, plan, region, period, and date.
 - Currency conversion and normalized monthly cost require computed fields.
-- Queries cannot group, pivot, or select the latest quote for each dimensional key.
+- Aggregation can now group current values, but cannot pivot or select the latest dimensional key.
 
 <!-- epiq-example -->
 ```bash

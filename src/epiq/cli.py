@@ -107,6 +107,85 @@ def _ids(value: Any) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def _display(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, dict):
+        return str(value.get("name", json.dumps(value, sort_keys=True)))
+    if isinstance(value, list):
+        return "; ".join(_display(item) for item in value)
+    return str(value)
+
+
+def _table(value: Any, command: str) -> str:
+    """Render common read results as a compact terminal table."""
+    if command in {"matrix", "query"} and isinstance(value, dict):
+        questions = [str(item["name"]) for item in value.get("questions", [])]
+        headers = [str(value.get("entity_kind", "Entity")), *questions]
+        rows = []
+        for row in value.get("rows", []):
+            cells = []
+            for question in questions:
+                cell = row["cells"][question]
+                if cell.get("state") in {"Unasked", "NotFound", "Contested"}:
+                    rendered = str(cell["state"])
+                elif cell.get("display_values"):
+                    rendered = _display(cell["display_values"])
+                elif cell.get("value") is not None:
+                    rendered = _display(cell["value"])
+                else:
+                    rendered = _display(cell.get("values", []))
+                cells.append(rendered)
+            rows.append([str(row["name"]), *cells])
+    elif command == "related" and isinstance(value, dict):
+        headers = ["depth", "direction", "relationship", "from", "to"]
+        rows = [
+            [
+                str(edge.get("depth", 1)),
+                str(edge["direction"]),
+                str(edge["question"]),
+                str(edge["from"]["name"]),
+                str(edge["to"]["name"]),
+            ]
+            for edge in value.get("edges", [])
+        ]
+    elif command == "timeline" and isinstance(value, dict):
+        headers = ["as_of", "entity", "value", "confidence"]
+        rows = [
+            [
+                str(item["as_of"]),
+                str(item["entity_name"]),
+                _display(item["value"]),
+                str(item["confidence"]),
+            ]
+            for item in value.get("observations", [])
+        ]
+    elif command == "aggregate" and isinstance(value, dict):
+        headers = ["group", str(value.get("operation", "value")), "count"]
+        rows = [
+            [str(item["group"]), _display(item["value"]), str(item["count"])]
+            for item in value.get("groups", [])
+        ]
+    else:
+        raise EpiqError(
+            "table_format_unsupported",
+            f"Table output is not available for {command}",
+            "Use --format json for the complete machine-readable result.",
+        )
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, item in enumerate(row):
+            widths[index] = max(widths[index], len(item))
+    lines = ["  ".join(header.ljust(widths[index]) for index, header in enumerate(headers))]
+    lines.append("  ".join("-" * width for width in widths))
+    lines.extend(
+        "  ".join(item.ljust(widths[index]) for index, item in enumerate(row)) for row in rows
+    )
+    return "\n".join(lines)
+
+
 def _database(explicit: str | None) -> tuple[Path, str]:
     """Resolve the database using CLI, environment, workspace, then conventional default."""
     if explicit:
@@ -131,7 +210,7 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--actor", default="human:cli", help="Actor recorded for write commands")
     root.add_argument("--quiet", action="store_true", help="Suppress successful command output")
     root.add_argument("--select", help="Emit only a dotted output path, such as entity_id")
-    root.add_argument("--format", choices=["json", "ids"], default="json")
+    root.add_argument("--format", choices=["json", "ids", "table"], default="json")
     commands = root.add_subparsers(dest="command", required=True)
 
     init = commands.add_parser("init", help="Initialize a project")
@@ -311,7 +390,7 @@ def parser() -> argparse.ArgumentParser:
     record = commands.add_parser(
         "record", help="Atomically record evidence and one or more supported answers"
     )
-    record.add_argument("--subject", required=True)
+    record.add_argument("--subject")
     record.add_argument(
         "--source-type",
         "--type",
@@ -335,6 +414,13 @@ def parser() -> argparse.ArgumentParser:
         nargs=2,
         metavar=("QUESTION", "VALUE"),
         help="Question and value supported by this evidence; repeat for multiple answers",
+    )
+    record.add_argument(
+        "--cell",
+        action="append",
+        nargs=3,
+        metavar=("SUBJECT", "QUESTION", "VALUE"),
+        help="Subject, question, and value supported by this evidence; repeat across rows",
     )
     record.add_argument("--confidence", choices=["low", "medium", "high"], default="high")
     record.add_argument(
@@ -440,6 +526,12 @@ def parser() -> argparse.ArgumentParser:
     query.add_argument("--known-at")
     query.add_argument("--valid-at")
 
+    aggregate = commands.add_parser("aggregate", help="Group and summarize current numeric values")
+    aggregate.add_argument("--kind", required=True)
+    aggregate.add_argument("--question", required=True)
+    aggregate.add_argument("--op", choices=["count", "sum", "avg", "min", "max"], required=True)
+    aggregate.add_argument("--group-by")
+
     dossier = commands.add_parser("dossier", help="Generate a sourced entity dossier")
     dossier.add_argument("entity")
 
@@ -447,6 +539,9 @@ def parser() -> argparse.ArgumentParser:
     related.add_argument("entity")
     related.add_argument("--via")
     related.add_argument("--direction", choices=["incoming", "outgoing", "both"], default="both")
+    related.add_argument(
+        "--depth", type=int, default=1, help="Maximum relationship traversal depth"
+    )
 
     timeline = commands.add_parser("timeline", help="Generate a field timeline across a table")
     timeline.add_argument("--kind", required=True)
@@ -828,22 +923,37 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "--question and --value must be provided together",
                 "Use both flags for one answer, or repeat --answer QUESTION VALUE.",
             )
-        if single_supplied and args.answer:
+        if single_supplied and (args.answer or args.cell):
             raise EpiqError(
                 "mixed_answer_syntax",
                 "Do not combine --question/--value with --answer",
                 "Use --question and --value once, or repeat --answer for one or more answers.",
             )
-        answers = (
-            [(args.question, args.value)]
+        if args.cell and args.answer:
+            raise EpiqError(
+                "mixed_answer_syntax",
+                "Do not combine --cell with --answer",
+                "Use --cell SUBJECT QUESTION VALUE for multi-subject evidence.",
+            )
+        if (single_supplied or args.answer) and not args.subject:
+            raise EpiqError(
+                "subject_required", "--subject is required with --question/--value or --answer"
+            )
+        cells = (
+            [(args.subject, args.question, args.value)]
             if single_supplied
-            else [(question, value) for question, value in (args.answer or [])]
+            else (
+                [(args.subject, question, value) for question, value in (args.answer or [])]
+                if args.answer
+                else [(subject, question, value) for subject, question, value in (args.cell or [])]
+            )
         )
-        if not answers:
+        if not cells:
             raise EpiqError(
                 "answer_required",
                 "Record requires at least one answer",
-                "Use --question QUESTION --value VALUE, or --answer QUESTION VALUE.",
+                "Use --question/--value, --answer QUESTION VALUE, "
+                "or --cell SUBJECT QUESTION VALUE.",
             )
         excerpt = Path(args.excerpt_file).read_text() if args.excerpt_file else args.excerpt
         if args.source_type == "web" and not args.url:
@@ -868,7 +978,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         operations.extend(
             {
                 "op": "claim.assert",
-                "subject": args.subject,
+                "subject": subject,
                 "question": question,
                 "value": _value(value),
                 "valid_from": args.valid_from,
@@ -876,7 +986,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "confidence": args.confidence,
                 "temporal_basis": args.temporal_basis,
             }
-            for question, value in answers
+            for subject, question, value in cells
         )
         results = store.write_batch(operations, args.actor)
         evidence_result = results[0]
@@ -971,10 +1081,60 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "query":
         predicates = [_predicate(item) for item in args.where]
         return store.query_rows(args.kind, predicates, args.known_at, args.valid_at)
+    if args.command == "aggregate":
+        projection = store.matrix(args.kind)
+        question_names = {str(item["name"]) for item in projection["questions"]}
+        if args.question not in question_names:
+            raise EpiqError("question_not_found", f"Question not found: {args.question}")
+        if args.group_by and args.group_by not in question_names:
+            raise EpiqError("question_not_found", f"Question not found: {args.group_by}")
+        grouped: dict[str, list[Any]] = {}
+        for row in projection["rows"]:
+            cell = row["cells"][args.question]
+            values = cell.get("values", [])
+            if not values:
+                continue
+            keys = ["all"]
+            if args.group_by:
+                group_cell = row["cells"][args.group_by]
+                keys = [_display(item) for item in group_cell.get("display_values", [])]
+                if not keys:
+                    keys = [_display(item) for item in group_cell.get("values", [])]
+                if not keys:
+                    keys = ["Unasked"]
+            for key in keys:
+                grouped.setdefault(key, []).extend(values)
+        groups = []
+        for key, values in sorted(grouped.items()):
+            if args.op == "count":
+                result: Any = len(values)
+            else:
+                numeric = all(
+                    isinstance(item, (int, float)) and not isinstance(item, bool)
+                    for item in values
+                )
+                if not numeric:
+                    raise EpiqError(
+                        "non_numeric_aggregate",
+                        f"{args.question} contains non-numeric values",
+                    )
+                result = {
+                    "sum": sum,
+                    "avg": lambda items: sum(items) / len(items),
+                    "min": min,
+                    "max": max,
+                }[args.op](values)
+            groups.append({"group": key, "value": result, "count": len(values)})
+        return {
+            "entity_kind": args.kind,
+            "question": args.question,
+            "operation": args.op,
+            "groups": groups,
+        }
     if args.command == "dossier":
         return store.dossier(args.entity)
     if args.command == "related":
-        return store.related(args.entity, args.via, args.direction)
+        return store.related(args.entity, args.via, args.direction, args.depth)
     if args.command == "timeline":
         return store.timeline(args.kind, args.question)
     if args.command == "delta":
@@ -1039,7 +1199,10 @@ def main(argv: list[str] | None = None) -> None:
             result = _select(result, args.select)
         if args.format == "ids":
             result = _ids(result)
-        _emit(result)
+        if args.format == "table":
+            print(_table(result, args.command))
+        else:
+            _emit(result)
     except EpiqError as exc:
         print(json.dumps({"error": exc.as_dict()}, sort_keys=True), file=sys.stderr)
         raise SystemExit(2) from None

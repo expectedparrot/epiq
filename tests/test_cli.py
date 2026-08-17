@@ -321,6 +321,158 @@ def test_cli_record_rolls_back_evidence_when_an_answer_is_invalid(tmp_path: Path
     assert after["events"] == before["events"]
 
 
+def test_cli_record_can_write_multiple_subjects_and_render_table(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "multi-record.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Multi record")
+    invoke("entity", "Company", "Acorn")
+    invoke("entity", "Company", "Beacon")
+    invoke("question", "price", "--for", "Company", "--type", "Int")
+    result = invoke(
+        "record",
+        "--source-type",
+        "report",
+        "--source-title",
+        "Price report",
+        "--retrieved-at",
+        "2026-08-17",
+        "--excerpt",
+        "Acorn costs 10 and Beacon costs 20.",
+        "--valid-from",
+        "2026-08-17",
+        "--cell",
+        "Acorn",
+        "price",
+        "10",
+        "--cell",
+        "Beacon",
+        "price",
+        "20",
+    )
+    assert result["answer_count"] == 2
+    main(["--db", str(database), "--format", "table", "matrix", "--kind", "Company"])
+    output = capsys.readouterr().out
+    assert "Company" in output and "price" in output
+    assert "Acorn" in output and "10" in output
+    assert "Beacon" in output and "20" in output
+
+
+def test_cli_related_can_traverse_multiple_hops(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "graph.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Graph")
+    for name in ("A", "B", "C"):
+        invoke("entity", "Node", name)
+    invoke(
+        "question",
+        "next_node",
+        "--for",
+        "Node",
+        "--type",
+        "Ref[Node]",
+        "--definition",
+        '{"cardinality":"many"}',
+    )
+    for source, target in (("A", "B"), ("B", "C")):
+        invoke(
+            "record",
+            "--subject",
+            source,
+            "--source-type",
+            "report",
+            "--source-title",
+            f"{source} to {target}",
+            "--retrieved-at",
+            "2026-08-17",
+            "--excerpt",
+            f"{source} points to {target}.",
+            "--valid-from",
+            "2026-08-17",
+            "--question",
+            "next_node",
+            "--value",
+            target,
+        )
+    result = invoke("related", "A", "--direction", "outgoing", "--depth", "2")
+    assert result["count"] == 2
+    assert [edge["to"]["name"] for edge in result["edges"]] == ["B", "C"]
+    assert [edge["depth"] for edge in result["edges"]] == [1, 2]
+
+
+def test_cli_aggregate_groups_numeric_claims(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "aggregate.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Aggregate")
+    for name in ("A", "B", "C"):
+        invoke("entity", "Quote", name)
+    invoke("question", "region", "--for", "Quote", "--type", "String")
+    invoke("question", "price", "--for", "Quote", "--type", "Float")
+    invoke(
+        "record",
+        "--source-type",
+        "report",
+        "--source-title",
+        "Quotes",
+        "--retrieved-at",
+        "2026-08-17",
+        "--excerpt",
+        "Three regional quotes.",
+        "--valid-from",
+        "2026-08-17",
+        "--cell",
+        "A",
+        "region",
+        "US",
+        "--cell",
+        "A",
+        "price",
+        "10",
+        "--cell",
+        "B",
+        "region",
+        "US",
+        "--cell",
+        "B",
+        "price",
+        "20",
+        "--cell",
+        "C",
+        "region",
+        "EU",
+        "--cell",
+        "C",
+        "price",
+        "40",
+    )
+    result = invoke(
+        "aggregate",
+        "--kind",
+        "Quote",
+        "--question",
+        "price",
+        "--op",
+        "avg",
+        "--group-by",
+        "region",
+    )
+    assert result["groups"] == [
+        {"group": "EU", "value": 40.0, "count": 1},
+        {"group": "US", "value": 15.0, "count": 2},
+    ]
+
+
 def test_cli_apply_concise_query_output_and_non_web_evidence(tmp_path: Path, capsys) -> None:
     database = tmp_path / "ergonomics.sqlite"
     declaration = tmp_path / "project.json"
