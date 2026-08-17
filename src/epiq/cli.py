@@ -186,6 +186,20 @@ def parser() -> argparse.ArgumentParser:
     evidence.add_argument("--retrieved-at", required=True)
     evidence.add_argument("--excerpt", required=True)
 
+    assess_evidence = commands.add_parser(
+        "assess-evidence", help="Append a quality assessment to immutable evidence"
+    )
+    assess_evidence.add_argument("evidence_id")
+    assess_evidence.add_argument(
+        "--status", choices=["accepted", "disputed", "invalid", "superseded"], required=True
+    )
+    assess_evidence.add_argument("--reason", required=True)
+
+    evidence_history = commands.add_parser(
+        "evidence-assessments", help="Read evidence assessment history"
+    )
+    evidence_history.add_argument("evidence_id")
+
     claim = commands.add_parser("assert", help="Assert an evidence-backed claim")
     claim.add_argument("--subject", required=True)
     claim.add_argument("--question", required=True)
@@ -233,6 +247,13 @@ def parser() -> argparse.ArgumentParser:
     retract = commands.add_parser("retract", help="Retract a claim")
     retract.add_argument("claim_id")
     retract.add_argument("--reason", required=True)
+
+    validity_end = commands.add_parser(
+        "end-validity", help="Record when an asserted fact stopped being true"
+    )
+    validity_end.add_argument("claim_id")
+    validity_end.add_argument("--valid-to", required=True)
+    validity_end.add_argument("--reason", required=True)
 
     supersede = commands.add_parser("supersede", help="Atomically replace an active claim")
     supersede.add_argument("claim_id")
@@ -584,6 +605,14 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             args.url, args.title, args.retrieved_at, args.excerpt, args.actor
         )
         return {"ok": True, "source_id": source_id, "evidence_id": evidence_id}
+    if args.command == "assess-evidence":
+        assessment_id = store.assess_evidence(
+            args.evidence_id, args.status, args.reason, args.actor
+        )
+        return {"ok": True, "assessment_id": assessment_id, "status": args.status}
+    if args.command == "evidence-assessments":
+        items = store.evidence_assessments(args.evidence_id)
+        return {"count": len(items), "assessments": items}
     if args.command == "assert":
         claim_id = store.assert_claim(
             args.subject,
@@ -626,6 +655,9 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "retract":
         store.close_claim(args.claim_id, "retracted", args.reason, args.actor)
         return {"ok": True, "claim_id": args.claim_id, "status": "retracted"}
+    if args.command == "end-validity":
+        store.end_claim_validity(args.claim_id, args.valid_to, args.reason, args.actor)
+        return {"ok": True, "claim_id": args.claim_id, "valid_to": args.valid_to}
     if args.command == "supersede":
         replacement_id = store.supersede_claim(
             args.claim_id,

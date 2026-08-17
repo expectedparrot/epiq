@@ -17,7 +17,7 @@ tables.
 - Reversible field retirement: `question.retire` removes an unsuitable column from current
   projections and agent work without deleting its schema, claims, evidence, or history;
   `question.restore` brings it back.
-- Schema-versioned automatic migrations (currently v9).
+- Schema-versioned automatic migrations (currently v10).
 - Stable entity identity with normalized duplicate rejection, aliases, merge redirects, and
   reversible entity retirement. Historical claims keep their original subject IDs while current
   projections unify merged identities.
@@ -26,6 +26,8 @@ tables.
   direct claim batches that roll back every event and projection when any item fails.
 - Executable schema evolution for replacing, refining, or splitting fields atomically, with typed
   successor definitions, predecessor/successor lineage, and reversible old-field retirement.
+- Bitemporal fact endings (`claim.validity_end`) that preserve what the database believed before it
+  learned a fact had ceased, plus append-only evidence quality assessments surfaced in lineage.
 - Durable agent jobs and proposals. Completed jobs survive restarts; interrupted jobs become explicit
   failures rather than remaining permanently “running.”
 - Consistent online SQLite backups and a `doctor` integrity command.

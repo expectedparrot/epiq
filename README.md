@@ -369,6 +369,30 @@ The successor definitions, lineage edges, and predecessor retirement commit toge
 claims remain attached to the old question version and therefore remain historically inspectable;
 Epiq does not guess how to migrate semantically ambiguous answers.
 
+### End a fact or challenge its evidence
+
+Retraction means “we should no longer believe this assertion.” A validity end instead means “this
+was true, and then stopped being true”:
+
+```bash
+epiq end-validity clm_... --valid-to 2025-01-01 --reason "Leadership changed"
+```
+
+This is bitemporal: a query with `--known-at` before the validity-end event still reconstructs the
+earlier database belief, while `--valid-at 2025-06-01` after that event excludes the ended fact.
+
+Evidence itself remains immutable, but its quality can be assessed repeatedly:
+
+```bash
+epiq assess-evidence evd_... --status disputed \
+  --reason "The page may refer to a different company with the same name"
+epiq evidence-assessments evd_...
+```
+
+Statuses are `accepted`, `disputed`, `invalid`, and `superseded`. The latest assessment is shown in
+claim lineage; even invalid evidence is not erased, and Epiq does not silently retract every claim
+that cites it.
+
 ### 7. Inspect the projection
 
 ```bash
@@ -942,12 +966,15 @@ The principal endpoints are:
 | `GET` | `/api/question-challenges` | List and filter schema challenges |
 | `POST` | `/api/question-challenges/{id}/resolve` | Resolve or dismiss a challenge |
 | `POST` | `/api/evidence` | Add an immutable source excerpt |
+| `POST` | `/api/evidence/{id}/assess` | Append an evidence quality assessment |
+| `GET` | `/api/evidence/{id}/assessments` | Read evidence assessment history |
 | `POST` | `/api/claims` | Assert an evidence-backed cell answer |
 | `POST` | `/api/claims/bulk` | Assert up to 1,000 claims atomically |
 | `POST` | `/api/claim-proposals` | Stage a validated claim outside the live matrix |
 | `GET` | `/api/claim-proposals` | Read the durable claim review queue |
 | `POST` | `/api/claim-proposals/review` | Approve or reject a selection atomically |
 | `POST` | `/api/claims/{id}/retract` | Close a claim without deleting it |
+| `POST` | `/api/claims/{id}/validity-end` | Record when a fact stopped being true |
 | `POST` | `/api/claims/{id}/supersede` | Atomically replace a claim |
 | `POST` | `/api/research/not-found` | Record a completed unsuccessful search |
 | `POST` | `/api/research/jobs` | Launch background cell or column research |

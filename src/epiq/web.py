@@ -128,6 +128,12 @@ class EvidenceCreate(BaseModel):
     actor: str = "human:web"
 
 
+class EvidenceAssessmentCreate(BaseModel):
+    status: Literal["accepted", "disputed", "invalid", "superseded"]
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
 class ClaimCreate(BaseModel):
     subject: str
     question: str
@@ -156,6 +162,12 @@ class ClaimProposalReview(BaseModel):
 
 
 class RetractionCreate(BaseModel):
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
+class ValidityEndCreate(BaseModel):
+    valid_to: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     actor: str = "human:web"
 
@@ -596,6 +608,15 @@ def create_app(
         )
         return {"source_id": source_id, "evidence_id": evidence_id}
 
+    @app.post("/api/evidence/{evidence_id}/assess", status_code=201)
+    def assess_evidence(evidence_id: str, body: EvidenceAssessmentCreate) -> dict[str, str]:
+        assessment_id = store().assess_evidence(evidence_id, body.status, body.reason, body.actor)
+        return {"assessment_id": assessment_id, "status": body.status}
+
+    @app.get("/api/evidence/{evidence_id}/assessments")
+    def evidence_assessments(evidence_id: str) -> list[dict[str, Any]]:
+        return store().evidence_assessments(evidence_id)
+
     @app.post("/api/claims", status_code=201)
     def add_claim(body: ClaimCreate) -> dict[str, str]:
         claim_id = store().assert_claim(
@@ -646,6 +667,11 @@ def create_app(
     def retract(claim_id: str, body: RetractionCreate) -> dict[str, str]:
         store().close_claim(claim_id, "retracted", body.reason, body.actor)
         return {"claim_id": claim_id, "status": "retracted"}
+
+    @app.post("/api/claims/{claim_id}/validity-end", status_code=201)
+    def end_claim_validity(claim_id: str, body: ValidityEndCreate) -> dict[str, str]:
+        store().end_claim_validity(claim_id, body.valid_to, body.reason, body.actor)
+        return {"claim_id": claim_id, "valid_to": body.valid_to}
 
     @app.post("/api/claims/{claim_id}/supersede", status_code=201)
     def supersede(claim_id: str, body: SupersedeCreate) -> dict[str, str]:

@@ -134,6 +134,16 @@ CREATE TABLE IF NOT EXISTS evidence (
     created_seq INTEGER NOT NULL REFERENCES events(seq)
 );
 
+CREATE TABLE IF NOT EXISTS evidence_assessments (
+    assessment_id TEXT PRIMARY KEY,
+    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+    status TEXT NOT NULL CHECK(status IN ('accepted', 'disputed', 'invalid', 'superseded')),
+    reason TEXT NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_assessments
+ON evidence_assessments(evidence_id, created_seq);
+
 CREATE TABLE IF NOT EXISTS claims (
     claim_id TEXT PRIMARY KEY,
     subject_id TEXT NOT NULL REFERENCES entities(entity_id),
@@ -151,6 +161,13 @@ CREATE TABLE IF NOT EXISTS claims (
     created_seq INTEGER NOT NULL REFERENCES events(seq),
     closed_seq INTEGER REFERENCES events(seq),
     UNIQUE(subject_id, question_id, value_json, valid_from, evidence_id)
+);
+
+CREATE TABLE IF NOT EXISTS claim_validity_ends (
+    claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id),
+    valid_to TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq)
 );
 
 CREATE INDEX IF NOT EXISTS idx_claim_lookup
@@ -322,7 +339,7 @@ class Store:
                 [
                     ("project_id", _id("prj")),
                     ("name", name),
-                    ("schema_version", "9"),
+                    ("schema_version", "10"),
                     ("created_at", _now()),
                 ],
             )
@@ -485,6 +502,24 @@ class Store:
                 );
                 UPDATE meta SET value='9'
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<9;
+                CREATE TABLE IF NOT EXISTS evidence_assessments (
+                    assessment_id TEXT PRIMARY KEY,
+                    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+                    status TEXT NOT NULL
+                        CHECK(status IN ('accepted', 'disputed', 'invalid', 'superseded')),
+                    reason TEXT NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq)
+                );
+                CREATE INDEX IF NOT EXISTS idx_evidence_assessments
+                ON evidence_assessments(evidence_id, created_seq);
+                CREATE TABLE IF NOT EXISTS claim_validity_ends (
+                    claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id),
+                    valid_to TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq)
+                );
+                UPDATE meta SET value='10'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<10;
                 """
             )
             connection.commit()
@@ -547,7 +582,9 @@ class Store:
                     "question_visibility",
                     "sources",
                     "evidence",
+                    "evidence_assessments",
                     "claims",
+                    "claim_validity_ends",
                     "claim_proposals",
                     "research_tasks",
                     "question_challenges",
@@ -1128,6 +1165,66 @@ class Store:
                 (evidence_id, source_id, normalized_excerpt, evidence_hash, seq),
             )
         return source_id, evidence_id
+
+    def assess_evidence(self, evidence_id: str, status: str, reason: str, actor: str) -> str:
+        """Append a quality/status assessment without altering immutable captured evidence."""
+        if status not in {"accepted", "disputed", "invalid", "superseded"}:
+            raise EpiqError("invalid_evidence_status", f"Unknown evidence status: {status}")
+        if not reason.strip():
+            raise EpiqError("reason_required", "An evidence assessment reason is required")
+        with self.transaction() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM evidence WHERE evidence_id=?", (evidence_id,)
+                ).fetchone()
+                is None
+            ):
+                raise EpiqError("evidence_not_found", f"Evidence not found: {evidence_id}")
+            assessment_id = _id("eas")
+            seq, _, _ = self._event(
+                connection,
+                "evidence.assess",
+                actor,
+                {
+                    "assessment_id": assessment_id,
+                    "evidence_id": evidence_id,
+                    "status": status,
+                    "reason": reason.strip(),
+                },
+            )
+            connection.execute(
+                "INSERT INTO evidence_assessments VALUES(?,?,?,?,?)",
+                (assessment_id, evidence_id, status, reason.strip(), seq),
+            )
+        return assessment_id
+
+    def evidence_assessments(self, evidence_id: str) -> list[dict[str, Any]]:
+        """Return the complete assessment history for an evidence fragment."""
+        with self.connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM evidence WHERE evidence_id=?", (evidence_id,)
+                ).fetchone()
+                is None
+            ):
+                raise EpiqError("evidence_not_found", f"Evidence not found: {evidence_id}")
+            rows = connection.execute(
+                """SELECT a.*,ev.recorded_at,ev.actor FROM evidence_assessments a
+                   JOIN events ev ON ev.seq=a.created_seq
+                   WHERE a.evidence_id=? ORDER BY a.created_seq""",
+                (evidence_id,),
+            ).fetchall()
+        return [
+            {
+                "assessment_id": str(row["assessment_id"]),
+                "evidence_id": str(row["evidence_id"]),
+                "status": str(row["status"]),
+                "reason": str(row["reason"]),
+                "recorded_at": str(row["recorded_at"]),
+                "actor": str(row["actor"]),
+            }
+            for row in rows
+        ]
 
     def _follow_entity_redirect(
         self, connection: sqlite3.Connection, entity: sqlite3.Row
@@ -1788,6 +1885,38 @@ class Store:
             return
         raise EpiqError("value_type_error", f"Unsupported {kind!r} distribution for {inner_type}")
 
+    def end_claim_validity(self, claim_id: str, valid_to: str, reason: str, actor: str) -> None:
+        """Record when a fact stopped being true, independently of when Epiq learned it."""
+        if not reason.strip():
+            raise EpiqError("reason_required", "A validity-end reason is required")
+        with self.transaction() as connection:
+            claim = connection.execute(
+                "SELECT * FROM claims WHERE claim_id=?", (claim_id,)
+            ).fetchone()
+            if claim is None:
+                raise EpiqError("claim_not_found", f"Claim not found: {claim_id}")
+            if valid_to <= str(claim["valid_from"]):
+                raise EpiqError(
+                    "invalid_validity_interval",
+                    f"valid_to must be after valid_from ({claim['valid_from']})",
+                )
+            if connection.execute(
+                "SELECT 1 FROM claim_validity_ends WHERE claim_id=?", (claim_id,)
+            ).fetchone():
+                raise EpiqError(
+                    "validity_already_ended", f"Claim validity already ended: {claim_id}"
+                )
+            seq, _, _ = self._event(
+                connection,
+                "claim.validity_end",
+                actor,
+                {"claim_id": claim_id, "valid_to": valid_to, "reason": reason.strip()},
+            )
+            connection.execute(
+                "INSERT INTO claim_validity_ends VALUES(?,?,?,?)",
+                (claim_id, valid_to, reason.strip(), seq),
+            )
+
     def close_claim(self, claim_id: str, status: str, reason: str, actor: str) -> None:
         """Retract or supersede a claim without deleting it."""
         if status not in {"retracted", "superseded"}:
@@ -2089,8 +2218,13 @@ class Store:
                     JOIN entities e ON e.entity_id=c.subject_id
                     WHERE c.subject_id IN ({placeholders}) AND q.name='game_result'
                     AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
-                    AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)""",
-                (*game_ids, cutoff, cutoff, valid, valid),
+                    AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM claim_validity_ends ve
+                      JOIN events vee ON vee.seq=ve.created_seq
+                      WHERE ve.claim_id=c.claim_id AND vee.recorded_at<=? AND ve.valid_to<=?
+                    )""",
+                (*game_ids, cutoff, cutoff, valid, valid, cutoff, valid),
             ).fetchall()
         ordered = sorted(rows, key=lambda row: json.loads(row["attributes_json"]).get("ordinal", 0))
         values = [(row, json.loads(row["value_json"])) for row in ordered]
@@ -2235,6 +2369,11 @@ class Store:
                            WHERE c.subject_id IN ({entity_placeholders}) AND cq.name=?
                            AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
                            AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
+                           AND NOT EXISTS (
+                             SELECT 1 FROM claim_validity_ends ve
+                             JOIN events vee ON vee.seq=ve.created_seq
+                             WHERE ve.claim_id=c.claim_id AND vee.recorded_at<=? AND ve.valid_to<=?
+                           )
                            ORDER BY c.valid_from DESC, c.created_seq DESC""",
                         (
                             *entity_ids,
@@ -2242,6 +2381,8 @@ class Store:
                             cutoff,
                             cutoff,
                             valid,
+                            valid,
+                            cutoff,
                             valid,
                         ),
                     ).fetchall()
@@ -2370,6 +2511,13 @@ class Store:
                 )
             ]
             for evidence_row in evidence_rows:
+                assessment = connection.execute(
+                    """SELECT a.status,a.reason FROM evidence_assessments a
+                       JOIN events ev ON ev.seq=a.created_seq
+                       WHERE a.evidence_id=? AND ev.recorded_at<=?
+                       ORDER BY a.created_seq DESC LIMIT 1""",
+                    (evidence_row["evidence_id"], cutoff),
+                ).fetchone()
                 item = {
                     "token": f"p_{claim['claim_id']}",
                     "claim_id": claim["claim_id"],
@@ -2385,6 +2533,10 @@ class Store:
                     "as_of": claim["valid_from"],
                     "temporal_basis": claim["temporal_basis"],
                     "excerpt": evidence_row["excerpt"],
+                    "evidence_status": str(assessment["status"]) if assessment else "unassessed",
+                    "evidence_assessment_reason": (
+                        str(assessment["reason"]) if assessment else None
+                    ),
                 }
                 if derivation:
                     item["derivation"] = {

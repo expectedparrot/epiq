@@ -62,6 +62,55 @@ def test_retraction_changes_current_view_but_preserves_history(store: Store) -> 
     assert any(event["payload"].get("claim_id") == claim for event in events)
 
 
+def test_validity_end_expires_valid_time_without_retracting_claim(store: Store) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("ceo", "Company", "String", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/acme", "Acme", "2026-08-17", "Ada was CEO in 2024.", "test"
+    )
+    claim = store.assert_claim(company, "ceo", "Ada", "2024-01-01", evidence, "test")
+    learned_at = next(
+        event["recorded_at"]
+        for event in store.history()
+        if event["event_type"] == "claim.assert"
+    )
+    store.end_claim_validity(claim, "2025-01-01", "Leadership changed", "reviewer")
+    assert store.history()[-1]["event_type"] == "claim.validity_end"
+    old = store.matrix("Company", valid_at="2024-06-01")["rows"][0]["cells"]["ceo"]
+    current = store.matrix("Company", valid_at="2025-06-01")["rows"][0]["cells"]["ceo"]
+    assert old["value"] == "Ada"
+    assert current["state"] == "Unasked"
+    before_epiq_learned_the_end = store.matrix(
+        "Company", known_at=learned_at, valid_at="2025-06-01"
+    )["rows"][0]["cells"]["ceo"]
+    assert before_epiq_learned_the_end["value"] == "Ada"
+    with store.connect() as connection:
+        status = connection.execute(
+            "SELECT status FROM claims WHERE claim_id=?", (claim,)
+        ).fetchone()[0]
+    assert status == "asserted"
+
+
+def test_evidence_assessment_surfaces_quality_without_erasing_lineage(store: Store) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("active", "Company", "Bool", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/acme", "Acme", "2026-08-17", "Acme is active.", "test"
+    )
+    store.assert_claim(company, "active", True, "2026-08-17", evidence, "test")
+    store.assess_evidence(evidence, "disputed", "Page may describe a different Acme", "reviewer")
+    lineage = store.matrix("Company")["rows"][0]["cells"]["active"]["lineage"]
+    assert lineage[0]["evidence_status"] == "disputed"
+    assert "different Acme" in lineage[0]["evidence_assessment_reason"]
+    store.assess_evidence(evidence, "accepted", "Identity independently verified", "reviewer")
+    lineage = store.matrix("Company")["rows"][0]["cells"]["active"]["lineage"]
+    assert lineage[0]["evidence_status"] == "accepted"
+    assert [item["status"] for item in store.evidence_assessments(evidence)] == [
+        "disputed",
+        "accepted",
+    ]
+
+
 def test_question_challenge_captures_category_error_and_resolution(store: Store) -> None:
     boat = store.add_entity("BoatModel", "RS Quest", {}, "test")
     question = store.add_question("has_spinnaker", "BoatModel", "Bool", {}, "test")
@@ -237,7 +286,7 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "9"
+    assert store.overview()["project"]["schema_version"] == "10"
 
 
 def test_entity_alias_merge_and_retirement_preserve_identity_history(store: Store) -> None:
