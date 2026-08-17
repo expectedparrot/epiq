@@ -5,9 +5,9 @@
     {"kind":"ForecastEvent","name":"Rain in Boston on August 20"},
     {"kind":"Forecaster","name":"Alice"},
     {"kind":"Forecaster","name":"Bob"},
-    {"kind":"Forecast","name":"Alice forecast 2026-08-17"},
-    {"kind":"Forecast","name":"Alice forecast 2026-08-18"},
-    {"kind":"Forecast","name":"Bob forecast 2026-08-17"}
+    {"kind":"Forecast","name":"Alice forecast 2026-08-17","role":"observation","identity":{"event":"Rain in Boston on August 20","forecaster":"Alice","issued_at":"2026-08-17T09:00:00-04:00"}},
+    {"kind":"Forecast","name":"Alice forecast 2026-08-18","role":"observation","identity":{"event":"Rain in Boston on August 20","forecaster":"Alice","issued_at":"2026-08-18T09:00:00-04:00"}},
+    {"kind":"Forecast","name":"Bob forecast 2026-08-17","role":"observation","identity":{"event":"Rain in Boston on August 20","forecaster":"Bob","issued_at":"2026-08-17T10:00:00-04:00"}}
   ],
   "questions": [
     {"name":"forecaster","subject_kind":"Forecast","value_type":"Ref[Forecaster]","definition":{"label":"Forecaster"}},

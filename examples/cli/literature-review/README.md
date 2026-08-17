@@ -17,12 +17,11 @@ uv run epiq --db /tmp/epiq-literature.sqlite --format table matrix --kind Findin
 uv run epiq --db /tmp/epiq-literature.sqlite query --kind Finding --where 'effect_size > 0'
 ```
 
-Output: `matched: 1`, returning Study A's finding and its page-specific excerpt.
+Output: `matched: 1`, returning Study A's finding and its structured `{"page":12}` locator.
 
 ## Product gaps surfaced
 
-- A paper is simultaneously an entity and a source, but Epiq does not unify those identities.
-- Page locators are encoded in URLs/titles rather than structured citation fields.
+- Sources can now link to their Paper entity and carry structured page/table/section locators.
 - Findings are claim-like entities; there is no native claim-about-claim or replication relation.
 - Meta-analysis needs grouping, weighting, uncertainty intervals, and derived estimates.
 - Evidence-quality rubrics exist only as free-form assessments, not reusable schemas.

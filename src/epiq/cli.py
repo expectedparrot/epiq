@@ -44,6 +44,15 @@ def _attributes(raw: str | None) -> dict[str, Any]:
     return result
 
 
+def _entity_name(kind: str, name: str | None, identity: dict[str, Any] | None) -> str:
+    if name:
+        return name
+    if not identity:
+        raise EpiqError("entity_name_required", "Entity requires a name or --identity")
+    parts = ", ".join(f"{key}={_display(value)}" for key, value in sorted(identity.items()))
+    return f"{kind}[{parts}]"
+
+
 def _json_file(path: str) -> Any:
     text = sys.stdin.read() if path == "-" else Path(path).read_text()
     try:
@@ -276,8 +285,10 @@ def parser() -> argparse.ArgumentParser:
 
     entity = commands.add_parser("entity", help="Create an entity")
     entity.add_argument("kind")
-    entity.add_argument("name")
+    entity.add_argument("name", nargs="?")
     entity.add_argument("--attributes")
+    entity.add_argument("--role", choices=["entity", "observation", "relation"], default="entity")
+    entity.add_argument("--identity", help="JSON compound identity; makes creation idempotent")
 
     entity_alias = commands.add_parser("entity-alias", help="Add an alternate entity identity")
     entity_alias.add_argument("entity")
@@ -346,6 +357,8 @@ def parser() -> argparse.ArgumentParser:
     evidence.add_argument("--url")
     evidence.add_argument("--title", required=True)
     evidence.add_argument("--retrieved-at", required=True)
+    evidence.add_argument("--locator", help="JSON locator such as page, section, or timestamp")
+    evidence.add_argument("--source-entity", help="Entity represented by this source")
     excerpt_input = evidence.add_mutually_exclusive_group(required=True)
     excerpt_input.add_argument("--excerpt")
     excerpt_input.add_argument("--excerpt-file")
@@ -402,6 +415,8 @@ def parser() -> argparse.ArgumentParser:
     record.add_argument("--source-title", "--title", dest="source_title", required=True)
     record.add_argument("--published-at")
     record.add_argument("--retrieved-at", required=True)
+    record.add_argument("--locator", help="JSON locator such as page, section, or timestamp")
+    record.add_argument("--source-entity", help="Entity represented by this source")
     record_excerpt = record.add_mutually_exclusive_group(required=True)
     record_excerpt.add_argument("--excerpt")
     record_excerpt.add_argument("--excerpt-file")
@@ -824,7 +839,16 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         results = store.search(args.text, args.limit)
         return {"query": args.text, "count": len(results), "results": results}
     if args.command == "entity":
-        entity_id = store.add_entity(args.kind, args.name, _attributes(args.attributes), args.actor)
+        identity = _attributes(args.identity) if args.identity else None
+        name = _entity_name(args.kind, args.name, identity)
+        entity_id = store.add_entity(
+            args.kind,
+            name,
+            _attributes(args.attributes),
+            args.actor,
+            args.role,
+            identity,
+        )
         return {"ok": True, "entity_id": entity_id}
     if args.command == "entity-alias":
         alias_id = store.add_entity_alias(args.entity, args.alias, args.actor)
@@ -882,6 +906,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             excerpt,
             args.actor,
             source_type=args.source_type,
+            locator=_attributes(args.locator) if args.locator else None,
+            source_entity=args.source_entity,
         )
         return {"ok": True, "source_id": source_id, "evidence_id": evidence_id}
     if args.command == "assess-evidence":
@@ -973,6 +999,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "retrieved_at": args.retrieved_at,
                 "excerpt": excerpt,
                 "source_type": args.source_type,
+                "locator": _attributes(args.locator) if args.locator else {},
+                "source_entity": args.source_entity,
             }
         ]
         operations.extend(

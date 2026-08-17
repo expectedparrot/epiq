@@ -473,6 +473,49 @@ def test_cli_aggregate_groups_numeric_claims(tmp_path: Path, capsys) -> None:
     ]
 
 
+def test_cli_structured_locator_and_source_entity_appear_in_lineage(
+    tmp_path: Path, capsys
+) -> None:
+    database = tmp_path / "locator.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Locator")
+    invoke("entity", "Paper", "Study A")
+    invoke("entity", "Finding", "Finding A")
+    invoke("question", "effect", "--for", "Finding", "--type", "Float")
+    invoke(
+        "record",
+        "--subject",
+        "Finding A",
+        "--source-type",
+        "report",
+        "--source-title",
+        "Study A",
+        "--source-entity",
+        "Study A",
+        "--locator",
+        '{"page":12,"table":"3"}',
+        "--retrieved-at",
+        "2026-08-17",
+        "--excerpt",
+        "Effect 0.18.",
+        "--valid-from",
+        "2026-08-17",
+        "--question",
+        "effect",
+        "--value",
+        "0.18",
+    )
+    source = invoke("matrix", "--kind", "Finding")["rows"][0]["cells"]["effect"][
+        "lineage"
+    ][0]["source"]
+    assert source["locator"] == {"page": 12, "table": "3"}
+    assert source["linked_entity_id"]
+
+
 def test_cli_apply_concise_query_output_and_non_web_evidence(tmp_path: Path, capsys) -> None:
     database = tmp_path / "ergonomics.sqlite"
     declaration = tmp_path / "project.json"

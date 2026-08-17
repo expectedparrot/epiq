@@ -34,7 +34,7 @@ QUESTION_CHALLENGE_PROBLEMS = {
     "other",
 }
 
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 MIGRATION_DESCRIPTIONS = {
     2: "multi-evidence claims and derivation lineage",
     3: "source publication time and claim temporal basis",
@@ -46,6 +46,7 @@ MIGRATION_DESCRIPTIONS = {
     9: "executable question evolution lineage",
     10: "claim validity endings and evidence assessments",
     11: "first-class evidence source types",
+    12: "entity roles, compound identities, and structured source locators",
 }
 
 SCHEMA = """
@@ -70,9 +71,14 @@ CREATE TABLE IF NOT EXISTS entities (
     kind TEXT NOT NULL,
     name TEXT NOT NULL,
     attributes_json TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'entity' CHECK(role IN ('entity', 'observation', 'relation')),
+    identity_json TEXT,
+    identity_hash TEXT,
     created_seq INTEGER NOT NULL REFERENCES events(seq),
     UNIQUE(kind, name)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_compound_identity
+ON entities(kind, identity_hash) WHERE identity_hash IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS entity_aliases (
     alias_id TEXT PRIMARY KEY,
@@ -139,6 +145,8 @@ CREATE TABLE IF NOT EXISTS sources (
     retrieved_at TEXT NOT NULL,
     published_at TEXT,
     content_hash TEXT NOT NULL,
+    locator_json TEXT NOT NULL DEFAULT '{}',
+    linked_entity_id TEXT REFERENCES entities(entity_id),
     created_seq INTEGER NOT NULL REFERENCES events(seq),
     UNIQUE(url, content_hash)
 );
@@ -581,6 +589,34 @@ class Store:
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<11;
                 """
             )
+            entity_columns = {
+                str(row["name"]) for row in connection.execute("PRAGMA table_info(entities)")
+            }
+            if "role" not in entity_columns:
+                connection.execute(
+                    "ALTER TABLE entities ADD COLUMN role TEXT NOT NULL DEFAULT 'entity'"
+                )
+            if "identity_json" not in entity_columns:
+                connection.execute("ALTER TABLE entities ADD COLUMN identity_json TEXT")
+            if "identity_hash" not in entity_columns:
+                connection.execute("ALTER TABLE entities ADD COLUMN identity_hash TEXT")
+            source_columns = {
+                str(row["name"]) for row in connection.execute("PRAGMA table_info(sources)")
+            }
+            if "locator_json" not in source_columns:
+                connection.execute(
+                    "ALTER TABLE sources ADD COLUMN locator_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "linked_entity_id" not in source_columns:
+                connection.execute("ALTER TABLE sources ADD COLUMN linked_entity_id TEXT")
+            connection.executescript(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_compound_identity
+                ON entities(kind, identity_hash) WHERE identity_hash IS NOT NULL;
+                UPDATE meta SET value='12'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<12;
+                """
+            )
             connection.commit()
         return connection
 
@@ -955,12 +991,20 @@ class Store:
         return int(cursor.lastrowid), event_id, recorded_at
 
     def add_entity(
-        self, kind: str, name: str, attributes: dict[str, Any] | None, actor: str
+        self,
+        kind: str,
+        name: str,
+        attributes: dict[str, Any] | None,
+        actor: str,
+        role: str = "entity",
+        identity: dict[str, Any] | None = None,
     ) -> str:
         """Add an entity through an event."""
         try:
             with self.transaction() as connection:
-                return self._add_entity_tx(connection, kind, name, attributes, actor)
+                return self._add_entity_tx(
+                    connection, kind, name, attributes, actor, role, identity
+                )
         except sqlite3.IntegrityError as exc:
             raise EpiqError("duplicate_entity", f"Entity already exists: {kind} {name}") from exc
 
@@ -971,13 +1015,32 @@ class Store:
         name: str,
         attributes: dict[str, Any] | None,
         actor: str,
+        role: str = "entity",
+        identity: dict[str, Any] | None = None,
     ) -> str:
+        if role not in {"entity", "observation", "relation"}:
+            raise EpiqError("invalid_entity_role", f"Unknown entity role: {role}")
+        normalized_identity = _json(identity) if identity is not None else None
+        identity_hash = (
+            hashlib.sha256(normalized_identity.encode()).hexdigest()
+            if normalized_identity is not None
+            else None
+        )
+        if identity_hash is not None:
+            existing = connection.execute(
+                "SELECT entity_id FROM entities WHERE kind=? AND identity_hash=?",
+                (kind, identity_hash),
+            ).fetchone()
+            if existing:
+                return str(existing["entity_id"])
         entity_id = _id("ent")
         payload = {
             "entity_id": entity_id,
             "kind": kind,
             "name": name,
             "attributes": attributes or {},
+            "role": role,
+            "identity": identity,
         }
         duplicate = self._find_entity_by_identity(connection, name, kind)
         if duplicate is not None:
@@ -988,8 +1051,19 @@ class Store:
         seq, _, _ = self._event(connection, "entity.create", actor, payload)
         connection.execute("INSERT OR IGNORE INTO entity_kinds VALUES(?,?)", (kind, seq))
         connection.execute(
-            "INSERT INTO entities VALUES(?,?,?,?,?)",
-            (entity_id, kind, name, _json(attributes or {}), seq),
+            """INSERT INTO entities(
+                 entity_id,kind,name,attributes_json,role,identity_json,identity_hash,created_seq
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            (
+                entity_id,
+                kind,
+                name,
+                _json(attributes or {}),
+                role,
+                normalized_identity,
+                identity_hash,
+                seq,
+            ),
         )
         return entity_id
 
@@ -1364,6 +1438,8 @@ class Store:
         actor: str,
         published_at: str | None = None,
         source_type: str = "web",
+        locator: dict[str, Any] | None = None,
+        source_entity: str | None = None,
     ) -> tuple[str, str]:
         """Atomically add a source and an immutable evidence fragment."""
         with self.transaction() as connection:
@@ -1376,6 +1452,9 @@ class Store:
                 actor,
                 published_at,
                 source_type,
+                None,
+                locator,
+                source_entity,
             )
 
     def _add_evidence_tx(
@@ -1389,16 +1468,25 @@ class Store:
         published_at: str | None = None,
         source_type: str = "web",
         submitted_by: str | None = None,
+        locator: dict[str, Any] | None = None,
+        source_entity: str | None = None,
     ) -> tuple[str, str]:
         if source_type not in {"web", "personal", "model", "report", "interview", "other"}:
             raise EpiqError("invalid_source_type", f"Unknown evidence source type: {source_type}")
         canonical_url = canonicalize_url(url)
         normalized_excerpt = _normalize_excerpt(excerpt)
+        normalized_locator = _json(locator or {})
+        linked_entity_id = None
+        if source_entity:
+            linked_entity_id = str(self._resolve_entity(connection, source_entity)["entity_id"])
         if not normalized_excerpt:
             raise EpiqError("invalid_evidence", "Evidence excerpt cannot be empty")
-        source_hash = hashlib.sha256(f"{canonical_url}\n{normalized_excerpt}".encode()).hexdigest()
+        hash_material = (
+            f"{canonical_url}\n{normalized_excerpt}\n{normalized_locator}\n{linked_entity_id or ''}"
+        )
+        source_hash = hashlib.sha256(hash_material.encode()).hexdigest()
         evidence_hash = hashlib.sha256(
-            f"{canonical_url}\n{normalized_excerpt}".encode()
+            hash_material.encode()
         ).hexdigest()
         existing = connection.execute(
             "SELECT evidence_id, source_id FROM evidence WHERE content_hash=?", (evidence_hash,)
@@ -1420,6 +1508,8 @@ class Store:
                 "published_at": published_at,
                 "excerpt": normalized_excerpt,
                 "content_hash": evidence_hash,
+                "locator": locator or {},
+                "source_entity_id": linked_entity_id,
                 **(
                     {"submitted_by": submitted_by} if submitted_by and submitted_by != actor else {}
                 ),
@@ -1427,8 +1517,9 @@ class Store:
         )
         connection.execute(
             """INSERT INTO sources
-               (source_id,url,source_type,title,retrieved_at,published_at,content_hash,created_seq)
-               VALUES(?,?,?,?,?,?,?,?)""",
+               (source_id,url,source_type,title,retrieved_at,published_at,content_hash,
+                locator_json,linked_entity_id,created_seq)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
             (
                 source_id,
                 canonical_url,
@@ -1437,6 +1528,8 @@ class Store:
                 retrieved_at,
                 published_at,
                 source_hash,
+                normalized_locator,
+                linked_entity_id,
                 seq,
             ),
         )
@@ -1661,6 +1754,12 @@ class Store:
                         ),
                         str(operation.get("source_type", "web")),
                         actor,
+                        dict(operation.get("locator", {})),
+                        (
+                            str(operation["source_entity"])
+                            if operation.get("source_entity") is not None
+                            else None
+                        ),
                     )
                     if reference:
                         evidence_refs[reference] = evidence_id
@@ -1751,7 +1850,16 @@ class Store:
                 connection.execute("INSERT INTO entity_kinds VALUES(?,?)", (kind, seq))
                 results["entity_kinds"].append({"kind": kind, "status": "created"})
             for item in document.get("entities", []):
-                kind, name = str(item["kind"]), str(item["name"])
+                kind = str(item["kind"])
+                identity = dict(item["identity"]) if item.get("identity") is not None else None
+                name = str(item.get("name") or "")
+                if not name and identity:
+                    parts = ", ".join(
+                        f"{key}={value}" for key, value in sorted(identity.items())
+                    )
+                    name = f"{kind}[{parts}]"
+                if not name:
+                    raise EpiqError("entity_name_required", "Entity requires name or identity")
                 existing = self._find_entity_by_identity(connection, name, kind)
                 if existing:
                     expected_attributes = dict(item.get("attributes", {}))
@@ -1763,7 +1871,13 @@ class Store:
                     entity_id, status = str(existing["entity_id"]), "unchanged"
                 else:
                     entity_id = self._add_entity_tx(
-                        connection, kind, name, dict(item.get("attributes", {})), actor
+                        connection,
+                        kind,
+                        name,
+                        dict(item.get("attributes", {})),
+                        actor,
+                        str(item.get("role", "entity")),
+                        identity,
                     )
                     status = "created"
                 results["entities"].append(
@@ -3337,7 +3451,8 @@ class Store:
             evidence_rows = connection.execute(
                 """SELECT ce.evidence_id,e.excerpt,s.url,s.source_type,s.title,
                           s.published_at,s.retrieved_at,source_event.actor evidence_actor,
-                          source_event.payload_json evidence_payload
+                          source_event.payload_json evidence_payload,s.locator_json,
+                          s.linked_entity_id
                    FROM claim_evidence ce
                    JOIN evidence e ON e.evidence_id=ce.evidence_id
                    JOIN sources s ON s.source_id=e.source_id
@@ -3393,6 +3508,8 @@ class Store:
                         ),
                         "published_at": evidence_row["published_at"],
                         "retrieved_at": evidence_row["retrieved_at"],
+                        "locator": json.loads(str(evidence_row["locator_json"])),
+                        "linked_entity_id": evidence_row["linked_entity_id"],
                     },
                     "as_of": claim["valid_from"],
                     "temporal_basis": claim["temporal_basis"],

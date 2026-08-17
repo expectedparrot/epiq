@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -448,7 +449,22 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "11"
+    assert store.overview()["project"]["schema_version"] == "12"
+
+
+def test_compound_entity_identity_is_idempotent(store: Store) -> None:
+    identity = {"forecaster": "Alice", "issued_at": "2026-08-17T09:00:00Z"}
+    first = store.add_entity(
+        "Forecast", "Alice forecast", {}, "test", role="observation", identity=identity
+    )
+    second = store.add_entity(
+        "Forecast", "A different display name", {}, "test", role="observation", identity=identity
+    )
+    assert second == first
+    with store.connect() as connection:
+        row = connection.execute("SELECT * FROM entities WHERE entity_id=?", (first,)).fetchone()
+    assert row["role"] == "observation"
+    assert json.loads(row["identity_json"]) == identity
 
 
 def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) -> None:
@@ -460,11 +476,15 @@ def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) 
     assert plan["pending"] == [
         {"version": 10, "description": "claim validity endings and evidence assessments"},
         {"version": 11, "description": "first-class evidence source types"},
+        {
+            "version": 12,
+            "description": "entity roles, compound identities, and structured source locators",
+        },
     ]
     backup = tmp_path / "before-v10.sqlite"
     result = store.migrate(backup)
     assert result["before"]["current_version"] == 9
-    assert result["after"]["current_version"] == 11
+    assert result["after"]["current_version"] == 12
     assert result["after"]["pending"] == []
     with sqlite3.connect(backup) as connection:
         assert (

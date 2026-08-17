@@ -142,6 +142,17 @@ Each command returns a stable ID:
 Commands accept either that ID or the exact entity name when referring to the entity later.
 Attributes are descriptive metadata; researched values belong in claims, not attributes.
 
+Observation and relation rows can declare a compound identity. Repeating the same kind and identity
+returns the existing entity even if a caller proposes a different display name:
+
+```bash
+epiq entity Forecast --role observation \
+  --identity '{"event":"rain_boston","forecaster":"Alice","issued_at":"2026-08-17T09:00:00Z"}'
+
+epiq entity PriceQuote --role relation \
+  --identity '{"product":"Acorn","plan":"Pro","region":"US","period":"monthly","effective":"2026-08-01"}'
+```
+
 Entity identity can evolve without erasing or rewriting research:
 
 ```bash
@@ -249,6 +260,16 @@ epiq evidence --type interview \
 ```
 
 Source types are `web`, `personal`, `model`, `report`, `interview`, and `other`.
+
+Use structured locators for precise citations and optionally link the source to an entity already
+modeled in Epiq:
+
+```bash
+epiq evidence --type report --title "Remote Work Study A" \
+  --source-entity "Remote Work Study A" \
+  --locator '{"page":12,"table":"3","section":"Results"}' \
+  --retrieved-at 2026-08-17 --excerpt "The standardized effect was 0.18."
+```
 
 A claim may cite more than one fragment by repeating `--evidence`:
 

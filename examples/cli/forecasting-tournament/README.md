@@ -1,8 +1,8 @@
 # Stress test: a forecasting tournament
 
 A forecast update is not a correction: Alice's 0.30 on Monday and 0.55 on Tuesday are both valid
-historical observations. To avoid treating them as contradictory values in one cell, model each
-submission as a `Forecast` row.
+historical observations. Each submission is an `observation` row with a compound identity of event,
+forecaster, and issue time, making repeated ingestion idempotent without relying on its display name.
 
 ```bash
 uv run examples/cli/forecasting-tournament/build.sh /tmp/epiq-forecasting.sqlite
@@ -37,7 +37,7 @@ uv run epiq --db /tmp/epiq-forecasting.sqlite --format table aggregate \
 - Forecast submissions must still be promoted to entities; Epiq has no first-class observation-series type.
 - Grouped summaries exist, but there is no `latest by forecaster and event` or pivot operation.
 - There are no derived ensemble forecasts, Brier scores, resolution events, or calibration reports.
-- A forecast's identity is encoded in its name rather than a compound uniqueness constraint.
+- Observation projection still requires a row per submission, even though identity is now explicit.
 
 <!-- epiq-example -->
 ```bash

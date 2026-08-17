@@ -1,7 +1,8 @@
 # Stress test: multidimensional SaaS pricing
 
 `Acorn Cloud → price` is underspecified: price depends on plan, region, billing period, and effective
-date. The current workaround makes each combination a `PriceQuote` row.
+date. Each combination is now an idempotent `relation` row whose compound identity contains those
+five dimensions; its display name can change without changing relational identity.
 
 ```bash
 uv run examples/cli/saas-pricing/build.sh /tmp/epiq-saas-pricing.sqlite
@@ -46,8 +47,7 @@ uv run epiq --db /tmp/epiq-saas-pricing.sqlite --format table aggregate \
 
 ## Product gaps surfaced
 
-- N-ary facts still require synthetic join entities and verbose names.
-- There are no compound uniqueness constraints over product, plan, region, period, and date.
+- N-ary facts still require relation rows, but compound identities now prevent duplicate keys.
 - Currency conversion and normalized monthly cost require computed fields.
 - Aggregation can now group current values, but cannot pivot or select the latest dimensional key.
 
