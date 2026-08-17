@@ -203,6 +203,124 @@ def test_cli_claim_review_and_atomic_bulk_write(tmp_path: Path, capsys) -> None:
     assert invoke("bulk-assert", "--input", str(batch))["count"] == 1
 
 
+def test_cli_record_atomically_adds_evidence_and_supported_answers(
+    tmp_path: Path, capsys
+) -> None:
+    database = tmp_path / "record.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return json.loads(capsys.readouterr().out)
+
+    invoke("init", "--name", "Record")
+    invoke("entity", "Candidate", "Alex Rivera")
+    invoke("entity", "Role", "Product Engineer")
+    invoke("question", "rating", "--for", "Candidate", "--type", "Probability")
+    invoke("question", "role", "--for", "Candidate", "--type", "Ref[Role]")
+    invoke(
+        "question",
+        "decision",
+        "--for",
+        "Candidate",
+        "--type",
+        "Enum[hire,hold]",
+    )
+
+    result = invoke(
+        "record",
+        "--subject",
+        "Alex Rivera",
+        "--source-type",
+        "interview",
+        "--source-title",
+        "Technical interview",
+        "--retrieved-at",
+        "2026-08-17",
+        "--excerpt",
+        "Confidence 0.82; recommended for Product Engineer.",
+        "--valid-from",
+        "2026-08-17",
+        "--answer",
+        "rating",
+        "0.82",
+        "--answer",
+        "role",
+        "Product Engineer",
+    )
+    assert result["answer_count"] == 2
+    assert len(result["claim_ids"]) == 2
+    matrix = invoke("matrix", "--kind", "Candidate")
+    assert matrix["rows"][0]["cells"]["rating"]["value"] == 0.82
+    assert matrix["rows"][0]["cells"]["role"]["display_value"]["name"] == "Product Engineer"
+    assert {
+        item["evidence_id"]
+        for question in ("rating", "role")
+        for item in matrix["rows"][0]["cells"][question]["lineage"]
+    } == {result["evidence_id"]}
+
+    single = invoke(
+        "record",
+        "--subject",
+        "Alex Rivera",
+        "--type",
+        "report",
+        "--title",
+        "Committee decision",
+        "--retrieved-at",
+        "2026-08-18",
+        "--excerpt",
+        "The committee decision is hire.",
+        "--valid-from",
+        "2026-08-18",
+        "--question",
+        "decision",
+        "--value",
+        "hire",
+    )
+    assert single["answer_count"] == 1
+    assert invoke("matrix", "--kind", "Candidate")["rows"][0]["cells"]["decision"][
+        "value"
+    ] == "hire"
+
+
+def test_cli_record_rolls_back_evidence_when_an_answer_is_invalid(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "record-rollback.sqlite"
+    store = Store(database)
+    store.initialize("Record rollback")
+    store.add_entity("Candidate", "Alex Rivera", {}, "test")
+    store.add_question("rating", "Candidate", "Probability", {}, "test")
+    before = store.doctor()["counts"]
+
+    with pytest.raises(SystemExit, match="2"):
+        main(
+            [
+                "--db",
+                str(database),
+                "record",
+                "--subject",
+                "Alex Rivera",
+                "--type",
+                "interview",
+                "--title",
+                "Interview",
+                "--retrieved-at",
+                "2026-08-17",
+                "--excerpt",
+                "Invalid confidence value.",
+                "--valid-from",
+                "2026-08-17",
+                "--answer",
+                "rating",
+                "1.5",
+            ]
+        )
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["code"] == "value_type_error"
+    after = store.doctor()["counts"]
+    assert after["evidence"] == before["evidence"]
+    assert after["events"] == before["events"]
+
+
 def test_cli_apply_concise_query_output_and_non_web_evidence(tmp_path: Path, capsys) -> None:
     database = tmp_path / "ergonomics.sqlite"
     declaration = tmp_path / "project.json"

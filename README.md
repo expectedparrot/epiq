@@ -275,6 +275,26 @@ BARNSTABLE_EVIDENCE=$(epiq --actor agent:census evidence \
 The CLI does not download or summarize the URL. The caller is responsible for retrieval; Epiq
 stores the submitted source metadata and excerpt.
 
+When newly found evidence supports one or more answers, `record` avoids manually copying evidence
+IDs between commands while preserving the same underlying records:
+
+```bash
+epiq --actor agent:research record \
+  --subject Barnstable \
+  --source-type web \
+  --url "https://api.example.gov/towns/barnstable" \
+  --source-title "2024 town estimates" \
+  --retrieved-at 2026-08-15 \
+  --excerpt "Population 49,568; median home value $602,500." \
+  --valid-from 2024-12-31 \
+  --answer population 49568 \
+  --answer median_home_value 602500
+```
+
+This is atomic syntactic sugar over `batch-write`: Epiq creates one evidence record and a separate
+typed claim for each `--answer`. If any answer fails validation, none of the evidence or claims are
+written. For one answer, use `--question population --value 49568` instead of `--answer`.
+
 ### 6. Assert evidence-backed claims
 
 Use the same evidence fragment for both facts it supports:

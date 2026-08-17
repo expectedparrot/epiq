@@ -68,38 +68,45 @@ became columns. `Product Engineer` does **not** appear as a row here: it belongs
 `Unasked` is a real state, not an empty string or a false answer. It means no answer and no
 completed unsuccessful search have been recorded for that candidate and question.
 
-## 3. Add private interview notes as evidence
+## 3. Record private evidence and its supported answers
 
-There is no public URL, and Epiq does not require one:
+There is no public URL, and Epiq does not require one. `record` accepts the evidence and all the
+answers supported by it as one atomic operation:
 
 ```bash
-MAYA_NOTES=$(epiq --actor interviewer:maya evidence \
-  --type interview --title 'Alex Rivera technical interview' \
+epiq --actor interviewer:maya record \
+  --subject "Alex Rivera" \
+  --source-type interview \
+  --source-title "Alex Rivera technical interview" \
   --retrieved-at 2026-08-17 \
-  --excerpt 'Alex decomposed the queueing problem clearly. Confidence: 0.82. Recommended for Product Engineer.' \
-  | jq -r .evidence_id)
+  --excerpt "Alex decomposed the queueing problem clearly. Confidence: 0.82. Recommended for Product Engineer." \
+  --valid-from 2026-08-17 \
+  --answer technical_strength "Clear decomposition of queueing problems" \
+  --answer interviewer_rating 0.82 \
+  --answer recommended_role "Product Engineer"
 ```
 
 The source type says how this information was obtained. The actor says who introduced it into the
 ledger. A production system can point the source locator at a private document without pretending
 it is a public webpage.
 
-## 4. Make several claims from one note
+The result identifies everything that was created:
 
-```bash
-epiq --actor interviewer:maya assert \
-  --subject "Alex Rivera" --question technical_strength \
-  --value 'Clear decomposition of queueing problems' \
-  --valid-from 2026-08-17 --evidence "$MAYA_NOTES" --confidence medium
-
-epiq --actor interviewer:maya assert \
-  --subject "Alex Rivera" --question interviewer_rating --value 0.82 \
-  --valid-from 2026-08-17 --evidence "$MAYA_NOTES" --confidence medium
-
-epiq --actor interviewer:maya assert \
-  --subject "Alex Rivera" --question recommended_role --value "Product Engineer" \
-  --valid-from 2026-08-17 --evidence "$MAYA_NOTES" --confidence medium
+```json
+{
+  "answer_count": 3,
+  "claim_ids": ["clm_...", "clm_...", "clm_..."],
+  "evidence_id": "evd_...",
+  "ok": true,
+  "source_id": "src_..."
+}
 ```
+
+Internally, Epiq still creates one source, one evidence fragment, and three separately typed claims.
+If any answer is invalid, the entire operation rolls back—including the evidence—so a partial
+research write cannot leak into the project.
+
+## 4. Inspect the populated projection
 
 The same matrix now looks like this:
 
@@ -128,14 +135,15 @@ An agent need not publish directly. It can propose a type-checked, evidence-back
 ```bash
 epiq --actor agent:screening propose-claim \
   --subject "Alex Rivera" --question interviewer_rating --value 0.84 \
-  --valid-from 2026-08-17 --evidence "$MAYA_NOTES" \
+  --valid-from 2026-08-17 --evidence evd_REPLACE_WITH_RECORD_RESULT \
   --rationale 'Extracted from the committee packet'
 
 epiq claim-proposals
 ```
 
-The proposal is absent from the current matrix until a reviewer runs `review-claims` with the
-returned proposal ID. Rejection also remains in the audit history.
+Replace the placeholder with the `evidence_id` returned by `record`. The proposal is absent from the
+current matrix until a reviewer runs `review-claims` with the returned proposal ID. Rejection also
+remains in the audit history.
 
 ## 6. Understand disagreement versus contradiction
 

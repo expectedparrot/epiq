@@ -308,6 +308,39 @@ def parser() -> argparse.ArgumentParser:
     )
     batch_write.add_argument("--input", required=True, help="JSON file, or - for standard input")
 
+    record = commands.add_parser(
+        "record", help="Atomically record evidence and one or more supported answers"
+    )
+    record.add_argument("--subject", required=True)
+    record.add_argument(
+        "--source-type",
+        "--type",
+        dest="source_type",
+        choices=["web", "personal", "model", "report", "interview", "other"],
+        default="web",
+    )
+    record.add_argument("--url")
+    record.add_argument("--source-title", "--title", dest="source_title", required=True)
+    record.add_argument("--published-at")
+    record.add_argument("--retrieved-at", required=True)
+    record_excerpt = record.add_mutually_exclusive_group(required=True)
+    record_excerpt.add_argument("--excerpt")
+    record_excerpt.add_argument("--excerpt-file")
+    record.add_argument("--valid-from", required=True)
+    record.add_argument("--question")
+    record.add_argument("--value")
+    record.add_argument(
+        "--answer",
+        action="append",
+        nargs=2,
+        metavar=("QUESTION", "VALUE"),
+        help="Question and value supported by this evidence; repeat for multiple answers",
+    )
+    record.add_argument("--confidence", choices=["low", "medium", "high"], default="high")
+    record.add_argument(
+        "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
+    )
+
     propose_claim = commands.add_parser(
         "propose-claim", help="Stage a validated claim for human review"
     )
@@ -787,6 +820,74 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             raise EpiqError("invalid_batch", "Batch write input must be a JSON array")
         results = store.write_batch(operations, args.actor)
         return {"ok": True, "count": len(results), "results": results}
+    if args.command == "record":
+        single_supplied = args.question is not None or args.value is not None
+        if single_supplied and (args.question is None or args.value is None):
+            raise EpiqError(
+                "incomplete_answer",
+                "--question and --value must be provided together",
+                "Use both flags for one answer, or repeat --answer QUESTION VALUE.",
+            )
+        if single_supplied and args.answer:
+            raise EpiqError(
+                "mixed_answer_syntax",
+                "Do not combine --question/--value with --answer",
+                "Use --question and --value once, or repeat --answer for one or more answers.",
+            )
+        answers = (
+            [(args.question, args.value)]
+            if single_supplied
+            else [(question, value) for question, value in (args.answer or [])]
+        )
+        if not answers:
+            raise EpiqError(
+                "answer_required",
+                "Record requires at least one answer",
+                "Use --question QUESTION --value VALUE, or --answer QUESTION VALUE.",
+            )
+        excerpt = Path(args.excerpt_file).read_text() if args.excerpt_file else args.excerpt
+        if args.source_type == "web" and not args.url:
+            raise EpiqError("source_url_required", "A web source requires --url")
+        locator = args.url or (
+            f"urn:epiq:{args.source_type}:"
+            + hashlib.sha256(f"{args.source_title}\n{excerpt}".encode()).hexdigest()[:24]
+        )
+        evidence_ref = "record_evidence"
+        operations: list[dict[str, Any]] = [
+            {
+                "op": "evidence.add",
+                "ref": evidence_ref,
+                "url": locator,
+                "title": args.source_title,
+                "published_at": args.published_at,
+                "retrieved_at": args.retrieved_at,
+                "excerpt": excerpt,
+                "source_type": args.source_type,
+            }
+        ]
+        operations.extend(
+            {
+                "op": "claim.assert",
+                "subject": args.subject,
+                "question": question,
+                "value": _value(value),
+                "valid_from": args.valid_from,
+                "evidence_refs": [evidence_ref],
+                "confidence": args.confidence,
+                "temporal_basis": args.temporal_basis,
+            }
+            for question, value in answers
+        )
+        results = store.write_batch(operations, args.actor)
+        evidence_result = results[0]
+        claim_ids = [result["claim_id"] for result in results[1:]]
+        return {
+            "ok": True,
+            "source_id": evidence_result["source_id"],
+            "evidence_id": evidence_result["evidence_id"],
+            "claim_ids": claim_ids,
+            "answer_count": len(claim_ids),
+        }
     if args.command == "propose-claim":
         proposal_id = store.propose_claim(
             args.subject,
