@@ -877,7 +877,9 @@ export default function App() {
     <div className="app-shell">
       <header>
         <div className="brand">
-          <span className="mark">E</span>
+          <span className="mark" aria-label="Expected Parrot">
+            E[<span className="mark-parrot">🦜</span>]
+          </span>
           <div>
             <b>Epiq</b>
             <small>Evidence-backed workspace</small>

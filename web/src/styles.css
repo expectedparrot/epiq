@@ -52,15 +52,24 @@ header {
   font-size: 10px;
 }
 .mark {
-  display: grid;
-  place-items: center;
-  width: 34px;
+  display: inline-flex;
+  align-items: center;
+  width: auto;
   height: 34px;
-  background: var(--green);
-  color: white;
+  color: var(--green);
   font-family: Georgia, serif;
-  font-size: 22px;
-  border-radius: 8px 2px 8px 2px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -2px;
+  white-space: nowrap;
+}
+.mark-parrot {
+  display: inline-block;
+  margin: 0 2px;
+  font-family: system-ui, sans-serif;
+  font-size: 21px;
+  font-weight: 400;
+  letter-spacing: 0;
 }
 .project-title {
   font-weight: 600;
