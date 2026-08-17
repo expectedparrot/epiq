@@ -53,6 +53,22 @@ class EntityKindCreate(BaseModel):
     actor: str = "human:web"
 
 
+class EntityAliasCreate(BaseModel):
+    alias: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
+class EntityMergeCreate(BaseModel):
+    destination: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
+class EntityVisibilityCreate(BaseModel):
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
 class QuestionCreate(BaseModel):
     name: str = Field(pattern=r"^[a-z_][a-z0-9_]*$")
     subject_kind: str = Field(min_length=1)
@@ -429,6 +445,25 @@ def create_app(
     def add_entity(body: EntityCreate) -> dict[str, str]:
         entity_id = store().add_entity(body.kind, body.name, body.attributes, body.actor)
         return {"entity_id": entity_id}
+
+    @app.post("/api/entities/{entity_id}/aliases", status_code=201)
+    def add_entity_alias(entity_id: str, body: EntityAliasCreate) -> dict[str, str]:
+        return {"alias_id": store().add_entity_alias(entity_id, body.alias, body.actor)}
+
+    @app.post("/api/entities/{entity_id}/merge")
+    def merge_entity(entity_id: str, body: EntityMergeCreate) -> dict[str, str]:
+        survivor = store().merge_entities(entity_id, body.destination, body.reason, body.actor)
+        return {"entity_id": survivor, "status": "merged"}
+
+    @app.post("/api/entities/{entity_id}/retire")
+    def retire_entity(entity_id: str, body: EntityVisibilityCreate) -> dict[str, str]:
+        resolved = store().set_entity_visibility(entity_id, False, body.reason, body.actor)
+        return {"entity_id": resolved, "status": "retired"}
+
+    @app.post("/api/entities/{entity_id}/restore")
+    def restore_entity(entity_id: str, body: EntityVisibilityCreate) -> dict[str, str]:
+        resolved = store().set_entity_visibility(entity_id, True, body.reason, body.actor)
+        return {"entity_id": resolved, "status": "active"}
 
     @app.post("/api/entity-kinds", status_code=201)
     def add_entity_kind(body: EntityKindCreate) -> dict[str, str]:

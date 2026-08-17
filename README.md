@@ -1,5 +1,7 @@
 # Epiq
 
+![Epiq — an agentic epistemic database](assets/epiq-hero.png)
+
 Epiq is a local-first epistemic database for agent-driven research. It stores entities, typed
 questions, source excerpts, and evidence-backed claims in SQLite. It can then project that history
 into ordinary tables, interactive HTML, and Excel without throwing away where each cell came from.
@@ -140,6 +142,20 @@ Each command returns a stable ID:
 Commands accept either that ID or the exact entity name when referring to the entity later.
 Attributes are descriptive metadata; researched values belong in claims, not attributes.
 
+Entity identity can evolve without erasing or rewriting research:
+
+```bash
+# Let later commands and agents resolve an alternate name.
+epiq entity-alias "Barnstable" "Town of Barnstable"
+
+# Unify a duplicate row into the surviving row; historical claim subject IDs remain intact.
+epiq merge-entities "Barnstable, MA" "Barnstable" --reason "Duplicate place identity"
+
+# Remove a row from current projections, then restore it if the scope changes.
+epiq retire-entity "Truro" --reason "Outside current comparison scope"
+epiq restore-entity "Truro" --reason "Restored to comparison scope"
+```
+
 ### 4. Define typed questions—the future columns
 
 Questions apply to an entity kind. Adding a question is how the schema grows.
@@ -168,6 +184,10 @@ policy metadata. The current implementation recognizes:
 - `Enum[a,b,c]`: validated against the listed strings.
 - `Distribution[Float]`: an empirical or weighted empirical numeric distribution.
 - `Distribution[Enum[a,b,c]]`: a categorical probability distribution over exactly those outcomes.
+- `Ref[EntityKind]`: a validated relationship to another entity; names and aliases resolve to a
+  stable entity ID when the claim is recorded.
+- `Quantity[unit]`: a finite numeric measurement whose unit is part of the field's declared type,
+  such as `Quantity[USD]`, `Quantity[people]`, or `Quantity[km^2]`.
 - `Json`: accepts structured JSON for richer answers.
 
 For example, probability and free-text fields can be declared without wrapping either in a JSON
@@ -416,6 +436,33 @@ The initial problem taxonomy is `type_mismatch`, `cardinality_mismatch`, `tempor
 `level_mismatch`, `population_mismatch`, `predicate_conflation`, `modal_ambiguity`,
 `unit_mismatch`, `epistemic_mismatch`, `definition_ambiguity`, and `other`. Triggering evidence and
 an example entity are optional but preserved when supplied.
+
+### Retire or restore a field without erasing it
+
+When a field is redundant, incorrectly typed, or asks the wrong question, remove it from current
+tables with an append-only retirement:
+
+```bash
+epiq retire-question google_star_reviews \
+  --reason "Google publishes an average rating, not the requested probability distribution."
+```
+
+This appends `question.retire`, removes the column from matrix, context, gaps, refresh-plan, export,
+and agent-research projections, and rejects new claims against it. It does **not** delete the
+field's definition, prior claims, evidence, challenges, or event history. The spreadsheet exposes
+the same operation as the `×` control in each field's action row and requires a reason before
+retiring it.
+
+If the field becomes useful again, restore its original history and values:
+
+```bash
+epiq restore-question google_star_reviews \
+  --reason "The field has been clarified and is needed again."
+```
+
+This appends `question.restore`; it does not manufacture a new field or duplicate the old claims.
+In Epiq, this reversible retirement is what the UI means by “Remove field.” There is intentionally
+no destructive schema-delete command.
 
 ### 10. Inspect the event history
 
@@ -777,8 +824,15 @@ The application currently supports:
 - entering evidence-backed answers;
 - inspecting confidence, excerpts, source links, and claim tokens in a cell drawer;
 - displaying `Answered`, `Contested`, `NotFound`, and `Unasked` as distinct states;
-- recording unsuccessful research without asserting a negative answer; and
+- recording unsuccessful research without asserting a negative answer;
 - retracting claims while preserving their event history;
+- challenging incorrect answers, failed searches, and category/schema mistakes while preserving
+  human guidance for subsequent agent runs;
+- reversibly removing fields without deleting their historical claims or evidence;
+- launching cell, row, column, and whole-table research with incremental progress indicators;
+- finding independent supporting evidence without returning sources already attached to a claim;
+- using AI to propose additional entity rows and typed fields, with checkbox-based human approval;
+- assigning stable, slow-changing, or dynamic temporal policies and surfacing stale evidence;
 - sorting any column, filtering rows by text or research status, and preserving view preferences;
 - keyboard navigation with arrows/Tab, Enter or double-click inspection, and clipboard copy;
 - frozen headers and identity columns, draggable column order, resizable columns, and compact or
@@ -827,13 +881,23 @@ The principal endpoints are:
 | `GET` | `/api/matrix/{kind}` | Current entity-by-question projection |
 | `POST` | `/api/entities` | Add a row |
 | `POST` | `/api/questions` | Add a typed, versioned column |
+| `POST` | `/api/questions/{id}/retire` | Hide a field while preserving its history |
+| `POST` | `/api/questions/{id}/restore` | Restore a retired field and its prior values |
 | `POST` | `/api/questions/{id}/challenges` | Record a schema/category challenge |
 | `GET` | `/api/question-challenges` | List and filter schema challenges |
 | `POST` | `/api/question-challenges/{id}/resolve` | Resolve or dismiss a challenge |
 | `POST` | `/api/evidence` | Add an immutable source excerpt |
 | `POST` | `/api/claims` | Assert an evidence-backed cell answer |
 | `POST` | `/api/claims/{id}/retract` | Close a claim without deleting it |
+| `POST` | `/api/claims/{id}/supersede` | Atomically replace a claim |
 | `POST` | `/api/research/not-found` | Record a completed unsuccessful search |
+| `POST` | `/api/research/jobs` | Launch background cell or column research |
+| `POST` | `/api/research/rows` | Research unanswered fields for one row |
+| `POST` | `/api/research/table` | Research unanswered cells across the table |
+| `POST` | `/api/entity-suggestions/jobs` | Propose additional rows for human review |
+| `POST` | `/api/field-suggestions/jobs` | Propose additional typed fields for review |
+| `GET` | `/api/export/{kind}.xlsx` | Download a provenance-aware Excel workbook |
+| `GET` | `/api/export/project.sqlite` | Download a consistent project backup |
 | `GET` | `/api/history` | Read the append-only event history |
 
 ### What a cell edit means

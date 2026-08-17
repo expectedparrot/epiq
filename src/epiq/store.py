@@ -59,6 +59,29 @@ CREATE TABLE IF NOT EXISTS entities (
     UNIQUE(kind, name)
 );
 
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    alias_id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL REFERENCES entities(entity_id),
+    alias TEXT NOT NULL,
+    normalized_alias TEXT NOT NULL UNIQUE,
+    created_seq INTEGER NOT NULL REFERENCES events(seq)
+);
+
+CREATE TABLE IF NOT EXISTS entity_redirects (
+    from_entity_id TEXT PRIMARY KEY REFERENCES entities(entity_id),
+    into_entity_id TEXT NOT NULL REFERENCES entities(entity_id),
+    reason TEXT NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    CHECK(from_entity_id <> into_entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS entity_visibility (
+    entity_id TEXT PRIMARY KEY REFERENCES entities(entity_id),
+    visible INTEGER NOT NULL CHECK(visible IN (0, 1)),
+    reason TEXT NOT NULL,
+    changed_seq INTEGER NOT NULL REFERENCES events(seq)
+);
+
 CREATE TABLE IF NOT EXISTS entity_kinds (
     kind TEXT PRIMARY KEY,
     created_seq INTEGER NOT NULL REFERENCES events(seq)
@@ -249,6 +272,10 @@ def _normalize_excerpt(excerpt: str) -> str:
     return unicodedata.normalize("NFC", excerpt.replace("\r\n", "\n")).strip()
 
 
+def _identity_key(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
 class Store:
     """A project-local Epiq database."""
 
@@ -267,7 +294,7 @@ class Store:
                 [
                     ("project_id", _id("prj")),
                     ("name", name),
-                    ("schema_version", "6"),
+                    ("schema_version", "7"),
                     ("created_at", _now()),
                 ],
             )
@@ -376,6 +403,28 @@ class Store:
                 );
                 UPDATE meta SET value='6'
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<6;
+                CREATE TABLE IF NOT EXISTS entity_aliases (
+                    alias_id TEXT PRIMARY KEY,
+                    entity_id TEXT NOT NULL REFERENCES entities(entity_id),
+                    alias TEXT NOT NULL,
+                    normalized_alias TEXT NOT NULL UNIQUE,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq)
+                );
+                CREATE TABLE IF NOT EXISTS entity_redirects (
+                    from_entity_id TEXT PRIMARY KEY REFERENCES entities(entity_id),
+                    into_entity_id TEXT NOT NULL REFERENCES entities(entity_id),
+                    reason TEXT NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq),
+                    CHECK(from_entity_id <> into_entity_id)
+                );
+                CREATE TABLE IF NOT EXISTS entity_visibility (
+                    entity_id TEXT PRIMARY KEY REFERENCES entities(entity_id),
+                    visible INTEGER NOT NULL CHECK(visible IN (0, 1)),
+                    reason TEXT NOT NULL,
+                    changed_seq INTEGER NOT NULL REFERENCES events(seq)
+                );
+                UPDATE meta SET value='7'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<7;
                 """
             )
             connection.commit()
@@ -430,6 +479,9 @@ class Store:
                 for table in (
                     "events",
                     "entities",
+                    "entity_aliases",
+                    "entity_redirects",
+                    "entity_visibility",
                     "questions",
                     "question_visibility",
                     "sources",
@@ -589,6 +641,12 @@ class Store:
         }
         try:
             with self.transaction() as connection:
+                duplicate = self._find_entity_by_identity(connection, name, kind)
+                if duplicate is not None:
+                    raise EpiqError(
+                        "duplicate_entity",
+                        f"Entity already exists: {duplicate['name']} ({duplicate['entity_id']})",
+                    )
                 seq, _, _ = self._event(connection, "entity.create", actor, payload)
                 connection.execute("INSERT OR IGNORE INTO entity_kinds VALUES(?,?)", (kind, seq))
                 connection.execute(
@@ -598,6 +656,130 @@ class Store:
         except sqlite3.IntegrityError as exc:
             raise EpiqError("duplicate_entity", f"Entity already exists: {kind} {name}") from exc
         return entity_id
+
+    def _find_entity_by_identity(
+        self, connection: sqlite3.Connection, reference: str, kind: str | None = None
+    ) -> sqlite3.Row | None:
+        key = _identity_key(reference)
+        rows = connection.execute(
+            "SELECT * FROM entities" + (" WHERE kind=?" if kind else ""),
+            (kind,) if kind else (),
+        ).fetchall()
+        direct = [row for row in rows if _identity_key(str(row["name"])) == key]
+        aliases = connection.execute(
+            """SELECT e.* FROM entity_aliases a JOIN entities e ON e.entity_id=a.entity_id
+               WHERE a.normalized_alias=?"""
+            + (" AND e.kind=?" if kind else ""),
+            (key, kind) if kind else (key,),
+        ).fetchall()
+        candidates = {str(row["entity_id"]): row for row in [*direct, *aliases]}
+        if len(candidates) > 1:
+            raise EpiqError(
+                "entity_ambiguous",
+                f"Entity reference is ambiguous: {reference}",
+                "Use an exact entity ID.",
+            )
+        return next(iter(candidates.values()), None)
+
+    def add_entity_alias(self, entity: str, alias: str, actor: str) -> str:
+        """Attach a normalized alternate identity without rewriting the entity."""
+        normalized = _identity_key(alias)
+        if not normalized:
+            raise EpiqError("invalid_alias", "Alias cannot be empty")
+        with self.transaction() as connection:
+            target = self._resolve_entity(connection, entity)
+            existing = self._find_entity_by_identity(connection, alias)
+            if existing is not None:
+                existing = self._follow_entity_redirect(connection, existing)
+                if existing["entity_id"] == target["entity_id"]:
+                    return str(target["entity_id"])
+                raise EpiqError(
+                    "alias_conflict",
+                    f"Alias already identifies {existing['name']}: {alias}",
+                )
+            alias_id = _id("als")
+            seq, _, _ = self._event(
+                connection,
+                "entity.alias",
+                actor,
+                {
+                    "alias_id": alias_id,
+                    "entity_id": str(target["entity_id"]),
+                    "alias": alias.strip(),
+                },
+            )
+            connection.execute(
+                "INSERT INTO entity_aliases VALUES(?,?,?,?,?)",
+                (alias_id, str(target["entity_id"]), alias.strip(), normalized, seq),
+            )
+        return alias_id
+
+    def merge_entities(self, source: str, destination: str, reason: str, actor: str) -> str:
+        """Redirect one entity identity into another without rewriting historical claims."""
+        if not reason.strip():
+            raise EpiqError("reason_required", "A merge reason is required")
+        with self.transaction() as connection:
+            source_row = self._resolve_entity(connection, source)
+            destination_row = self._resolve_entity(connection, destination)
+            if source_row["entity_id"] == destination_row["entity_id"]:
+                raise EpiqError("merge_same_entity", "An entity cannot be merged into itself")
+            if source_row["kind"] != destination_row["kind"]:
+                raise EpiqError(
+                    "entity_kind_mismatch",
+                    f"Cannot merge {source_row['kind']} into {destination_row['kind']}",
+                )
+            seq, _, _ = self._event(
+                connection,
+                "entity.merge",
+                actor,
+                {
+                    "from_entity_id": str(source_row["entity_id"]),
+                    "into_entity_id": str(destination_row["entity_id"]),
+                    "reason": reason.strip(),
+                },
+            )
+            connection.execute(
+                "INSERT INTO entity_redirects VALUES(?,?,?,?)",
+                (
+                    str(source_row["entity_id"]),
+                    str(destination_row["entity_id"]),
+                    reason.strip(),
+                    seq,
+                ),
+            )
+        return str(destination_row["entity_id"])
+
+    def set_entity_visibility(self, reference: str, visible: bool, reason: str, actor: str) -> str:
+        """Retire or restore a row while preserving identity and claims."""
+        if not reason.strip():
+            raise EpiqError("reason_required", "A reason is required")
+        with self.transaction() as connection:
+            entity = self._resolve_entity(connection, reference)
+            current = connection.execute(
+                "SELECT visible FROM entity_visibility WHERE entity_id=?",
+                (entity["entity_id"],),
+            ).fetchone()
+            currently_visible = current is None or bool(current["visible"])
+            if currently_visible == visible:
+                state = "active" if visible else "retired"
+                raise EpiqError("entity_visibility_unchanged", f"Entity is already {state}")
+            event_type = "entity.restore" if visible else "entity.retire"
+            seq, _, _ = self._event(
+                connection,
+                event_type,
+                actor,
+                {
+                    "entity_id": str(entity["entity_id"]),
+                    "reason": reason.strip(),
+                },
+            )
+            connection.execute(
+                """INSERT INTO entity_visibility VALUES(?,?,?,?)
+                   ON CONFLICT(entity_id) DO UPDATE SET visible=excluded.visible,
+                     reason=excluded.reason,changed_seq=excluded.changed_seq""",
+                (str(entity["entity_id"]), int(visible), reason.strip(), seq),
+            )
+        return str(entity["entity_id"])
 
     def add_question(
         self,
@@ -680,6 +862,12 @@ class Store:
         if value_type.startswith("Enum[") and value_type.endswith("]"):
             if all(part.strip() for part in value_type[5:-1].split(",")):
                 return
+        if value_type.startswith("Ref[") and value_type.endswith("]"):
+            if value_type[4:-1].strip():
+                return
+        if value_type.startswith("Quantity[") and value_type.endswith("]"):
+            if value_type[9:-1].strip():
+                return
         if value_type == "Distribution[Float]":
             return
         if value_type.startswith("Distribution[Enum[") and value_type.endswith("]]"):
@@ -748,13 +936,50 @@ class Store:
             )
         return source_id, evidence_id
 
-    def _resolve_entity(self, connection: sqlite3.Connection, reference: str) -> sqlite3.Row:
+    def _follow_entity_redirect(
+        self, connection: sqlite3.Connection, entity: sqlite3.Row
+    ) -> sqlite3.Row:
+        seen: set[str] = set()
+        current = entity
+        while True:
+            entity_id = str(current["entity_id"])
+            if entity_id in seen:
+                raise EpiqError("entity_merge_cycle", f"Entity merge cycle includes {entity_id}")
+            seen.add(entity_id)
+            redirect = connection.execute(
+                "SELECT into_entity_id FROM entity_redirects WHERE from_entity_id=?",
+                (entity_id,),
+            ).fetchone()
+            if redirect is None:
+                return current
+            current = connection.execute(
+                "SELECT * FROM entities WHERE entity_id=?", (redirect["into_entity_id"],)
+            ).fetchone()
+
+    def _resolve_entity(
+        self, connection: sqlite3.Connection, reference: str, kind: str | None = None
+    ) -> sqlite3.Row:
         row = connection.execute(
-            "SELECT * FROM entities WHERE entity_id=? OR name=?", (reference, reference)
+            "SELECT * FROM entities WHERE entity_id=?" + (" AND kind=?" if kind else ""),
+            (reference, kind) if kind else (reference,),
         ).fetchone()
+        if row is None:
+            row = self._find_entity_by_identity(connection, reference, kind)
         if not row:
             raise EpiqError("entity_not_found", f"Entity not found: {reference}")
-        return row
+        return self._follow_entity_redirect(connection, row)
+
+    def _entity_cluster(self, connection: sqlite3.Connection, survivor_id: str) -> list[str]:
+        rows = connection.execute(
+            """WITH RECURSIVE cluster(entity_id) AS (
+                   SELECT ?
+                   UNION ALL
+                   SELECT r.from_entity_id FROM entity_redirects r
+                   JOIN cluster c ON r.into_entity_id=c.entity_id
+               ) SELECT entity_id FROM cluster""",
+            (survivor_id,),
+        ).fetchall()
+        return [str(row["entity_id"]) for row in rows]
 
     def _resolve_question(self, connection: sqlite3.Connection, reference: str) -> sqlite3.Row:
         row = connection.execute(
@@ -808,8 +1033,17 @@ class Store:
         event_type: str = "claim.assert",
         extra_payload: dict[str, Any] | None = None,
     ) -> tuple[str, int, bool]:
-        entity = self._resolve_entity(connection, subject)
         q = self._resolve_question(connection, question)
+        entity = self._resolve_entity(connection, subject)
+        entity_visibility = connection.execute(
+            "SELECT visible FROM entity_visibility WHERE entity_id=?", (entity["entity_id"],)
+        ).fetchone()
+        if entity_visibility is not None and not bool(entity_visibility["visible"]):
+            raise EpiqError(
+                "entity_retired",
+                f"Entity is retired: {entity['name']}",
+                "Restore the entity before asserting new claims.",
+            )
         visibility = connection.execute(
             "SELECT visible FROM question_visibility WHERE name=?", (q["name"],)
         ).fetchone()
@@ -842,7 +1076,21 @@ class Store:
             raise EpiqError("confidence_error", f"Unknown confidence: {confidence}")
         if temporal_basis not in {"observed", "source", "unknown"}:
             raise EpiqError("temporal_basis_error", f"Unknown temporal basis: {temporal_basis}")
-        self._check_value_type(str(q["value_type"]), value)
+        value_type = str(q["value_type"])
+        if value_type.startswith("Ref[") and value_type.endswith("]"):
+            if not isinstance(value, str):
+                raise EpiqError(
+                    "value_type_error", f"Expected entity reference; received {value!r}"
+                )
+            target_kind = value_type[4:-1].strip()
+            target = self._resolve_entity(connection, value)
+            if target["kind"] != target_kind:
+                raise EpiqError(
+                    "reference_type_mismatch",
+                    f"Expected reference to {target_kind}, not {target['kind']}",
+                )
+            value = str(target["entity_id"])
+        self._check_value_type(value_type, value)
         value_json = _json(value)
         primary_evidence = evidence_ids[0]
         existing = connection.execute(
@@ -1026,6 +1274,18 @@ class Store:
             raise EpiqError("value_type_error", f"Expected Bool; received {value!r}")
         elif value_type == "String" and not isinstance(value, str):
             raise EpiqError("value_type_error", f"Expected String; received {value!r}")
+        elif value_type.startswith("Ref[") and value_type.endswith("]"):
+            if not isinstance(value, str):
+                raise EpiqError(
+                    "value_type_error", f"Expected entity reference; received {value!r}"
+                )
+        elif value_type.startswith("Quantity[") and value_type.endswith("]"):
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+            ):
+                raise EpiqError("value_type_error", f"Expected finite quantity; received {value!r}")
         elif value_type not in {"Int", "Float", "Bool", "String", "Json", "Probability"}:
             raise EpiqError("value_type_error", f"Unknown value type: {value_type}")
 
@@ -1441,6 +1701,13 @@ class Store:
                           COUNT(DISTINCT q.name) AS questions
                    FROM entity_kinds k
                    LEFT JOIN entities e ON e.kind=k.kind
+                     AND NOT EXISTS (
+                       SELECT 1 FROM entity_redirects er WHERE er.from_entity_id=e.entity_id
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM entity_visibility ev
+                       WHERE ev.entity_id=e.entity_id AND ev.visible=0
+                     )
                    LEFT JOIN questions q ON q.subject_kind=k.kind
                      AND NOT EXISTS (
                        SELECT 1 FROM question_visibility qv
@@ -1472,7 +1739,16 @@ class Store:
         valid = valid_at or "9999-12-31"
         with self.connect() as connection:
             entities = connection.execute(
-                "SELECT * FROM entities WHERE kind=? ORDER BY name", (entity_kind,)
+                """SELECT * FROM entities e WHERE kind=?
+                   AND NOT EXISTS (
+                     SELECT 1 FROM entity_redirects r WHERE r.from_entity_id=e.entity_id
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM entity_visibility v
+                     WHERE v.entity_id=e.entity_id AND v.visible=0
+                   )
+                   ORDER BY name""",
+                (entity_kind,),
             ).fetchall()
             if question_names:
                 placeholders = ",".join("?" for _ in question_names)
@@ -1500,16 +1776,24 @@ class Store:
             rows: list[dict[str, Any]] = []
             for entity in entities:
                 cells: dict[str, Any] = {}
+                entity_ids = self._entity_cluster(connection, str(entity["entity_id"]))
+                aliases = connection.execute(
+                    f"""SELECT alias FROM entity_aliases
+                        WHERE entity_id IN ({",".join("?" for _ in entity_ids)})
+                        ORDER BY created_seq""",
+                    entity_ids,
+                ).fetchall()
+                entity_placeholders = ",".join("?" for _ in entity_ids)
                 for question in questions:
                     claims = connection.execute(
-                        """SELECT c.* FROM claims c
+                        f"""SELECT c.* FROM claims c
                            JOIN questions cq ON cq.question_id=c.question_id
-                           WHERE c.subject_id=? AND cq.name=?
+                           WHERE c.subject_id IN ({entity_placeholders}) AND cq.name=?
                            AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
                            AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
                            ORDER BY c.valid_from DESC, c.created_seq DESC""",
                         (
-                            entity["entity_id"],
+                            *entity_ids,
                             question["name"],
                             cutoff,
                             cutoff,
@@ -1519,11 +1803,11 @@ class Store:
                     ).fetchall()
                     definition = json.loads(question["definition_json"])
                     task = connection.execute(
-                        """SELECT t.* FROM research_tasks t
+                        f"""SELECT t.* FROM research_tasks t
                            JOIN questions tq ON tq.question_id=t.question_id
-                           WHERE t.subject_id=? AND tq.name=?
+                           WHERE t.subject_id IN ({entity_placeholders}) AND tq.name=?
                            ORDER BY t.created_seq DESC LIMIT 1""",
-                        (entity["entity_id"], question["name"]),
+                        (*entity_ids, question["name"]),
                     ).fetchone()
                     cells[str(question["name"])] = self._project_cell(
                         connection, claims, definition, task, cutoff
@@ -1532,6 +1816,12 @@ class Store:
                     {
                         "entity_id": entity["entity_id"],
                         "name": entity["name"],
+                        "aliases": [str(row["alias"]) for row in aliases],
+                        "merged_entity_ids": [
+                            entity_id
+                            for entity_id in entity_ids
+                            if entity_id != entity["entity_id"]
+                        ],
                         "attributes": json.loads(entity["attributes_json"]),
                         "cells": cells,
                     }

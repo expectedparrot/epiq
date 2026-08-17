@@ -14,7 +14,14 @@ tables.
 - Evidence-required claims, multiple sources per claim, idempotent evidence linking, temporal policy,
   NotFound records, contested cells, and human challenge/research-guidance workflows.
 - Atomic claim supersede: replacement assertion and closure of the prior claim commit together.
-- Schema-versioned automatic migrations (currently v5).
+- Reversible field retirement: `question.retire` removes an unsuitable column from current
+  projections and agent work without deleting its schema, claims, evidence, or history;
+  `question.restore` brings it back.
+- Schema-versioned automatic migrations (currently v7).
+- Stable entity identity with normalized duplicate rejection, aliases, merge redirects, and
+  reversible entity retirement. Historical claims keep their original subject IDs while current
+  projections unify merged identities.
+- Typed relationships (`Ref[EntityKind]`) and unit-bearing numeric measurements (`Quantity[unit]`).
 - Durable agent jobs and proposals. Completed jobs survive restarts; interrupted jobs become explicit
   failures rather than remaining permanently “running.”
 - Consistent online SQLite backups and a `doctor` integrity command.
@@ -43,7 +50,8 @@ tables.
   SQLite FTS5.
 - Deterministic contradiction reports, entity dossiers, timelines, and change-since-baseline reports.
 - Bulk JSON write endpoint with per-item validation and one transaction for safe agent write-back.
-- Entity aliases, merge events, and duplicate warnings.
+- Rich duplicate suggestions and interactive merge review on top of the implemented alias/merge
+  primitives.
 - Schema evolution assistant for splitting or replacing challenged questions while retaining lineage.
 
 ## P3 — spreadsheet interaction

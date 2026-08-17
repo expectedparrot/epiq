@@ -115,6 +115,27 @@ def parser() -> argparse.ArgumentParser:
     entity.add_argument("name")
     entity.add_argument("--attributes")
 
+    entity_alias = commands.add_parser("entity-alias", help="Add an alternate entity identity")
+    entity_alias.add_argument("entity")
+    entity_alias.add_argument("alias")
+
+    merge_entities = commands.add_parser(
+        "merge-entities", help="Merge a duplicate row into its surviving identity"
+    )
+    merge_entities.add_argument("source")
+    merge_entities.add_argument("destination")
+    merge_entities.add_argument("--reason", required=True)
+
+    retire_entity = commands.add_parser(
+        "retire-entity", help="Hide an entity from current projections without erasing history"
+    )
+    retire_entity.add_argument("entity")
+    retire_entity.add_argument("--reason", required=True)
+
+    restore_entity = commands.add_parser("restore-entity", help="Restore a retired entity")
+    restore_entity.add_argument("entity")
+    restore_entity.add_argument("--reason", required=True)
+
     question = commands.add_parser("question", help="Define a typed question")
     question.add_argument("name")
     question.add_argument("--for", dest="subject_kind", required=True)
@@ -302,6 +323,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "Enum[a,b,c]",
                 "Distribution[Float]",
                 "Distribution[Enum[a,b,c]]",
+                "Ref[EntityKind]",
+                "Quantity[unit]",
             ],
             "tables": [
                 {
@@ -458,6 +481,20 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "entity":
         entity_id = store.add_entity(args.kind, args.name, _attributes(args.attributes), args.actor)
         return {"ok": True, "entity_id": entity_id}
+    if args.command == "entity-alias":
+        alias_id = store.add_entity_alias(args.entity, args.alias, args.actor)
+        return {"ok": True, "alias_id": alias_id}
+    if args.command == "merge-entities":
+        entity_id = store.merge_entities(args.source, args.destination, args.reason, args.actor)
+        return {"ok": True, "entity_id": entity_id, "status": "merged"}
+    if args.command in {"retire-entity", "restore-entity"}:
+        visible = args.command == "restore-entity"
+        entity_id = store.set_entity_visibility(args.entity, visible, args.reason, args.actor)
+        return {
+            "ok": True,
+            "entity_id": entity_id,
+            "status": "active" if visible else "retired",
+        }
     if args.command == "question":
         definition = _attributes(args.definition)
         question_id = store.add_question(

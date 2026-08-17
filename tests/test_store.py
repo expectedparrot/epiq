@@ -237,7 +237,80 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "6"
+    assert store.overview()["project"]["schema_version"] == "7"
+
+
+def test_entity_alias_merge_and_retirement_preserve_identity_history(store: Store) -> None:
+    canonical = store.add_entity("Company", "Acme", {}, "test")
+    duplicate = store.add_entity("Company", "Acme Incorporated", {}, "test")
+    question = store.add_question("status", "Company", "String", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/acme", "Acme", "2026-08-17", "Acme is active.", "test"
+    )
+    claim = store.assert_claim(duplicate, question, "active", "2026-08-17", evidence, "test")
+
+    store.add_entity_alias(canonical, "ACME Corp.", "test")
+    assert store.assert_claim("acme corp.", question, "operating", "2026-08-17", evidence, "test")
+    store.merge_entities(duplicate, canonical, "Duplicate identity", "reviewer")
+    matrix = store.matrix("Company")
+    assert [row["name"] for row in matrix["rows"]] == ["Acme"]
+    assert matrix["rows"][0]["merged_entity_ids"] == [duplicate]
+    assert matrix["rows"][0]["aliases"] == ["ACME Corp."]
+    assert claim in {
+        lineage["claim_id"] for lineage in matrix["rows"][0]["cells"]["status"]["lineage"]
+    }
+
+    store.set_entity_visibility(canonical, False, "No longer in scope", "reviewer")
+    assert store.matrix("Company")["rows"] == []
+    with pytest.raises(EpiqError) as retired:
+        store.assert_claim(canonical, question, "active", "2026-08-17", evidence, "test")
+    assert retired.value.code == "entity_retired"
+    store.set_entity_visibility(duplicate, True, "Back in scope", "reviewer")
+    assert store.matrix("Company")["rows"][0]["name"] == "Acme"
+
+
+def test_entity_identity_rejects_normalized_duplicates_and_invalid_merges(store: Store) -> None:
+    first = store.add_entity("Person", "Paul  Graham", {}, "test")
+    with pytest.raises(EpiqError) as duplicate:
+        store.add_entity("Person", " paul graham ", {}, "test")
+    assert duplicate.value.code == "duplicate_entity"
+    company = store.add_entity("Company", "Example", {}, "test")
+    with pytest.raises(EpiqError) as mismatch:
+        store.merge_entities(first, company, "Not actually duplicates", "test")
+    assert mismatch.value.code == "entity_kind_mismatch"
+
+
+def test_typed_entity_reference_resolves_alias_and_survives_merge(store: Store) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    old_company = store.add_entity("Company", "Acme Holdings", {}, "test")
+    person = store.add_entity("Person", "Ada", {}, "test")
+    store.add_entity_alias(company, "Acme Corp", "test")
+    store.add_question("employer", "Person", "Ref[Company]", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/ada", "Ada", "2026-08-17", "Ada works at Acme.", "test"
+    )
+    store.assert_claim(person, "employer", "Acme Corp", "2026-08-17", evidence, "test")
+    assert store.matrix("Person")["rows"][0]["cells"]["employer"]["value"] == company
+
+    store.merge_entities(company, old_company, "Corporate identity cleanup", "test")
+    # Existing references retain their immutable target ID; resolution follows the redirect.
+    with store.connect() as connection:
+        assert store._resolve_entity(connection, company)["entity_id"] == old_company
+    with pytest.raises(EpiqError) as wrong_kind:
+        store.assert_claim(person, "employer", person, "2026-08-17", evidence, "test")
+    assert wrong_kind.value.code == "reference_type_mismatch"
+
+
+def test_quantity_type_encodes_unit_and_requires_finite_number(store: Store) -> None:
+    town = store.add_entity("Town", "Truro", {}, "test")
+    store.add_question("area", "Town", "Quantity[km^2]", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/truro", "Truro", "2026-08-17", "Area is 68.2 km².", "test"
+    )
+    store.assert_claim(town, "area", 68.2, "2026-08-17", evidence, "test")
+    assert store.matrix("Town")["rows"][0]["cells"]["area"]["value"] == 68.2
+    with pytest.raises(EpiqError, match="finite quantity"):
+        store.assert_claim(town, "area", "68.2", "2026-08-17", evidence, "test")
 
 
 def test_question_retirement_hides_projection_but_preserves_and_restores_history(
