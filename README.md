@@ -1205,6 +1205,9 @@ epiq propagate --subject Acorn --via parent_company --direction outgoing --depth
   --question risk_level --to-question inherited_risk --valid-from 2026-08-17
 ```
 
+Omit `--via` when a path intentionally crosses differently named reference fields, such as
+`product.component → component.subcomponent → component.supplier`.
+
 Every derived claim has typed `operand`, `parameter`, and `path` dependencies. Check whether an
 input has been retracted, superseded, or followed by a newer active claim:
 

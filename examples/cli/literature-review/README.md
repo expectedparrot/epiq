@@ -1,7 +1,8 @@
-# Stress test: a research literature review
+# Tutorial: model a research literature review
 
 Papers are sources, but their individual findings also need rows so results can be compared without
-claiming the papers themselves are contradictory.
+claiming the papers themselves are contradictory. Each Finding is an `observation` with a compound
+identity of paper, outcome, and analysis; ingesting the same result twice resolves to the same row.
 
 ```bash
 uv run examples/cli/literature-review/build.sh /tmp/epiq-literature.sqlite
@@ -22,8 +23,10 @@ Output: `matched: 1`, returning Study A's finding and its structured `{"page":12
 ## Product gaps surfaced
 
 - Sources can now link to their Paper entity and carry structured page/table/section locators.
-- Findings are claim-like entities; there is no native claim-about-claim or replication relation.
-- Meta-analysis needs grouping, weighting, uncertainty intervals, and derived estimates.
+- Findings are claim-like observation entities; there is no native claim-about-claim or replication
+  relation.
+- The clinical tutorial demonstrates claim-weighted derived estimates, but uncertainty intervals
+  and reusable statistical model types remain absent.
 - Evidence-quality rubrics exist only as free-form assessments, not reusable schemas.
 
 <!-- epiq-example -->

@@ -2665,7 +2665,7 @@ class Store:
     def propagate_claim(
         self,
         subject: str,
-        via: str,
+        via: str | None,
         source_question: str,
         target_question: str,
         direction: str,

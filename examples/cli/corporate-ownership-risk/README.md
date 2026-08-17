@@ -1,4 +1,4 @@
-# Stress test: corporate ownership and inherited risk
+# Tutorial: propagate risk through corporate ownership
 
 One registry filing supports ownership claims about two companies. `--cell` writes them atomically,
 and recursive traversal follows the ownership chain.
@@ -31,6 +31,8 @@ ownership claims and their evidence as typed dependencies:
 uv run epiq --db /tmp/epiq-ownership.sqlite propagate \
   --subject "Acorn Devices" --via parent_company --direction outgoing --depth 5 \
   --question risk_level --to-question inherited_risk --valid-from 2026-08-17
+
+uv run epiq --db /tmp/epiq-ownership.sqlite --format table matrix --kind Company
 ```
 
 The repeated `record` is idempotent because the fixture already contains the same source and claims.

@@ -1,4 +1,4 @@
-# Stress test: multidimensional SaaS pricing
+# Tutorial: model multidimensional SaaS pricing
 
 `Acorn Cloud → price` is underspecified: price depends on plan, region, billing period, and effective
 date. Each combination is now an idempotent `relation` row whose compound identity contains those
@@ -35,6 +35,18 @@ uv run epiq --db /tmp/epiq-saas-pricing.sqlite --actor agent:pricing record \
 The evidence and both claims commit atomically. Because the fixture already contains those exact
 claims, rerunning this command returns their existing IDs rather than duplicating them.
 
+Normalize the annual quote to a monthly equivalent as a persisted calculation:
+
+```bash
+uv run epiq --db /tmp/epiq-saas-pricing.sqlite derive \
+  --subject "Acorn Pro EU annual 2026-08" --question monthly_equivalent_usd \
+  --operation linear --parameters '{"scale":0.08333333333333333}' \
+  --input-cell "Acorn Pro EU annual 2026-08" price_usd --valid-from 2026-08-01
+```
+
+The resulting value is `$100`. Its lineage says `linear`, identifies the `$1,200` input claim, and
+inherits the pricing-page evidence. This is preferable to pasting an unexplained normalized value.
+
 ```bash
 uv run epiq --db /tmp/epiq-saas-pricing.sqlite --format table aggregate \
   --kind PriceQuote --question price_usd --op avg --group-by region
@@ -48,11 +60,16 @@ uv run epiq --db /tmp/epiq-saas-pricing.sqlite --format table aggregate \
 ## Product gaps surfaced
 
 - N-ary facts still require relation rows, but compound identities now prevent duplicate keys.
-- Currency conversion and normalized monthly cost require computed fields.
+- Simple normalization works as a derived claim, but a declarative formula cannot yet branch on
+  `billing_period` or look up a dated exchange-rate claim.
 - Aggregation can now group current values, but cannot pivot or select the latest dimensional key.
 
 <!-- epiq-example -->
 ```bash
 examples/cli/saas-pricing/build.sh "$EPIQ_EXAMPLE_DB"
+epiq --db "$EPIQ_EXAMPLE_DB" derive --subject "Acorn Pro EU annual 2026-08" \
+  --question monthly_equivalent_usd --operation linear \
+  --parameters '{"scale":0.08333333333333333}' \
+  --input-cell "Acorn Pro EU annual 2026-08" price_usd --valid-from 2026-08-01
 epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind PriceQuote --where 'region=US'
 ```

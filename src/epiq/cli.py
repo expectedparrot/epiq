@@ -639,7 +639,9 @@ def parser() -> argparse.ArgumentParser:
         "propagate", help="Copy a claim through a typed relationship with derived lineage"
     )
     propagate.add_argument("--subject", required=True)
-    propagate.add_argument("--via", required=True)
+    propagate.add_argument(
+        "--via", help="Restrict traversal to one relationship field; omit for mixed paths"
+    )
     propagate.add_argument("--question", required=True, help="Question on the related entity")
     propagate.add_argument("--to-question", required=True, help="Target question on subject")
     propagate.add_argument("--direction", choices=["incoming", "outgoing"], default="outgoing")

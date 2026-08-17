@@ -1,7 +1,10 @@
-# Stress test: recursive supply-chain risk
+# Tutorial: trace and inherit supply-chain risk
 
-The Acorn Sensor directly contains a Control Board, which contains a Timing Chip, which is supplied
-by a high-risk supplier. Epiq stores each sourced edge, but current traversal is one hop at a time.
+This example asks a deceptively simple question: “Is the Acorn Sensor exposed to a high-risk
+supplier?” The answer lives three relationships away. It therefore tests recursive traversal,
+mixed relationship types, derived claims, and dependency-aware staleness.
+
+## 1. Build the sourced graph
 
 ```bash
 uv run examples/cli/supply-chain-risk/build.sh /tmp/epiq-supply-chain.sqlite
@@ -9,21 +12,23 @@ uv run epiq --db /tmp/epiq-supply-chain.sqlite --format table matrix --kind Prod
 uv run epiq --db /tmp/epiq-supply-chain.sqlite --format table matrix --kind Component
 ```
 
-| Product | Direct component |
-| --- | --- |
-| Acorn Sensor | Control Board |
+The fixture records these evidence-backed edges:
 
-| Component | Subcomponent | Supplier |
-| --- | --- | --- |
-| Control Board | Timing Chip | Unasked |
-| Timing Chip | Unasked | Northstar Semiconductor |
+| Row kind | Row | Relationship | Value |
+| --- | --- | --- | --- |
+| Product | Acorn Sensor | `component` | Control Board |
+| Component | Control Board | `subcomponent` | Timing Chip |
+| Component | Timing Chip | `supplier` | Northstar Semiconductor |
+
+Northstar separately has `risk_level = high`. These are four claims, not one flattened assertion.
+That distinction matters when one edge or the supplier rating changes.
+
+## 2. Inspect the path without changing data
 
 ```bash
 uv run epiq --db /tmp/epiq-supply-chain.sqlite --format table related \
   "Acorn Sensor" --direction outgoing --depth 3
 ```
-
-Output:
 
 | depth | direction | relationship | from | to |
 | ---: | --- | --- | --- | --- |
@@ -31,19 +36,46 @@ Output:
 | 2 | outgoing | subcomponent | Control Board | Timing Chip |
 | 3 | outgoing | supplier | Timing Chip | Northstar Semiconductor |
 
-Epiq can now return the dependency path in one bounded traversal. It still cannot filter the path
-by the supplier's `risk_level` or automatically propagate that risk back to the product.
+No `--via` is supplied because the path deliberately crosses three differently named reference
+fields. Use `--via supplier`, for example, when a traversal must follow only one relationship type.
 
-## Product gaps surfaced
+## 3. Turn the graph query into a durable claim
 
-- Recursive traversal now has a depth limit and cycle protection, but not path-level predicates.
-- There is no rule or computed claim propagating supplier risk to components and products.
-- Product-to-component and component-to-component edges require different fields.
-- Graph-wide impact queries and visualization are absent.
-- Cardinality constraints exist, but referential deletion and dependency policies remain limited.
+```bash
+uv run epiq --db /tmp/epiq-supply-chain.sqlite --actor agent:risk propagate \
+  --subject "Acorn Sensor" --direction outgoing --depth 3 \
+  --question risk_level --to-question supply_chain_risk --valid-from 2026-08-17
+
+uv run epiq --db /tmp/epiq-supply-chain.sqlite --format table matrix --kind Product
+```
+
+The Product row now shows `supply_chain_risk = high`. This is not an unexplained copied cell. Its
+derivation has one `operand` dependency—the supplier's risk claim—and three `path` dependencies—the
+claims connecting product, board, chip, and supplier. Evidence from all four claims is inherited.
+
+## 4. Ask whether the calculation is still current
+
+```bash
+uv run epiq --db /tmp/epiq-supply-chain.sqlite stale-derivations --kind Product
+```
+
+The initial result is `count: 0`. If a newer risk rating is asserted or any path edge is superseded,
+the command identifies the derived Product claim and the changed dependency. Epiq does not erase or
+silently recompute the old result; an agent can inspect the change and deliberately propagate again.
+
+## What this reveals
+
+- Mixed-edge traversal and path provenance now work.
+- Propagation chooses the nearest matching source and rejects equally near ambiguity.
+- A reusable declarative graph rule is still missing; `propagate` is an explicit materialization.
+- Path predicates, graph-wide impact queries, and graph visualization remain future work.
 
 <!-- epiq-example -->
 ```bash
 examples/cli/supply-chain-risk/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" --select count related "Control Board" --direction outgoing
+epiq --db "$EPIQ_EXAMPLE_DB" propagate --subject "Acorn Sensor" \
+  --direction outgoing --depth 3 --question risk_level \
+  --to-question supply_chain_risk --valid-from 2026-08-17
+epiq --db "$EPIQ_EXAMPLE_DB" --select count stale-derivations --kind Product
+epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Product
 ```

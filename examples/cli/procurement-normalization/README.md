@@ -1,7 +1,13 @@
-# Stress test: normalize procurement quotes
+# Tutorial: normalize procurement quotes with a table formula
 
 Two supplier quotes are relation rows with compound keys. One report supports cells across both
 rows, and landed cost is a persisted derivation rather than an unexplained copied value.
+
+The target field carries this declarative definition:
+
+```json
+{"formula":{"operation":"sum","inputs":["unit_price","shipping_per_unit"]}}
+```
 
 ```bash
 uv run examples/cli/procurement-normalization/build.sh /tmp/epiq-procurement.sqlite
@@ -24,9 +30,17 @@ The field definition declares `sum(unit_price, shipping_per_unit)` once. `materi
 to every ready Quote row and reports incomplete rows as `skipped`. Running it after adding future
 quotes materializes them without rewriting the formula.
 
+```bash
+uv run epiq --db /tmp/epiq-procurement.sqlite stale-derivations --kind Quote
+```
+
+The result is initially zero. Replacing either component price marks only the affected quote's
+landed-cost claim stale.
+
 <!-- epiq-example -->
 ```bash
 examples/cli/procurement-normalization/build.sh "$EPIQ_EXAMPLE_DB"
 epiq --db "$EPIQ_EXAMPLE_DB" materialize --kind Quote --valid-from 2026-08-01
+epiq --db "$EPIQ_EXAMPLE_DB" --select count stale-derivations --kind Quote
 epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Quote
 ```

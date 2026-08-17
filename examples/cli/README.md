@@ -15,15 +15,33 @@ If you are new to Epiq, read them in this order:
 4. [Public figure and writing](public-figure-writing/README.md) — multiple entity kinds and
    one-to-many relationships.
 
-Then use the stress tests to find the edges of the current product:
+Then use the advanced tutorials to exercise combinations of those primitives:
 
-5. [Forecasting tournament](forecasting-tournament/README.md) — repeated observations and derived scores.
+5. [Forecasting tournament](forecasting-tournament/README.md) — repeated observations, aggregation,
+   derived ensembles, and dynamic-cohort limits.
 6. [SaaS pricing](saas-pricing/README.md) — multidimensional facts and join entities.
 7. [Literature review](literature-review/README.md) — findings, citations, and claims about claims.
 8. [Supply-chain risk](supply-chain-risk/README.md) — recursive relationships and risk propagation.
-9. [Clinical evidence synthesis](clinical-evidence-synthesis/README.md) — source-linked citations and weighted derived claims.
-10. [Procurement normalization](procurement-normalization/README.md) — compound quote identities and landed-cost lineage.
-11. [Corporate ownership risk](corporate-ownership-risk/README.md) — multi-row evidence and recursive ownership paths.
+9. [Clinical evidence synthesis](clinical-evidence-synthesis/README.md) — source-linked citations,
+   claim-backed weights, and stale derivations.
+10. [Procurement normalization](procurement-normalization/README.md) — compound quote identities,
+    declarative table formulas, and landed-cost lineage.
+11. [Corporate ownership risk](corporate-ownership-risk/README.md) — multi-row evidence, recursive
+    ownership paths, propagation, and path staleness.
+
+If you are looking for one capability rather than a domain, use this map:
+
+| Capability | Best tutorial |
+| --- | --- |
+| First entities, fields, evidence, and claims | Competitor features |
+| Multiple reviewers and contested cells | Hiring committee |
+| Observation and relation rows with compound identity | Forecasting or SaaS pricing |
+| One source supporting cells on multiple rows | SaaS pricing or corporate ownership |
+| Structured source locators and source entities | Literature or clinical evidence |
+| Declarative per-row formulas | Procurement normalization |
+| Claim-backed calculation parameters | Clinical evidence synthesis |
+| Recursive mixed-edge traversal and propagation | Supply-chain risk |
+| Dependency roles and stale derivations | Clinical, procurement, or ownership risk |
 
 Every tutorial has two ways to run it:
 

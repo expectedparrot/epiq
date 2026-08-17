@@ -1,4 +1,4 @@
-# Stress test: a forecasting tournament
+# Tutorial: model a forecasting tournament
 
 A forecast update is not a correction: Alice's 0.30 on Monday and 0.55 on Tuesday are both valid
 historical observations. Each submission is an `observation` row with a compound identity of event,
@@ -48,11 +48,22 @@ uv run epiq --db /tmp/epiq-forecasting.sqlite dossier "Rain in Boston on August 
 The resulting probability is approximately `0.4167`. Its dossier lineage records operation `avg`,
 all three input claim IDs, and all three underlying evidence records.
 
+```bash
+uv run epiq --db /tmp/epiq-forecasting.sqlite stale-derivations --kind ForecastEvent
+```
+
+This initially reports zero. Revising, retracting, or superseding one of the three input probability
+claims makes the ensemble stale. A wholly new Forecast row is not yet detected as an input-set
+change; selecting and rematerializing dynamic cohorts still requires external orchestration.
+
 ## Product gaps surfaced
 
 - Forecast submissions must still be promoted to entities; Epiq has no first-class observation-series type.
 - Grouped summaries exist, but there is no `latest by forecaster and event` or pivot operation.
-- There are no derived ensemble forecasts, Brier scores, resolution events, or calibration reports.
+- `derive` can persist an ensemble and detect changed dependencies, but it cannot detect that a new
+  row should join a dynamic input cohort. Selecting the latest forecast per forecaster remains
+  external orchestration.
+- There are no Brier-score, resolution-event, or calibration-report primitives.
 - Observation projection still requires a row per submission, even though identity is now explicit.
 
 <!-- epiq-example -->
@@ -63,5 +74,6 @@ epiq --db "$EPIQ_EXAMPLE_DB" derive --subject "Rain in Boston on August 20" \
   --input-cell "Alice forecast 2026-08-17" probability \
   --input-cell "Alice forecast 2026-08-18" probability \
   --input-cell "Bob forecast 2026-08-17" probability
+epiq --db "$EPIQ_EXAMPLE_DB" --select count stale-derivations --kind ForecastEvent
 epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Forecast --where 'forecaster=Alice'
 ```
