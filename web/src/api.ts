@@ -113,12 +113,30 @@ export interface ResearchJob {
     | "suggest_fields";
   messages: Array<{ at: string; message: string }>;
   error?: string | null;
-  outcome?: "changed" | "no_change" | null;
+  outcome?: "changed" | "no_change" | "proposals" | null;
   written?: number;
   no_result?: number;
   rejected?: number;
   suggestions?: EntitySuggestion[];
   field_suggestions?: FieldSuggestion[];
+  relationship_suggestions?: RelationshipSuggestion[];
+}
+
+export interface RelationshipSuggestion {
+  suggestion_id: string;
+  subject_entity_id: string;
+  subject_name: string;
+  question_id: string;
+  question_name: string;
+  target_kind: string;
+  target_name: string;
+  target_entity_id?: string | null;
+  action: "link" | "create_and_link";
+  source_title: string;
+  source_url?: string | null;
+  excerpt: string;
+  confidence: "low" | "medium" | "high";
+  status: "pending" | "accepted" | "dismissed";
 }
 
 export interface FieldSuggestion {

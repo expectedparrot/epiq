@@ -253,7 +253,10 @@ existing source. If no independent source can be found, return not_found rather 
 Treat definition.research_guidance as a binding interpretation rule, including distinctions the
 human has identified after reviewing earlier mistakes.
 Return exactly one result for every supplied entity_id. The value_json field must contain the
-conforming value encoded as JSON text. For answered results, cite a direct source URL, title, and a
+conforming value encoded as JSON text. For a Ref[Type] question with cardinality many, return a
+JSON array containing every directly supported related entity name (for example,
+["Ada Lovelace","Grace Hopper"]); Epiq will resolve existing entities and stage missing ones for
+human approval. For answered results, cite a direct source URL, title, and a
 short excerpt that directly supports the value. Do not treat absence of evidence as a negative
 answer. Provide the source publication date and the date the claim was observed to hold when they
 can be established; do not substitute today's date for an unknown historical date. Use not_found

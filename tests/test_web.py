@@ -363,6 +363,73 @@ def test_web_api_creates_tables_and_many_relationships(tmp_path: Path) -> None:
     assert {item["to"]["name"] for item in related["edges"]} == {"Ada", "Grace"}
 
 
+def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: Path) -> None:
+    def researcher(_kind, question, entities, progress=None):
+        assert question["value_type"] == "Ref[Author]"
+        return [
+            {
+                "entity_id": entities[0]["entity_id"],
+                "status": "answered",
+                "value": ["Ada", "Katherine Johnson"],
+                "source_type": "web",
+                "source_url": "https://example.test/title-page",
+                "source_title": "Paper title page",
+                "excerpt": "Written by Ada and Katherine Johnson.",
+                "confidence": "high",
+                "notes": "",
+            }
+        ]
+
+    client = TestClient(
+        create_app(tmp_path / "relationship-research.sqlite", tmp_path / "missing", researcher)
+    )
+    client.post("/api/project", json={"name": "Relationship research"})
+    paper = client.post(
+        "/api/entities", json={"kind": "Paper", "name": "Computing Markets"}
+    ).json()["entity_id"]
+    ada = client.post("/api/entities", json={"kind": "Author", "name": "Ada"}).json()["entity_id"]
+    question = client.post(
+        "/api/questions",
+        json={
+            "name": "authors",
+            "subject_kind": "Paper",
+            "value_type": "Ref[Author]",
+            "definition": {"cardinality": "many"},
+        },
+    ).json()["question_id"]
+
+    launched = client.post(
+        "/api/research/jobs",
+        json={
+            "entity_kind": "Paper",
+            "question": question,
+            "entity_ids": [paper],
+            "scope": "cell",
+        },
+    ).json()
+    job = wait_for_job(client, launched["job_id"])
+    assert job["outcome"] == "proposals"
+    assert [item["action"] for item in job["relationship_suggestions"]] == [
+        "link",
+        "create_and_link",
+    ]
+    author_rows = client.get("/api/matrix/Author").json()["rows"]
+    assert [(row["entity_id"], row["name"]) for row in author_rows] == [(ada, "Ada")]
+    suggestion_ids = [item["suggestion_id"] for item in job["relationship_suggestions"]]
+    accepted = client.post(
+        f"/api/research/jobs/{job['job_id']}/relationships/accept",
+        json={"suggestion_ids": suggestion_ids},
+    )
+    assert accepted.status_code == 201
+    assert accepted.json()["count"] == 2
+    assert {row["name"] for row in client.get("/api/matrix/Author").json()["rows"]} == {
+        "Ada",
+        "Katherine Johnson",
+    }
+    cell = client.get("/api/matrix/Paper").json()["rows"][0]["cells"]["authors"]
+    assert {item["name"] for item in cell["references"]} == {"Ada", "Katherine Johnson"}
+
+
 def test_agent_discovery_diagnostics_and_derivation_api(tmp_path: Path) -> None:
     database = tmp_path / "agent-api.sqlite"
     uninitialized = TestClient(create_app(database, tmp_path / "missing-frontend"))

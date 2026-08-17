@@ -1693,6 +1693,73 @@ button:hover {
   gap: 8px;
   margin-top: 13px;
 }
+.relationship-suggestion-review {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.proposal-heading b,
+.proposal-heading small {
+  display: block;
+}
+.proposal-heading small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.relationship-suggestion-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfaf6;
+  padding: 11px;
+  cursor: pointer;
+}
+.relationship-suggestion-card:has(input:checked) {
+  border-color: #8ebca5;
+  background: #edf7f1;
+}
+.relationship-suggestion-card.accepted {
+  opacity: 0.7;
+}
+.relationship-suggestion-card > input {
+  margin-top: 3px;
+  accent-color: var(--green);
+}
+.relationship-suggestion-card > span {
+  min-width: 0;
+}
+.relationship-suggestion-card strong {
+  color: #246449;
+}
+.relationship-arrow {
+  margin: 0 5px;
+  color: #799184;
+}
+.relationship-suggestion-card em {
+  display: block;
+  margin-top: 4px;
+  color: #718078;
+  font: normal 8px DM Mono;
+  text-transform: uppercase;
+}
+.relationship-suggestion-card blockquote {
+  margin: 8px 0;
+  border-left: 2px solid #b8d1c4;
+  padding-left: 8px;
+  color: #626a64;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.relationship-suggestion-card a {
+  color: #28694f;
+  font-size: 9px;
+}
+.add-relationship-proposals {
+  width: 100%;
+}
 .entity-query-summary {
   margin: 8px 0 3px;
   border-left: 2px solid #9fc6b2;

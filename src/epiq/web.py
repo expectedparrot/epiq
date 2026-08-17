@@ -259,6 +259,11 @@ class AcceptSuggestionCreate(BaseModel):
     actor: str = "human:web"
 
 
+class AcceptRelationshipSuggestionsCreate(BaseModel):
+    suggestion_ids: list[str] = Field(min_length=1)
+    actor: str = "human:web"
+
+
 class SuggestFieldsCreate(BaseModel):
     entity_kind: str = Field(min_length=1)
     count: int = Field(default=5, ge=1, le=20)
@@ -1331,6 +1336,70 @@ def create_app(
                 return
             target_ids = {item["entity_id"] for item in targets}
             targets_by_id = {item["entity_id"]: item for item in targets}
+            value_type = str(question["value_type"])
+            relationship_target = (
+                value_type[4:-1]
+                if value_type.startswith("Ref[")
+                and value_type.endswith("]")
+                and question["definition"].get("cardinality") == "many"
+                else None
+            )
+            if relationship_target:
+                related_rows = project.matrix(relationship_target)["rows"]
+                related_by_name = {
+                    str(name).strip().casefold(): row
+                    for row in related_rows
+                    for name in [row["name"], *row.get("aliases", [])]
+                }
+                proposals = []
+                for finding in findings:
+                    entity_id = str(finding["entity_id"])
+                    if entity_id not in target_ids or finding["status"] != "answered":
+                        continue
+                    values = finding["value"]
+                    names = values if isinstance(values, list) else [values]
+                    for raw_name in names:
+                        name = str(raw_name).strip()
+                        if not name:
+                            continue
+                        existing = related_by_name.get(name.casefold())
+                        proposals.append(
+                            {
+                                "suggestion_id": f"rel_{uuid.uuid4().hex[:16]}",
+                                "subject_entity_id": entity_id,
+                                "subject_name": targets_by_id[entity_id]["name"],
+                                "question_id": question["question_id"],
+                                "question_name": question["name"],
+                                "target_kind": relationship_target,
+                                "target_name": name,
+                                "target_entity_id": (
+                                    str(existing["entity_id"]) if existing else None
+                                ),
+                                "action": "link" if existing else "create_and_link",
+                                "source_type": str(finding.get("source_type") or "web"),
+                                "source_url": finding.get("source_url"),
+                                "source_title": str(finding.get("source_title") or "Source"),
+                                "source_published_at": finding.get("source_published_at"),
+                                "observed_as_of": finding.get("observed_as_of"),
+                                "excerpt": str(finding.get("excerpt") or ""),
+                                "confidence": str(finding.get("confidence") or "medium"),
+                                "status": "pending",
+                            }
+                        )
+                with app.state.research_lock:
+                    jobs[job_id]["relationship_suggestions"] = proposals
+                    jobs[job_id]["total"] = len(proposals)
+                    jobs[job_id]["completed"] = len(proposals)
+                    jobs[job_id]["status"] = "completed"
+                    jobs[job_id]["outcome"] = "proposals" if proposals else "no_change"
+                    jobs[job_id]["no_result"] = 0 if proposals else len(targets)
+                    jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
+                    persist_job(job_id)
+                progress(
+                    f"Prepared {len(proposals)} relationship proposal"
+                    f"{'s' if len(proposals) != 1 else ''} for review"
+                )
+                return
             for finding in findings:
                 if cancelled():
                     finish_cancelled()
@@ -1471,6 +1540,7 @@ def create_app(
             "no_result": 0,
             "rejected": 0,
             "outcome": None,
+            "relationship_suggestions": [],
             "messages": [{"at": datetime.now(UTC).isoformat(), "message": "Research job queued"}],
         }
         with app.state.research_lock:
@@ -1555,6 +1625,96 @@ def create_app(
                 scope=str(job.get("scope") or "column"),
             )
         return launch_research(request)
+
+    @app.post("/api/research/jobs/{job_id}/relationships/accept", status_code=201)
+    def accept_relationship_suggestions(
+        job_id: str, body: AcceptRelationshipSuggestionsCreate
+    ) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None:
+                raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
+            selected = [
+                dict(item)
+                for item in job.get("relationship_suggestions", [])
+                if item["suggestion_id"] in set(body.suggestion_ids) and item["status"] == "pending"
+            ]
+        if len(selected) != len(set(body.suggestion_ids)):
+            raise EpiqError(
+                "relationship_suggestion_not_found",
+                "One or more relationship suggestions are unavailable or already reviewed",
+            )
+        project = store()
+        accepted = []
+        for suggestion in selected:
+            target_id = suggestion.get("target_entity_id")
+            if not target_id:
+                rows = project.matrix(str(suggestion["target_kind"]))["rows"]
+                existing = next(
+                    (
+                        row
+                        for row in rows
+                        if str(row["name"]).casefold() == str(suggestion["target_name"]).casefold()
+                    ),
+                    None,
+                )
+                target_id = (
+                    str(existing["entity_id"])
+                    if existing
+                    else project.add_entity(
+                        str(suggestion["target_kind"]),
+                        str(suggestion["target_name"]),
+                        {"suggested_by": "relationship_research"},
+                        body.actor,
+                    )
+                )
+            source_type = str(suggestion["source_type"])
+            source_url = suggestion.get("source_url") or f"urn:epiq:{source_type}"
+            _, evidence_id = project.add_evidence(
+                str(source_url),
+                str(suggestion["source_title"]),
+                datetime.now(UTC).date().isoformat(),
+                str(suggestion["excerpt"]),
+                body.actor,
+                suggestion.get("source_published_at"),
+                source_type,
+            )
+            claim_id = project.assert_claim(
+                str(suggestion["subject_entity_id"]),
+                str(suggestion["question_id"]),
+                target_id,
+                str(
+                    suggestion.get("observed_as_of")
+                    or suggestion.get("source_published_at")
+                    or datetime.now(UTC).date().isoformat()
+                ),
+                evidence_id,
+                body.actor,
+                confidence=str(suggestion["confidence"]),
+                temporal_basis=(
+                    "observed"
+                    if suggestion.get("observed_as_of")
+                    else "source"
+                    if suggestion.get("source_published_at")
+                    else "unknown"
+                ),
+            )
+            accepted.append(
+                {
+                    "suggestion_id": suggestion["suggestion_id"],
+                    "target_entity_id": target_id,
+                    "claim_id": claim_id,
+                }
+            )
+        with app.state.research_lock:
+            by_id = {item["suggestion_id"]: item for item in accepted}
+            for suggestion in job.get("relationship_suggestions", []):
+                result = by_id.get(suggestion["suggestion_id"])
+                if result:
+                    suggestion.update(result)
+                    suggestion["status"] = "accepted"
+            persist_job(job_id)
+        return {"count": len(accepted), "accepted": accepted}
 
     @app.post("/api/research/rows", status_code=202)
     def launch_row_research(body: RowResearchCreate) -> dict[str, Any]:

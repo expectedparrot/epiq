@@ -1027,6 +1027,8 @@ The application currently supports:
 - adding entity rows and typed question columns on the fly;
 - defining one-to-one or one-to-many relationship fields that reference rows in another table;
 - choosing related rows by name while retaining stable entity IDs underneath;
+- researching many-valued relationships as a provisional graph: the agent proposes links, resolves
+  existing related rows, identifies rows that must be created, and waits for checkbox approval;
 - entering evidence-backed answers;
 - inspecting confidence, excerpts, source links, and claim tokens in a cell drawer;
 - displaying `Answered`, `Contested`, `NotFound`, and `Unasked` as distinct states;

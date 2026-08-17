@@ -304,6 +304,8 @@ export default function App() {
                   : justFinished.outcome === "no_change"
                     ? finalMessage ??
                       "Research finished: no new independent evidence was found"
+                    : justFinished.outcome === "proposals"
+                      ? `Research prepared ${justFinished.relationship_suggestions?.length ?? 0} relationship proposals for review`
                     : `Research finished${justFinished.written ? `: ${justFinished.written} answer${justFinished.written === 1 ? "" : "s"} updated` : ""}`;
             setJobNotice(notice);
             window.setTimeout(() => setJobNotice(""), 12000);
@@ -567,6 +569,25 @@ export default function App() {
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not add fields",
+      );
+    }
+  };
+  const acceptRelationshipSuggestions = async (
+    jobId: string,
+    suggestionIds: string[],
+  ) => {
+    try {
+      await post(`/api/research/jobs/${jobId}/relationships/accept`, {
+        suggestion_ids: suggestionIds,
+      });
+      await loadOverview();
+      await loadMatrix();
+      setJobs(await api<ResearchJob[]>("/api/research/jobs"));
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not add relationship proposals",
       );
     }
   };
@@ -1454,6 +1475,7 @@ export default function App() {
             onClose={() => setShowActivity(false)}
             onSuggestion={updateSuggestion}
             onAcceptFields={acceptFieldSuggestions}
+            onAcceptRelationships={acceptRelationshipSuggestions}
             onCancel={cancelResearch}
             onRetry={retryResearch}
           />
@@ -3004,6 +3026,7 @@ function ActivityPanel({
   onClose,
   onSuggestion,
   onAcceptFields,
+  onAcceptRelationships,
   onCancel,
   onRetry,
 }: {
@@ -3015,6 +3038,10 @@ function ActivityPanel({
     action: "accept" | "dismiss",
   ) => Promise<void>;
   onAcceptFields: (jobId: string, suggestionIds: string[]) => Promise<void>;
+  onAcceptRelationships: (
+    jobId: string,
+    suggestionIds: string[],
+  ) => Promise<void>;
   onCancel: (jobId: string) => Promise<void>;
   onRetry: (jobId: string) => Promise<void>;
 }) {
@@ -3114,10 +3141,104 @@ function ActivityPanel({
             {job.field_suggestions && job.field_suggestions.length > 0 && (
               <FieldSuggestionReview job={job} onAccept={onAcceptFields} />
             )}
+            {job.relationship_suggestions &&
+              job.relationship_suggestions.length > 0 && (
+                <RelationshipSuggestionReview
+                  job={job}
+                  onAccept={onAcceptRelationships}
+                />
+              )}
           </article>
         ))}
       </div>
     </aside>
+  );
+}
+
+function RelationshipSuggestionReview({
+  job,
+  onAccept,
+}: {
+  job: ResearchJob;
+  onAccept: (jobId: string, suggestionIds: string[]) => Promise<void>;
+}) {
+  const pending =
+    job.relationship_suggestions?.filter((item) => item.status === "pending") ?? [];
+  const [selected, setSelected] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setSelected((current) => {
+      const valid = new Set(pending.map((item) => item.suggestion_id));
+      const retained = current.filter((item) => valid.has(item));
+      if (retained.length || current.length) return retained;
+      return [...valid];
+    });
+  }, [job.relationship_suggestions]);
+  const toggle = (id: string) =>
+    setSelected((current) =>
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id],
+    );
+  return (
+    <div className="relationship-suggestion-review">
+      <div className="proposal-heading">
+        <b>Proposed relationships</b>
+        <small>Nothing is added until you approve it.</small>
+      </div>
+      {job.relationship_suggestions?.map((suggestion) => (
+        <label
+          className={`relationship-suggestion-card ${suggestion.status}`}
+          key={suggestion.suggestion_id}
+        >
+          <input
+            type="checkbox"
+            checked={
+              suggestion.status === "accepted" ||
+              selected.includes(suggestion.suggestion_id)
+            }
+            disabled={suggestion.status !== "pending"}
+            onChange={() => toggle(suggestion.suggestion_id)}
+          />
+          <span>
+            <b>{suggestion.subject_name}</b>
+            <span className="relationship-arrow">→</span>
+            <strong>{suggestion.target_name}</strong>
+            <em>
+              {suggestion.action === "link"
+                ? `link existing ${suggestion.target_kind}`
+                : `create ${suggestion.target_kind} + link`}
+            </em>
+            <blockquote>{suggestion.excerpt}</blockquote>
+            {suggestion.source_url ? (
+              <a href={suggestion.source_url} target="_blank" rel="noreferrer">
+                ↗ {suggestion.source_title}
+              </a>
+            ) : (
+              <small>{suggestion.source_title}</small>
+            )}
+          </span>
+        </label>
+      ))}
+      {pending.length > 0 && (
+        <button
+          className="primary add-relationship-proposals"
+          disabled={!selected.length || busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onAccept(job.job_id, selected);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy
+            ? "Adding relationships…"
+            : `Add ${selected.length} selected relationship${selected.length === 1 ? "" : "s"}`}
+        </button>
+      )}
+    </div>
   );
 }
 
