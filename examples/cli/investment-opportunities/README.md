@@ -1,64 +1,129 @@
-# Investment opportunities: typed metrics and changing beliefs
+# Tutorial: research investment opportunities and revise a belief
 
-This synthetic pipeline compares three companies. Public financing announcements support stage,
-amount-raised, and lead-investor claims; private synthetic memos support probabilities and risks.
+An investment table mixes observable facts—funding and lead investor—with judgments such as risk
+and investment probability. Epiq can store both, provided each answer says where it came from and
+who made the interpretation.
 
-## Build it
+All companies and assessments below are synthetic.
+
+## 1. Model companies and investors as different kinds of entity
+
+```bash
+epiq --db /tmp/investments.sqlite init --name "Investment pipeline tutorial"
+epiq --db /tmp/investments.sqlite entity Company "Aster Labs"
+epiq --db /tmp/investments.sqlite entity Investor "Northstar Ventures"
+```
+
+Why not store the investor as plain text? Because a reference preserves identity. `Northstar`, an
+alias, and its durable entity ID can all resolve to the same investor, and the investor can later
+have its own fields.
+
+## 2. Define facts, judgments, and a relationship
+
+```bash
+epiq --db /tmp/investments.sqlite question amount_raised --for Company \
+  --type 'Quantity[USD]' \
+  --definition '{"label":"Total disclosed funding","cardinality":"one","freshness_days":90}'
+
+epiq --db /tmp/investments.sqlite question lead_investor --for Company \
+  --type 'Ref[Investor]' \
+  --definition '{"label":"Lead investor","cardinality":"one"}'
+
+epiq --db /tmp/investments.sqlite question investment_probability --for Company \
+  --type Probability \
+  --definition '{"label":"Current probability of investing","cardinality":"one"}'
+
+epiq --db /tmp/investments.sqlite question key_risk --for Company \
+  --type String \
+  --definition '{"label":"Key risk","cardinality":"many"}'
+```
+
+`Probability` accepts only values from 0 through 1. `key_risk` is many-valued because two distinct
+risks can both be supported; they should not be treated as contradictory cell values.
+
+## 3. Record a public fact
+
+```bash
+FUNDING_EVIDENCE=$(epiq --db /tmp/investments.sqlite --actor agent:diligence evidence \
+  --url 'https://example.test/aster/series-a' \
+  --title 'Aster Labs announces Series A' \
+  --retrieved-at 2026-08-17 \
+  --excerpt 'Aster Labs has raised $8 million in a round led by Northstar Ventures.' \
+  | jq -r .evidence_id)
+
+epiq --db /tmp/investments.sqlite --actor agent:diligence assert \
+  --subject "Aster Labs" --question amount_raised --value 8000000 \
+  --valid-from 2026-06-10 --evidence "$FUNDING_EVIDENCE" --confidence high
+
+epiq --db /tmp/investments.sqlite --actor agent:diligence assert \
+  --subject "Aster Labs" --question lead_investor --value "Northstar Ventures" \
+  --valid-from 2026-06-10 --evidence "$FUNDING_EVIDENCE" --confidence high
+```
+
+The reference value is entered by name but stored as the investor's stable entity ID. Run the
+dossier to see both the stored value and its human-readable decoration:
+
+```bash
+epiq --db /tmp/investments.sqlite dossier "Aster Labs"
+```
+
+## 4. Record an internal judgment without inventing a URL
+
+Evidence may be an interview, personal knowledge, a report, or model output:
+
+```bash
+MEMO_EVIDENCE=$(epiq --db /tmp/investments.sqlite --actor partner:maya evidence \
+  --type report --title 'Aster diligence memo, v1' --retrieved-at 2026-08-17 \
+  --excerpt 'The team assigns a 0.65 probability of investing. Main risk: customer concentration.' \
+  | jq -r .evidence_id)
+
+epiq --db /tmp/investments.sqlite --actor partner:maya assert \
+  --subject "Aster Labs" --question investment_probability --value 0.65 \
+  --valid-from 2026-08-17 --evidence "$MEMO_EVIDENCE" --confidence medium
+
+epiq --db /tmp/investments.sqlite --actor partner:maya assert \
+  --subject "Aster Labs" --question key_risk --value 'Customer concentration' \
+  --valid-from 2026-08-17 --evidence "$MEMO_EVIDENCE" --confidence medium
+```
+
+The evidence has a source type and durable internal locator, but no fake web address.
+
+## 5. Query the current projection
+
+```bash
+epiq --db /tmp/investments.sqlite query --kind Company \
+  --where 'investment_probability >= 0.60' --where 'amount_raised <= 10000000'
+```
+
+## 6. Preserve a changed belief
+
+If diligence changes the probability, add the new memo and assertion. Then explicitly supersede
+or retract the old claim after review. Epiq does not overwrite the old judgment: transaction time
+records when each version entered the database, while valid time records when it applied.
+
+Use `dossier "Aster Labs"` to find the existing claim ID, then inspect the correction commands:
+
+```bash
+epiq --db /tmp/investments.sqlite supersede --help
+epiq --db /tmp/investments.sqlite retract --help
+```
+
+This explicit correction step is important: a newer assertion may be corroboration, disagreement,
+or replacement, and the storage layer should not guess which one the researcher intended.
+
+## Finished fixture
+
+The full example contains three companies, multiple risks, and public and private evidence:
 
 ```bash
 uv run examples/cli/investment-opportunities/build.sh /tmp/epiq-investments.sqlite
+uv run epiq --db /tmp/epiq-investments.sqlite matrix --kind Company
+uv run epiq --db /tmp/epiq-investments.sqlite timeline --kind Company \
+  --question amount_raised
 ```
 
-The build uses `Quantity[USD]`, `Probability`, `Ref[Investor]`, and a many-valued risk field. All
-evidence and claims in [writeback.json](writeback.json) commit together.
-
-## Screen the pipeline
-
-Find opportunities with an internal investment probability of at least 65%:
-
-```bash
-uv run epiq --db /tmp/epiq-investments.sqlite query --kind Company \
-  --where '{"question":"investment_probability","op":"gte","value":0.65}'
-```
-
-Find companies that have raised no more than $10 million:
-
-```bash
-uv run epiq --db /tmp/epiq-investments.sqlite query --kind Company \
-  --where '{"question":"amount_raised","op":"lte","value":10000000}'
-```
-
-Inspect one opportunity or view financing observations chronologically:
-
-```bash
-uv run epiq --db /tmp/epiq-investments.sqlite dossier "Aster Labs"
-uv run epiq --db /tmp/epiq-investments.sqlite timeline \
-  --kind Company --question amount_raised
-```
-
-## Record a changed view
-
-Suppose the committee changes Aster's probability after diligence. Add new evidence, assert the
-new value, then supersede or retract the old claim after review. Epiq preserves both the valid time
-of the assessment and the transaction time at which the database learned it.
-
-```bash
-uv run epiq --db /tmp/epiq-investments.sqlite delta
-# perform additional evidence and claim writes
-uv run epiq --db /tmp/epiq-investments.sqlite delta
-```
-
-The second report contains only events since the first report's durable baseline.
-
-## What this exercises
-
-- Unit-bearing quantities and constrained probabilities
-- Relationships to separately modeled investors
-- Public and private evidence in one project
-- Multi-valued risks
-- Structured numeric filtering, dossiers, timelines, staleness, and deltas
-
-## Executable documentation check
+[schema.json](schema.json) is the repeatable declaration; [writeback.json](writeback.json) is the
+atomic agent writeback. They encode the same concepts as the commands above.
 
 <!-- epiq-example -->
 ```bash

@@ -1,69 +1,140 @@
-# Competitor features: an evidence-backed comparison matrix
+# Tutorial: build a competitor comparison one fact at a time
 
-This synthetic example compares three products across API access, model selection, price,
-deployment, and SSO. It is the closest analogue to a conventional spreadsheet, but every cell
-retains evidence and valid-time metadata.
+Suppose you want a spreadsheet with one product per row and fields for API access, deployment, and
+starting price. Epiq can render that matrix, but it first records what every cell means and why you
+believe it.
 
-## Build and inspect it
+This tutorial uses synthetic companies and sources so it can be run safely offline.
+
+## 1. Create an empty project
+
+Pass `--db` explicitly while learning so it is always clear which file a command changes:
+
+```bash
+epiq --db /tmp/competitors.sqlite init --name "Competitor tutorial"
+```
+
+An Epiq project is one SQLite file. `init` creates its event ledger and materialized tables.
+
+## 2. Add rows
+
+Products are the things being compared, so they are entities of kind `Product`:
+
+```bash
+epiq --db /tmp/competitors.sqlite entity Product "Acorn Interview"
+epiq --db /tmp/competitors.sqlite entity Product "Beacon Research"
+```
+
+The returned `entity_id` is durable. Later commands may use either that ID or the exact name.
+
+## 3. Add columns
+
+In Epiq, a column is a typed question about an entity kind:
+
+```bash
+epiq --db /tmp/competitors.sqlite question api_access --for Product \
+  --type 'Enum[none,limited,full]' \
+  --definition '{"label":"API access","cardinality":"one","volatility":"medium"}'
+
+epiq --db /tmp/competitors.sqlite question starting_price --for Product \
+  --type 'Quantity[USD/month]' \
+  --definition '{"label":"Starting monthly price","cardinality":"one","freshness_days":30}'
+```
+
+The type prevents an agent from writing `maybe` into `api_access` or `cheap` into
+`starting_price`. The freshness policy says price should be revisited after 30 days.
+
+At this point the matrix has two rows and two columns, but its cells are `Unasked`:
+
+```bash
+epiq --db /tmp/competitors.sqlite matrix --kind Product
+```
+
+## 4. Store a source passage
+
+Epiq does not fetch this URL. A human or research agent has already read the page and submits the
+specific passage it relied upon:
+
+```bash
+PRICE_EVIDENCE=$(epiq --db /tmp/competitors.sqlite --actor agent:market-research evidence \
+  --url 'https://example.test/acorn/pricing' \
+  --title 'Acorn Interview pricing' \
+  --retrieved-at 2026-08-17 \
+  --excerpt 'The Starter plan costs $249 per month and includes limited API access.' \
+  | jq -r .evidence_id)
+```
+
+The shell variable contains the evidence ID returned by Epiq. Evidence is separate from an answer
+because one passage can support several claims, and several passages can support one claim.
+
+## 5. Turn the passage into typed answers
+
+```bash
+epiq --db /tmp/competitors.sqlite --actor agent:market-research assert \
+  --subject "Acorn Interview" --question starting_price --value 249 \
+  --valid-from 2026-08-17 --evidence "$PRICE_EVIDENCE" --confidence high
+
+epiq --db /tmp/competitors.sqlite --actor agent:market-research assert \
+  --subject "Acorn Interview" --question api_access --value limited \
+  --valid-from 2026-08-17 --evidence "$PRICE_EVIDENCE" --confidence high
+```
+
+`--valid-from` is when the fact was true. The event timestamp separately records when Epiq learned
+it. `--actor` records who performed the interpretation.
+
+Now inspect both the spreadsheet-like view and the record behind one row:
+
+```bash
+epiq --db /tmp/competitors.sqlite matrix --kind Product
+epiq --db /tmp/competitors.sqlite dossier "Acorn Interview"
+```
+
+The matrix is convenient; the dossier teaches you what Epiq actually stored: the typed value,
+confidence, observation date, evidence excerpt, source, and actor.
+
+## 6. Ask a database question
+
+```bash
+epiq --db /tmp/competitors.sqlite query --kind Product \
+  --where 'starting_price <= 300' --where 'api_access != none'
+```
+
+The query operates on current supported claims. It does not scrape missing cells or infer answers.
+
+## 7. Notice when the schema is wrong
+
+A field such as `has_sso: Bool` often hides a category error: SSO might be standard, a paid add-on,
+enterprise-only, or unavailable. Epiq versions schema changes instead of rewriting history:
+
+```bash
+epiq --db /tmp/competitors.sqlite question has_sso --for Product --type Bool \
+  --definition '{"label":"Has SSO"}'
+
+epiq --db /tmp/competitors.sqlite evolve-question has_sso \
+  --relationship replaces \
+  --reason "Boolean cannot distinguish how SSO is offered" \
+  --replacement '{"name":"sso_availability","value_type":"Enum[standard,paid_addon,enterprise_only,unavailable,unknown]","definition":{"label":"SSO availability"}}'
+
+epiq --db /tmp/competitors.sqlite question-lineage has_sso
+```
+
+Old Boolean claims remain auditable. They are not silently coerced into the new enum.
+
+## Finished fixture and next experiments
+
+The packaged builder creates three products and five populated fields:
 
 ```bash
 uv run examples/cli/competitor-features/build.sh /tmp/epiq-competitors.sqlite
 uv run epiq --db /tmp/epiq-competitors.sqlite matrix --kind Product
-uv run epiq --db /tmp/epiq-competitors.sqlite export-xlsx \
-  --kind Product --output /tmp/epiq-competitors.xlsx
-```
-
-[writeback.json](writeback.json) adds six source fragments and twenty claims atomically.
-
-Find inexpensive products with some API access:
-
-```bash
-uv run epiq --db /tmp/epiq-competitors.sqlite query --kind Product \
-  --where '{"question":"starting_price","op":"lte","value":300}' \
-  --where '{"question":"api_access","op":"ne","value":"none"}'
-```
-
-## Correct a category error
-
-The fixture deliberately begins with `sso_support: Bool`. The Beacon documentation says SSO is a
-paid add-on, demonstrating that a Boolean loses important meaning. Split or replace the field:
-
-```bash
-uv run epiq --db /tmp/epiq-competitors.sqlite evolve-question sso_support \
-  --relationship replaces \
-  --reason "A Boolean cannot distinguish standard, add-on, and unavailable SSO" \
-  --replacement '{
-    "name":"sso_availability",
-    "value_type":"Enum[standard,paid_addon,enterprise_only,unavailable,unknown]",
-    "definition":{"label":"SSO availability"}
-  }'
-
-uv run epiq --db /tmp/epiq-competitors.sqlite question-lineage sso_support
-uv run epiq --db /tmp/epiq-competitors.sqlite matrix --kind Product
-```
-
-The old claims are not coerced into the new enum. They remain attached to the retired Boolean field
-until an agent or reviewer researches the successor field.
-
-## Monitor volatile fields
-
-`starting_price` declares a 30-day freshness window:
-
-```bash
 uv run epiq --db /tmp/epiq-competitors.sqlite stale --kind Product
-uv run epiq --db /tmp/epiq-competitors.sqlite refresh-plan \
-  --kind Product --include stale
+uv run epiq --db /tmp/epiq-competitors.sqlite export-xlsx --kind Product \
+  --output /tmp/epiq-competitors.xlsx
 ```
 
-## What this exercises
-
-- Comparison matrices and Excel export
-- Enums, Booleans, and monthly price quantities
-- Multi-predicate queries
-- Volatility and refresh planning
-- Executable schema evolution after a category error
-
-## Executable documentation check
+Read [schema.json](schema.json) only after following the CLI steps above. It is the declarative
+equivalent of creating the project, rows, and columns. [writeback.json](writeback.json) is an atomic
+import of evidence and claims—the form a research agent commonly emits in production.
 
 <!-- epiq-example -->
 ```bash

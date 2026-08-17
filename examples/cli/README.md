@@ -1,40 +1,57 @@
-# CLI-only Epiq examples
+# Learn Epiq from the command line
 
-These examples build complete Epiq projects using only the `epiq` CLI. Each directory contains:
+These are tutorials, not just sample databases. Each one starts with the question being modeled,
+explains how that question becomes entities, fields, evidence, and claims, and then builds the
+database one CLI command at a time.
 
-- a Markdown tutorial explaining the data model and useful follow-up commands;
-- a `build.sh` integration script that creates a new SQLite project; and
-- a declarative, idempotent `schema.json` consumed by `epiq apply`; and
-- a `writeback.json` atomic evidence-and-claim batch.
+If you are new to Epiq, read them in this order:
 
-Run one example from the repository root:
+1. [Competitor features](competitor-features/README.md) — the basic row, column, evidence, and cell
+   model.
+2. [Investment opportunities](investment-opportunities/README.md) — numeric types, relationships,
+   and beliefs that change.
+3. [Hiring committee](hiring-committee/README.md) — private evidence, multiple reviewers, and
+   disagreement.
+4. [Public figure and writing](public-figure-writing/README.md) — multiple entity kinds and
+   one-to-many relationships.
 
-```bash
-uv run examples/cli/competitor-features/build.sh /tmp/epiq-competitors.sqlite
-uv run epiq --db /tmp/epiq-competitors.sqlite matrix --kind Product
-```
+Every tutorial has two ways to run it:
 
-Or build all four into a new directory:
+- **Learning path:** type the displayed `epiq` commands in order and inspect each result. This is
+  deliberately verbose and shows what Epiq records.
+- **Fixture path:** run `build.sh` to produce the complete database quickly. The fixture path uses
+  `schema.json` and `writeback.json` because those formats are useful for repeatable imports and
+  automated tests—not because they are the best introduction to Epiq.
+
+## The four objects to keep in mind
+
+| You want to represent | Epiq object | Spreadsheet analogy |
+| --- | --- | --- |
+| A company, candidate, person, or work | Entity | Row |
+| A typed question about that kind of thing | Question | Column |
+| A bounded passage, interview note, or model report | Evidence | Source attached to a cell |
+| An answer supported by evidence | Claim | Cell value plus provenance |
+
+The visible matrix is a projection of those objects. Epiq stores the underlying research history,
+not merely the latest displayed value.
+
+## Build all finished examples
+
+From the repository root:
 
 ```bash
 uv run examples/cli/build-all.sh /tmp/epiq-cli-examples
 ```
 
-Execute the code fences marked `<!-- epiq-example -->` directly from their Markdown sources:
+The builders are convergent and rerunnable. `apply` skips unchanged entities and questions, while
+evidence and claim idempotency prevent duplicates. They never replace an existing project.
+
+The code fences marked `<!-- epiq-example -->` are exercised in CI:
 
 ```bash
 uv run python scripts/check_markdown_examples.py
 ```
 
-The builders are convergent and rerunnable: `apply` skips unchanged schema/entities, while evidence
-and claim idempotency prevents duplicate research events. They never delete or replace a project.
-
-| Example | Main concepts exercised |
-| --- | --- |
-| [Hiring committee](hiring-committee/README.md) | Non-web evidence, multiple reviewers, contested judgments |
-| [Investment opportunities](investment-opportunities/README.md) | Quantities, probabilities, entity references, structured queries |
-| [Competitor features](competitor-features/README.md) | Comparison matrices, enums, volatility, schema evolution |
-| [Public figure and writing](public-figure-writing/README.md) | Multiple tables, one-to-many records, typed relationships, timelines |
-
-All people, committee assessments, and investment recommendations in these fixtures are synthetic.
-Public titles used in the writing example are included only to demonstrate relational structure.
+All companies, candidates, assessments, and investment recommendations in these examples are
+synthetic. Public titles in the writing example illustrate relational modeling, not a complete
+biographical dataset.

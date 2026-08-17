@@ -818,11 +818,10 @@ The CLI is the preferred cross-package boundary. The Python API is useful for tr
 Direct SQL reads are possible, but external code should not write tables directly because doing so
 would bypass validation and the event log.
 
-## Packaged examples
+## Packaged CLI tutorials
 
-### CLI-only scenario tutorials
-
-Four buildable, database-only tutorials live in [`examples/cli`](examples/cli/README.md): hiring
+Four narrated, executable tutorials live in [`examples/cli`](examples/cli/README.md). Each teaches
+the model with incremental CLI commands before showing the JSON used for repeatable fixtures: hiring
 committee feedback, investment opportunities, competitor feature comparison, and a public figure
 with one-to-many writing records. Build all four with:
 
