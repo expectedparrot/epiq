@@ -24,14 +24,22 @@ uv run epiq --db /tmp/epiq-ownership.sqlite --format table related \
 | 1 | parent_company | Acorn Devices | Beacon Holdings |
 | 2 | parent_company | Beacon Holdings | Cobalt Group |
 
-The repeated `record` is idempotent because the fixture already contains the same source and claims.
+Materialize the nearest related owner's risk on Acorn, retaining Cobalt's claim and evidence:
 
-Remaining gap: traversal finds Cobalt, but cannot express “propagate Cobalt's current high risk to
-every descendant” as a declarative rule with derived lineage.
+```bash
+uv run epiq --db /tmp/epiq-ownership.sqlite propagate \
+  --subject "Acorn Devices" --via parent_company --direction outgoing --depth 5 \
+  --question risk_level --to-question inherited_risk --valid-from 2026-08-17
+```
+
+The repeated `record` is idempotent because the fixture already contains the same source and claims.
+Propagation refuses to choose when multiple source claims are equally near.
 
 <!-- epiq-example -->
 ```bash
 examples/cli/corporate-ownership-risk/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" --select count related "Acorn Devices" \
-  --via parent_company --direction outgoing --depth 5
+epiq --db "$EPIQ_EXAMPLE_DB" propagate --subject "Acorn Devices" \
+  --via parent_company --direction outgoing --depth 5 --question risk_level \
+  --to-question inherited_risk --valid-from 2026-08-17
+epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Company
 ```

@@ -6,15 +6,8 @@ rows, and landed cost is a persisted derivation rather than an unexplained copie
 ```bash
 uv run examples/cli/procurement-normalization/build.sh /tmp/epiq-procurement.sqlite
 
-uv run epiq --db /tmp/epiq-procurement.sqlite derive \
-  --subject "Atlas Control Board quote" --question landed_unit_cost --operation sum \
-  --valid-from 2026-08-01 --input-cell "Atlas Control Board quote" unit_price \
-  --input-cell "Atlas Control Board quote" shipping_per_unit
-
-uv run epiq --db /tmp/epiq-procurement.sqlite derive \
-  --subject "Beacon Control Board quote" --question landed_unit_cost --operation sum \
-  --valid-from 2026-08-01 --input-cell "Beacon Control Board quote" unit_price \
-  --input-cell "Beacon Control Board quote" shipping_per_unit
+uv run epiq --db /tmp/epiq-procurement.sqlite materialize \
+  --kind Quote --valid-from 2026-08-01
 
 uv run epiq --db /tmp/epiq-procurement.sqlite --format table matrix --kind Quote
 ```
@@ -27,15 +20,13 @@ uv run epiq --db /tmp/epiq-procurement.sqlite --format table matrix --kind Quote
 The cheaper sticker price is not the cheaper landed cost. Each derived cell links to both component
 claims and the shared report evidence.
 
-Remaining gap: formulas are invoked imperatively; Epiq does not yet declare a formula once and
-automatically materialize it for every existing and future Quote row.
+The field definition declares `sum(unit_price, shipping_per_unit)` once. `materialize` applies it
+to every ready Quote row and reports incomplete rows as `skipped`. Running it after adding future
+quotes materializes them without rewriting the formula.
 
 <!-- epiq-example -->
 ```bash
 examples/cli/procurement-normalization/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" derive --subject "Atlas Control Board quote" \
-  --question landed_unit_cost --operation sum --valid-from 2026-08-01 \
-  --input-cell "Atlas Control Board quote" unit_price \
-  --input-cell "Atlas Control Board quote" shipping_per_unit
+epiq --db "$EPIQ_EXAMPLE_DB" materialize --kind Quote --valid-from 2026-08-01
 epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Quote
 ```

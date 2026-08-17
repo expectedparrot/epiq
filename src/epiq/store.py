@@ -1485,9 +1485,7 @@ class Store:
             f"{canonical_url}\n{normalized_excerpt}\n{normalized_locator}\n{linked_entity_id or ''}"
         )
         source_hash = hashlib.sha256(hash_material.encode()).hexdigest()
-        evidence_hash = hashlib.sha256(
-            hash_material.encode()
-        ).hexdigest()
+        evidence_hash = hashlib.sha256(hash_material.encode()).hexdigest()
         existing = connection.execute(
             "SELECT evidence_id, source_id FROM evidence WHERE content_hash=?", (evidence_hash,)
         ).fetchone()
@@ -1854,9 +1852,7 @@ class Store:
                 identity = dict(item["identity"]) if item.get("identity") is not None else None
                 name = str(item.get("name") or "")
                 if not name and identity:
-                    parts = ", ".join(
-                        f"{key}={value}" for key, value in sorted(identity.items())
-                    )
+                    parts = ", ".join(f"{key}={value}" for key, value in sorted(identity.items()))
                     name = f"{kind}[{parts}]"
                 if not name:
                     raise EpiqError("entity_name_required", "Entity requires name or identity")
@@ -2394,15 +2390,17 @@ class Store:
         actor: str,
         parameters: dict[str, Any] | None = None,
         confidence: str = "medium",
+        parameter_claim_ids: list[str] | None = None,
     ) -> str:
         """Compute and persist a typed claim with complete input-claim lineage."""
-        allowed = {"sum", "avg", "min", "max", "count", "weighted_avg", "linear"}
+        allowed = {"sum", "avg", "min", "max", "count", "weighted_avg", "linear", "copy"}
         if operation not in allowed:
             raise EpiqError("invalid_derivation", f"Unknown derivation operation: {operation}")
         inputs = list(dict.fromkeys(input_claim_ids))
         if not inputs:
             raise EpiqError("input_claims_required", "At least one input claim is required")
         params = dict(parameters or {})
+        parameter_inputs = list(dict.fromkeys(parameter_claim_ids or []))
         with self.transaction() as connection:
             values: list[Any] = []
             evidence_ids: list[str] = []
@@ -2421,8 +2419,30 @@ class Store:
                         (claim_id,),
                     )
                 )
+            parameter_values: list[Any] = []
+            for claim_id in parameter_inputs:
+                claim = connection.execute(
+                    "SELECT * FROM claims WHERE claim_id=? AND status='asserted' AND tx_to IS NULL",
+                    (claim_id,),
+                ).fetchone()
+                if not claim:
+                    raise EpiqError(
+                        "claim_not_found", f"Active parameter claim not found: {claim_id}"
+                    )
+                parameter_values.append(json.loads(str(claim["value_json"])))
+                evidence_ids.extend(
+                    str(row["evidence_id"])
+                    for row in connection.execute(
+                        "SELECT evidence_id FROM claim_evidence WHERE claim_id=? ORDER BY ordinal",
+                        (claim_id,),
+                    )
+                )
             if operation == "count":
                 result: Any = len(values)
+            elif operation == "copy":
+                if len(values) != 1:
+                    raise EpiqError("invalid_derivation_parameters", "copy requires one input")
+                result = values[0]
             else:
                 numeric = all(
                     isinstance(value, (int, float))
@@ -2443,7 +2463,7 @@ class Store:
                 elif operation == "max":
                     result = max(values)
                 elif operation == "weighted_avg":
-                    weights = params.get("weights")
+                    weights = parameter_values or params.get("weights")
                     if not isinstance(weights, list) or len(weights) != len(values):
                         raise EpiqError(
                             "invalid_derivation_parameters",
@@ -2485,8 +2505,14 @@ class Store:
                 actor,
                 confidence=confidence,
                 event_type="claim.derive",
-                extra_payload={"operation": operation, "input_claim_ids": inputs},
+                extra_payload={
+                    "operation": operation,
+                    "input_claim_ids": inputs,
+                    "parameter_claim_ids": parameter_inputs,
+                },
             )
+            if parameter_inputs:
+                params["parameter_claim_ids"] = parameter_inputs
             connection.execute(
                 "INSERT OR IGNORE INTO derivations VALUES(?,?,?,?)",
                 (claim_id, operation, _json(params), seq),
@@ -2496,6 +2522,123 @@ class Store:
                 [(claim_id, input_id, ordinal, seq) for ordinal, input_id in enumerate(inputs)],
             )
             return claim_id
+
+    def materialize_formulas(
+        self,
+        kind: str,
+        valid_from: str,
+        actor: str,
+        subjects: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate declarative per-row formulas stored in question definitions."""
+        projection = self.matrix(kind)
+        selected = set(subjects or [])
+        rows = [row for row in projection["rows"] if not selected or row["name"] in selected]
+        formulas = []
+        for question in projection["questions"]:
+            formula = question["definition"].get("formula")
+            if formula is not None:
+                if not isinstance(formula, dict):
+                    raise EpiqError(
+                        "invalid_formula", f"Formula for {question['name']} must be an object"
+                    )
+                formulas.append((str(question["name"]), formula))
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            for target, formula in formulas:
+                operation = str(formula.get("operation", ""))
+                inputs = formula.get("inputs")
+                if not isinstance(inputs, list) or not all(
+                    isinstance(item, str) for item in inputs
+                ):
+                    raise EpiqError(
+                        "invalid_formula", f"Formula for {target} requires string inputs"
+                    )
+                input_ids: list[str] = []
+                missing = False
+                for source_question in inputs:
+                    try:
+                        input_ids.extend(
+                            self.active_claim_ids(str(row["entity_id"]), source_question)
+                        )
+                    except EpiqError as exc:
+                        if exc.code != "claim_not_found":
+                            raise
+                        missing = True
+                if missing:
+                    results.append(
+                        {"subject": row["name"], "question": target, "status": "skipped"}
+                    )
+                    continue
+                claim_id = self.derive_claim(
+                    str(row["entity_id"]),
+                    target,
+                    operation,
+                    input_ids,
+                    valid_from,
+                    actor,
+                    formula.get("parameters", {}),
+                    str(formula.get("confidence", "medium")),
+                )
+                results.append(
+                    {
+                        "subject": row["name"],
+                        "question": target,
+                        "status": "materialized",
+                        "claim_id": claim_id,
+                    }
+                )
+        return {"ok": True, "kind": kind, "count": len(results), "results": results}
+
+    def propagate_claim(
+        self,
+        subject: str,
+        via: str,
+        source_question: str,
+        target_question: str,
+        direction: str,
+        depth: int,
+        valid_from: str,
+        actor: str,
+        confidence: str = "medium",
+    ) -> tuple[str, str]:
+        """Materialize a claim found through a relationship path."""
+        traversal = self.related(subject, via, direction, depth)
+        candidates: list[tuple[int, str, str]] = []
+        for edge in traversal["edges"]:
+            endpoint = edge["to"] if edge["direction"] == "outgoing" else edge["from"]
+            try:
+                claims = self.active_claim_ids(str(endpoint["entity_id"]), source_question)
+            except EpiqError as exc:
+                if exc.code == "claim_not_found":
+                    continue
+                raise
+            candidates.extend((int(edge["depth"]), str(endpoint["name"]), item) for item in claims)
+        if not candidates:
+            raise EpiqError("claim_not_found", "No related entity has an active source claim")
+        nearest_depth = min(item[0] for item in candidates)
+        nearest = [item for item in candidates if item[0] == nearest_depth]
+        if len(nearest) != 1:
+            raise EpiqError(
+                "ambiguous_propagation", "Multiple equally near source claims were found"
+            )
+        _, source_name, input_id = nearest[0]
+        claim_id = self.derive_claim(
+            subject,
+            target_question,
+            "copy",
+            [input_id],
+            valid_from,
+            actor,
+            {
+                "via": via,
+                "direction": direction,
+                "depth": nearest_depth,
+                "source_entity": source_name,
+            },
+            confidence,
+        )
+        return claim_id, source_name
 
     def active_claim_ids(self, subject: str, question: str) -> list[str]:
         """Resolve current claim IDs for ergonomic derivation inputs."""
@@ -2509,9 +2652,7 @@ class Store:
                 (entity["entity_id"], field["question_id"]),
             ).fetchall()
         if not rows:
-            raise EpiqError(
-                "claim_not_found", f"No active claim for {subject} / {question}"
-            )
+            raise EpiqError("claim_not_found", f"No active claim for {subject} / {question}")
         return [str(row["claim_id"]) for row in rows]
 
     @staticmethod

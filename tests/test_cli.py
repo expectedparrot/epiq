@@ -95,6 +95,129 @@ def test_cli_derives_distribution_from_repeated_input_claims(tmp_path: Path, cap
     }
 
 
+def test_cli_derive_uses_claim_backed_weights(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "weighted.sqlite"
+    store = Store(database)
+    store.initialize("Weighted")
+    for kind, name in [("Review", "Review"), ("Finding", "A"), ("Finding", "B")]:
+        store.add_entity(kind, name, {}, "test")
+    store.add_question("effect", "Finding", "Float", {}, "test")
+    store.add_question("sample_size", "Finding", "Int", {}, "test")
+    store.add_question("pooled", "Review", "Float", {}, "test")
+    for name, effect, size in [("A", 0.2, 100), ("B", 0.5, 200)]:
+        _, evidence = store.add_evidence(
+            f"https://example.test/{name}", name, "2026-08-17", "Finding", "test"
+        )
+        store.assert_claim(name, "effect", effect, "2026-08-17", evidence, "test")
+        store.assert_claim(name, "sample_size", size, "2026-08-17", evidence, "test")
+
+    main(
+        [
+            "--db",
+            str(database),
+            "derive",
+            "--subject",
+            "Review",
+            "--question",
+            "pooled",
+            "--operation",
+            "weighted_avg",
+            "--input-cell",
+            "A",
+            "effect",
+            "--input-cell",
+            "B",
+            "effect",
+            "--weight-cell",
+            "A",
+            "sample_size",
+            "--weight-cell",
+            "B",
+            "sample_size",
+            "--valid-from",
+            "2026-08-17",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert len(result["parameter_claim_ids"]) == 2
+    cell = store.matrix("Review")["rows"][0]["cells"]["pooled"]
+    assert cell["value"] == pytest.approx(0.4)
+    assert cell["lineage"][0]["derivation"]["parameters"]["parameter_claim_ids"]
+
+
+def test_cli_materializes_declarative_formulas_per_row(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "formula.sqlite"
+    store = Store(database)
+    store.initialize("Formula")
+    for name in ("Atlas", "Beacon"):
+        store.add_entity("Quote", name, {}, "test")
+    store.add_question("price", "Quote", "Float", {}, "test")
+    store.add_question("shipping", "Quote", "Float", {}, "test")
+    store.add_question(
+        "landed",
+        "Quote",
+        "Float",
+        {"formula": {"operation": "sum", "inputs": ["price", "shipping"]}},
+        "test",
+    )
+    _, evidence = store.add_evidence("urn:test:quotes", "Quotes", "2026-08-17", "Quotes", "test")
+    for name, price, shipping in (("Atlas", 40.0, 5.0), ("Beacon", 42.0, 1.0)):
+        store.assert_claim(name, "price", price, "2026-08-17", evidence, "test")
+        store.assert_claim(name, "shipping", shipping, "2026-08-17", evidence, "test")
+
+    main(["--db", str(database), "materialize", "--kind", "Quote", "--valid-from", "2026-08-17"])
+    result = json.loads(capsys.readouterr().out)
+    assert [item["status"] for item in result["results"]] == ["materialized", "materialized"]
+    assert [row["cells"]["landed"]["value"] for row in store.matrix("Quote")["rows"]] == [
+        45.0,
+        43.0,
+    ]
+
+
+def test_cli_propagates_claim_through_relationship_path(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "propagate.sqlite"
+    store = Store(database)
+    store.initialize("Propagation")
+    for name in ("Acorn", "Beacon", "Cobalt"):
+        store.add_entity("Company", name, {}, "test")
+    store.add_question("parent", "Company", "Ref[Company]", {}, "test")
+    store.add_question("risk", "Company", "String", {}, "test")
+    store.add_question("inherited_risk", "Company", "String", {}, "test")
+    _, evidence = store.add_evidence(
+        "urn:test:ownership", "Registry", "2026-08-17", "Ownership and risk", "test"
+    )
+    store.assert_claim("Acorn", "parent", "Beacon", "2026-08-17", evidence, "test")
+    store.assert_claim("Beacon", "parent", "Cobalt", "2026-08-17", evidence, "test")
+    store.assert_claim("Cobalt", "risk", "high", "2026-08-17", evidence, "test")
+
+    main(
+        [
+            "--db",
+            str(database),
+            "propagate",
+            "--subject",
+            "Acorn",
+            "--via",
+            "parent",
+            "--question",
+            "risk",
+            "--to-question",
+            "inherited_risk",
+            "--depth",
+            "5",
+            "--valid-from",
+            "2026-08-17",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["source_entity"] == "Cobalt"
+    cell = next(row for row in store.matrix("Company")["rows"] if row["name"] == "Acorn")["cells"][
+        "inherited_risk"
+    ]
+    assert cell["value"] == "high"
+    assert cell["lineage"][0]["derivation"]["operation"] == "copy"
+
+
 def test_cli_crud_matrix_history_and_retraction(tmp_path: Path, capsys) -> None:
     database = tmp_path / "market.sqlite"
 
@@ -203,9 +326,7 @@ def test_cli_claim_review_and_atomic_bulk_write(tmp_path: Path, capsys) -> None:
     assert invoke("bulk-assert", "--input", str(batch))["count"] == 1
 
 
-def test_cli_record_atomically_adds_evidence_and_supported_answers(
-    tmp_path: Path, capsys
-) -> None:
+def test_cli_record_atomically_adds_evidence_and_supported_answers(tmp_path: Path, capsys) -> None:
     database = tmp_path / "record.sqlite"
 
     def invoke(*arguments: str):
@@ -278,9 +399,9 @@ def test_cli_record_atomically_adds_evidence_and_supported_answers(
         "hire",
     )
     assert single["answer_count"] == 1
-    assert invoke("matrix", "--kind", "Candidate")["rows"][0]["cells"]["decision"][
-        "value"
-    ] == "hire"
+    assert (
+        invoke("matrix", "--kind", "Candidate")["rows"][0]["cells"]["decision"]["value"] == "hire"
+    )
 
 
 def test_cli_record_rolls_back_evidence_when_an_answer_is_invalid(tmp_path: Path, capsys) -> None:
@@ -473,9 +594,7 @@ def test_cli_aggregate_groups_numeric_claims(tmp_path: Path, capsys) -> None:
     ]
 
 
-def test_cli_structured_locator_and_source_entity_appear_in_lineage(
-    tmp_path: Path, capsys
-) -> None:
+def test_cli_structured_locator_and_source_entity_appear_in_lineage(tmp_path: Path, capsys) -> None:
     database = tmp_path / "locator.sqlite"
 
     def invoke(*arguments: str):
@@ -509,9 +628,9 @@ def test_cli_structured_locator_and_source_entity_appear_in_lineage(
         "--value",
         "0.18",
     )
-    source = invoke("matrix", "--kind", "Finding")["rows"][0]["cells"]["effect"][
-        "lineage"
-    ][0]["source"]
+    source = invoke("matrix", "--kind", "Finding")["rows"][0]["cells"]["effect"]["lineage"][0][
+        "source"
+    ]
     assert source["locator"] == {"page": 12, "table": "3"}
     assert source["linked_entity_id"]
 

@@ -1178,6 +1178,33 @@ Operations are `sum`, `avg`, `min`, `max`, `count`, `weighted_avg`, and `linear`
 `{"scale":...,"offset":...}` for conversions such as annual to monthly price. Inputs may also be
 provided directly by repeating `--input-claim`.
 
+Weights can themselves be sourced claims. Repeat `--weight-cell SUBJECT QUESTION` in the same
+order as the weighted inputs; Epiq inherits their evidence and records their claim IDs:
+
+```bash
+epiq derive --subject "Sleep review" --question pooled_effect \
+  --operation weighted_avg --valid-from 2026-08-17 \
+  --input-cell "Study A finding" effect --input-cell "Study B finding" effect \
+  --weight-cell "Study A finding" sample_size --weight-cell "Study B finding" sample_size
+```
+
+For a formula shared by a table, declare it in the target question's definition and materialize all
+ready rows together. Rows missing an input are reported as skipped:
+
+```bash
+epiq question landed_cost --for Quote --type 'Quantity[USD]' \
+  --definition '{"formula":{"operation":"sum","inputs":["price","shipping"]}}'
+epiq materialize --kind Quote --valid-from 2026-08-17
+```
+
+Relationship traversal can also produce a derived claim. `propagate` selects the nearest related
+entity with the requested source claim and rejects ambiguous equally-near matches:
+
+```bash
+epiq propagate --subject Acorn --via parent_company --direction outgoing --depth 5 \
+  --question risk_level --to-question inherited_risk --valid-from 2026-08-17
+```
+
 For scripts, suppress successful output, select one JSON path, or request collected IDs:
 
 ```bash

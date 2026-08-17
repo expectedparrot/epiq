@@ -620,8 +620,32 @@ def parser() -> argparse.ArgumentParser:
         help="Resolve active claim(s) from a cell; repeat as needed",
     )
     derive_claim.add_argument("--parameters", default="{}", help="JSON operation parameters")
+    derive_claim.add_argument(
+        "--weight-cell",
+        action="append",
+        nargs=2,
+        metavar=("SUBJECT", "QUESTION"),
+        help="Resolve a numeric claim as a weighted_avg weight; repeat in input order",
+    )
     derive_claim.add_argument("--valid-from", required=True)
     derive_claim.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
+    materialize = commands.add_parser(
+        "materialize", help="Materialize question formulas as derived claims"
+    )
+    materialize.add_argument("--kind", required=True)
+    materialize.add_argument("--subject", action="append", help="Limit to an entity; repeatable")
+    materialize.add_argument("--valid-from", required=True)
+    propagate = commands.add_parser(
+        "propagate", help="Copy a claim through a typed relationship with derived lineage"
+    )
+    propagate.add_argument("--subject", required=True)
+    propagate.add_argument("--via", required=True)
+    propagate.add_argument("--question", required=True, help="Question on the related entity")
+    propagate.add_argument("--to-question", required=True, help="Target question on subject")
+    propagate.add_argument("--direction", choices=["incoming", "outgoing"], default="outgoing")
+    propagate.add_argument("--depth", type=int, default=1)
+    propagate.add_argument("--valid-from", required=True)
+    propagate.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
     return root
 
 
@@ -1159,8 +1183,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 result: Any = len(values)
             else:
                 numeric = all(
-                    isinstance(item, (int, float)) and not isinstance(item, bool)
-                    for item in values
+                    isinstance(item, (int, float)) and not isinstance(item, bool) for item in values
                 )
                 if not numeric:
                     raise EpiqError(
@@ -1243,6 +1266,15 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         ]
         for subject, question in args.input_cell or []:
             input_claims.extend(store.active_claim_ids(subject, question))
+        weight_claims: list[str] = []
+        for subject, question in args.weight_cell or []:
+            resolved = store.active_claim_ids(subject, question)
+            if len(resolved) != 1:
+                raise EpiqError(
+                    "ambiguous_weight_cell",
+                    f"Weight cell {subject} / {question} must have exactly one active claim",
+                )
+            weight_claims.extend(resolved)
         claim_id = store.derive_claim(
             args.subject,
             args.question,
@@ -1252,13 +1284,30 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             args.actor,
             _attributes(args.parameters),
             args.confidence,
+            weight_claims,
         )
         return {
             "ok": True,
             "claim_id": claim_id,
             "operation": args.operation,
             "input_claim_ids": input_claims,
+            "parameter_claim_ids": weight_claims,
         }
+    if args.command == "materialize":
+        return store.materialize_formulas(args.kind, args.valid_from, args.actor, args.subject)
+    if args.command == "propagate":
+        claim_id, source = store.propagate_claim(
+            args.subject,
+            args.via,
+            args.question,
+            args.to_question,
+            args.direction,
+            args.depth,
+            args.valid_from,
+            args.actor,
+            args.confidence,
+        )
+        return {"ok": True, "claim_id": claim_id, "source_entity": source}
     raise AssertionError(args.command)
 
 
