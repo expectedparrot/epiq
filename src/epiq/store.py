@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import math
@@ -33,6 +34,53 @@ QUESTION_CHALLENGE_PROBLEMS = {
     "definition_ambiguity",
     "other",
 }
+
+
+def _evaluate_arithmetic_expression(expression: str, values: list[int | float]) -> float:
+    """Evaluate a bounded arithmetic AST without names, calls, or attribute access."""
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as error:
+        raise EpiqError("invalid_formula", "Formula has invalid arithmetic syntax") from error
+    if sum(1 for _ in ast.walk(tree)) > 100:
+        raise EpiqError("invalid_formula", "Formula is too complex")
+
+    def evaluate(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, int | float)
+            and not isinstance(node.value, bool)
+        ):
+            return float(node.value)
+        if isinstance(node, ast.Name) and node.id.startswith("x") and node.id[1:].isdigit():
+            index = int(node.id[1:])
+            if index >= len(values):
+                raise EpiqError("invalid_formula", f"Formula input {node.id} is unavailable")
+            return float(values[index])
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
+            value = evaluate(node.operand)
+            return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, ast.Add | ast.Sub | ast.Mult | ast.Div
+        ):
+            left, right = evaluate(node.left), evaluate(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if right == 0:
+                raise EpiqError("division_by_zero", "Formula attempted division by zero")
+            return left / right
+        raise EpiqError("invalid_formula", "Formula contains an unsupported operation")
+
+    result = evaluate(tree)
+    if not math.isfinite(result):
+        raise EpiqError("invalid_formula", "Formula result must be finite")
+    return result
 
 LATEST_SCHEMA_VERSION = 13
 MIGRATION_DESCRIPTIONS = {
@@ -2596,6 +2644,7 @@ class Store:
             "max",
             "count",
             "divide",
+            "expression",
             "weighted_avg",
             "linear",
             "copy",
@@ -2693,6 +2742,14 @@ class Store:
                             "division_by_zero", "Cannot divide by a zero-valued claim"
                         )
                     result = values[0] / values[1]
+                elif operation == "expression":
+                    expression = params.get("expression")
+                    if not isinstance(expression, str) or not expression.strip():
+                        raise EpiqError(
+                            "invalid_derivation_parameters",
+                            "expression requires an arithmetic expression",
+                        )
+                    result = _evaluate_arithmetic_expression(expression, values)
                 elif operation == "weighted_avg":
                     weights = parameter_values or params.get("weights")
                     if not isinstance(weights, list) or len(weights) != len(values):

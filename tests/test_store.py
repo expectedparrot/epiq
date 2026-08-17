@@ -8,7 +8,7 @@ import pytest
 
 from epiq.demo import load_patriots
 from epiq.errors import EpiqError
-from epiq.store import Store, canonicalize_url
+from epiq.store import Store, _evaluate_arithmetic_expression, canonicalize_url
 
 
 @pytest.fixture
@@ -537,6 +537,47 @@ def test_division_formula_materializes_row_relative_values(store: Store) -> None
     cell = store.matrix("Company")["rows"][0]["cells"]["revenue_per_employee"]
     assert cell["value"] == 30.0
     assert cell["lineage"][0]["derivation"]["operation"] == "divide"
+
+
+def test_arithmetic_expression_formula_supports_constants_and_parentheses(store: Store) -> None:
+    store.add_entity("Startup", "Acme", {}, "test")
+    store.add_question("funding", "Startup", "Float", {}, "test")
+    store.add_question("founded", "Startup", "Year", {}, "test")
+    store.add_question(
+        "funding_per_year",
+        "Startup",
+        "Float",
+        {
+            "formula": {
+                "operation": "expression",
+                "inputs": ["funding", "founded"],
+                "parameters": {"expression": "x0/(2026-x1)"},
+                "expression": "=B1/(2026-C1)",
+            }
+        },
+        "test",
+    )
+    _, evidence = store.add_evidence(
+        "urn:test:startup", "Startup data", "2026-08-17", "Funding 90, founded 2023", "test"
+    )
+    store.assert_claim("Acme", "funding", 90.0, "2026-08-17", evidence, "test")
+    store.assert_claim("Acme", "founded", 2023, "2026-08-17", evidence, "test")
+
+    store.materialize_formulas("Startup", "2026-08-17", "human:test")
+
+    cell = store.matrix("Startup")["rows"][0]["cells"]["funding_per_year"]
+    assert cell["value"] == 30.0
+    assert cell["lineage"][0]["derivation"]["parameters"] == {
+        "expression": "x0/(2026-x1)"
+    }
+
+
+def test_arithmetic_expression_rejects_unsafe_syntax_and_zero_division() -> None:
+    with pytest.raises(EpiqError, match="unsupported operation"):
+        _evaluate_arithmetic_expression("__import__('os').system('true')", [1.0])
+
+    with pytest.raises(EpiqError, match="division by zero"):
+        _evaluate_arithmetic_expression("x0/(2026-x1)", [90.0, 2026.0])
 
 
 def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) -> None:

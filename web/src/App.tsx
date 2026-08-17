@@ -100,27 +100,41 @@ const spreadsheetColumnIndex = (label: string) =>
     (total, character) => total * 26 + character.charCodeAt(0) - 64,
     0,
   ) - 1;
-const parseDivisionFormula = (expression: string, questions: Question[]) => {
+const parseSpreadsheetFormula = (expression: string, questions: Question[]) => {
   const normalized = expression.trim();
-  const match = normalized.match(
-    /^=\s*([A-Z]+)(\d+)\s*\/\s*([A-Z]+)(\d+)\s*$/i,
-  );
-  if (!match)
-    throw new Error("Use a row-relative division formula such as =B1/C1.");
-  if (match[2] !== match[4])
-    throw new Error("Both formula references must use the same row.");
-  const inputIndexes = [
-    spreadsheetColumnIndex(match[1]) - 1,
-    spreadsheetColumnIndex(match[3]) - 1,
-  ];
-  const inputs = inputIndexes.map((index) => questions[index]?.name);
-  if (inputs.some((input) => !input))
+  if (!normalized.startsWith("="))
+    throw new Error("Formulas must begin with =.");
+  const references = [...normalized.matchAll(/([A-Z]+)(\d+)/gi)];
+  if (!references.length)
+    throw new Error("Formula must reference at least one research field.");
+  if (new Set(references.map((match) => match[2])).size !== 1)
+    throw new Error("All formula references must use the same row.");
+  const inputs: string[] = [];
+  const inputIndexes = new Map<string, number>();
+  let compiled = normalized.slice(1).replace(/([A-Z]+)(\d+)/gi, (_, column) => {
+    const question = questions[spreadsheetColumnIndex(column) - 1];
+    if (!question) return "__INVALID_REFERENCE__";
+    let inputIndex = inputIndexes.get(question.name);
+    if (inputIndex === undefined) {
+      inputIndex = inputs.length;
+      inputIndexes.set(question.name, inputIndex);
+      inputs.push(question.name);
+    }
+    return `x${inputIndex}`;
+  });
+  if (compiled.includes("__INVALID_REFERENCE__"))
     throw new Error(
       "Formula references must point to visible research fields, not the entity column.",
     );
+  compiled = compiled.replace(/\s+/g, "");
+  if (!/^[x0-9+\-*/().]+$/.test(compiled) || compiled.includes("**"))
+    throw new Error(
+      "Formulas support numbers, cell references, parentheses, and + − × ÷.",
+    );
   return {
-    operation: "divide",
-    inputs: inputs as string[],
+    operation: "expression",
+    inputs,
+    parameters: { expression: compiled },
     expression: normalized.toUpperCase(),
   };
 };
@@ -2690,7 +2704,7 @@ function QuestionDialog({
       let formula = null;
       if (computed && formulaExpression.trim()) {
         try {
-          formula = parseDivisionFormula(formulaExpression, questions);
+          formula = parseSpreadsheetFormula(formulaExpression, questions);
         } catch (caught) {
           setError(
             caught instanceof Error ? caught.message : "Invalid formula",
@@ -2870,7 +2884,7 @@ function QuestionDialog({
               <input
                 value={formulaExpression}
                 onChange={(event) => setFormulaExpression(event.target.value)}
-                placeholder="=B1/C1"
+                placeholder="=C1/(2026-E1)"
               />
               <span className="field-hint">
                 References are row-relative. Epiq stores stable field names, so
@@ -3040,7 +3054,7 @@ function EditQuestionDialog({
   let formulaError = "";
   if (computed && formulaExpression.trim()) {
     try {
-      revisedFormula = parseDivisionFormula(formulaExpression, questions);
+      revisedFormula = parseSpreadsheetFormula(formulaExpression, questions);
     } catch (caught) {
       formulaError =
         caught instanceof Error ? caught.message : "Invalid formula";
@@ -3194,7 +3208,7 @@ function EditQuestionDialog({
               <input
                 value={formulaExpression}
                 onChange={(event) => setFormulaExpression(event.target.value)}
-                placeholder="=B1/C1"
+                placeholder="=C1/(2026-E1)"
               />
               <span className="field-hint">
                 Editing creates a new field version; stable field-name

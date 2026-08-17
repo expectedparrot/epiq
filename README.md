@@ -1119,7 +1119,8 @@ The application currently supports:
 - using AI to propose additional typed fields, with checkbox-based human approval;
 - assigning stable, slow-changing, or dynamic temporal policies and surfacing stale evidence;
 - reviewing contradictions, stale evidence, and invalidated calculations from a unified queue;
-- defining calculated fields with a builder or row-relative expressions such as `=B1/C1`, filling
+- defining calculated fields with a builder or safe row-relative arithmetic such as
+  `=C1/(2026-E1)`, filling
   them down by click or drag, and inspecting typed derivation lineage;
 - sorting any column, filtering rows by text or research status, and preserving view preferences;
 - keyboard navigation with arrows/Tab, Enter or double-click inspection, and clipboard copy;
@@ -1303,9 +1304,10 @@ epiq question landed_cost --for Quote --type 'Quantity[USD]' \
 epiq materialize --kind Quote --valid-from 2026-08-17
 ```
 
-The web interface also accepts spreadsheet notation for row-relative division. With the entity in
-column A and research fields in B and C, `=B1/C1` is normalized to stable field names before it is
-stored. Reordering the visible columns therefore cannot change the formula's meaning. Click
+The web interface also accepts spreadsheet notation with numeric constants, parentheses, and
+`+`, `-`, `*`, or `/`. With the entity in column A, `=C1/(2026-E1)` is normalized to a bounded
+arithmetic AST and stable field names before it is stored; arbitrary code, function calls, and
+attribute access are rejected. Reordering visible columns therefore cannot change the formula's meaning. Click
 `ƒ Fill down` to calculate every ready row, or drag it to a row in the derived column to calculate
 through that row. Division by zero fails explicitly and does not create a derived claim.
 

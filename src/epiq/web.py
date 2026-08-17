@@ -290,7 +290,15 @@ class DeriveCreate(BaseModel):
     subject: str
     question: str
     operation: Literal[
-        "sum", "avg", "min", "max", "count", "divide", "weighted_avg", "linear"
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "count",
+        "divide",
+        "expression",
+        "weighted_avg",
+        "linear",
     ]
     input_claim_ids: list[str] = Field(default_factory=list)
     input_cells: list[tuple[str, str]] = Field(default_factory=list)
