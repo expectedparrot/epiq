@@ -181,6 +181,10 @@ policy metadata. The current implementation recognizes:
 - `Probability`: a finite number constrained to the closed interval `[0,1]`.
 - `Bool`: validated as JSON `true` or `false`.
 - `String`: validated as plain text.
+- `Date`: an ISO `YYYY-MM-DD` calendar date.
+- `DateTime`: a timezone-aware ISO timestamp, including timestamps ending in `Z`.
+- `Year`: an integer from 1 through 9999.
+- `Interval[Date]`: `{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}`; `end` may be null.
 - `Enum[a,b,c]`: validated against the listed strings.
 - `Distribution[Float]`: an empirical or weighted empirical numeric distribution.
 - `Distribution[Enum[a,b,c]]`: a categorical probability distribution over exactly those outcomes.
@@ -234,6 +238,17 @@ epiq --actor agent:census evidence \
 A source records the URL, title, retrieval date, and content hash. Evidence is the bounded excerpt
 used to support a claim. Repeating the same URL and excerpt returns the existing IDs, which makes
 agent retries safe.
+
+Non-web evidence does not need a pretend URL. Its source type and deterministic URN are retained:
+
+```bash
+epiq evidence --type interview \
+  --title "Technical interview notes" \
+  --retrieved-at 2026-08-17 \
+  --excerpt-file private-notes.md
+```
+
+Source types are `web`, `personal`, `model`, `report`, `interview`, and `other`.
 
 A claim may cite more than one fragment by repeating `--evidence`:
 
@@ -376,6 +391,21 @@ batch-local `ref`; later `claim.assert` operations consume it through `evidence_
 
 Run it with `epiq --actor agent:research batch-write --input writeback.json`. A bad local reference,
 invalid evidence, or invalid claim rolls back every evidence, source, event, and claim in the batch.
+Each operation may provide its own `actor`; the event records that actor plus `submitted_by` when it
+differs from the batch submitter. This lets an import agent preserve individual interviewers or
+model runs as the originators of observations.
+
+For repeatable setup, place `project`, `entity_kinds`, `entities`, `questions`, `aliases`, and
+`operations` in one JSON object:
+
+```bash
+epiq --db project.sqlite apply --input project.json
+epiq --db project.sqlite seed --input fixture.json
+```
+
+If the database is absent, `project.name` initializes it. Reapplying an unchanged declaration adds
+no events; a changed question definition creates the next immutable version. Any conflict or bad
+operation rolls the entire application back.
 
 ### Evolve a field without losing its history
 
@@ -993,6 +1023,7 @@ The principal endpoints are:
 | `POST` | `/api/project` | Initialize the selected SQLite file |
 | `GET` | `/api/matrix/{kind}` | Current entity-by-question projection |
 | `POST` | `/api/entities` | Add a row |
+| `POST` | `/api/apply` | Atomically converge a declarative project document |
 | `POST` | `/api/entities/{id}/aliases` | Add an alternate stable identity |
 | `POST` | `/api/entities/{id}/merge` | Merge a duplicate into a surviving row |
 | `POST` | `/api/entities/{id}/retire` | Retire a row without erasing it |
@@ -1027,6 +1058,7 @@ The principal endpoints are:
 | `GET` | `/api/export/project.sqlite` | Download a consistent project backup |
 | `GET` | `/api/export/project.epiq` | Download a checksummed portable project bundle |
 | `POST` | `/api/query/{kind}` | Filter rows with structured predicates |
+| `GET` | `/api/related/{entity}` | Traverse incoming or outgoing typed references |
 | `GET` | `/api/reports/dossier/{entity}` | Read a sourced entity profile and history |
 | `GET` | `/api/reports/timeline/{kind}/{question}` | Read a chronological field view |
 | `POST` | `/api/reports/delta` | Record and read changes since a report baseline |
@@ -1041,13 +1073,33 @@ the original assertion and evidence in history.
 
 ## Querying, reports, and portable projects
 
-`query` accepts repeatable JSON predicates. Predicates are combined with logical AND and support
-`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `in`, and `state`:
+`query` accepts concise expressions or JSON predicate objects. Predicates are combined with logical
+AND and support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `contains_any`, `contains_all`,
+`any_ref`, `in`, and `state`:
 
 ```bash
 epiq query --kind Company \
-  --where '{"question":"funding","op":"gte","value":10000000}' \
-  --where '{"question":"status","op":"eq","value":"active"}'
+  --where 'funding >= 10000000' \
+  --where 'status=active'
+
+epiq query --kind Work --where 'author=Paul Graham'
+epiq query --kind Work --where 'topic contains_all ["Programming","Startups"]'
+```
+
+Reference predicates accept entity names and aliases. Matrix cells retain the stable ID in `value`
+and add `{entity_id,name,kind}` objects in `display_value`/`display_values`. Traverse links and
+backlinks directly:
+
+```bash
+epiq related "Paul Graham" --via author --direction incoming
+```
+
+For scripts, suppress successful output, select one JSON path, or request collected IDs:
+
+```bash
+epiq --quiet apply --input project.json
+epiq --select query.matched query --kind Company --where 'stage=seed'
+epiq --format ids entity Company "Acme"
 ```
 
 The same valid-time and transaction-time controls as `matrix` are available through `--valid-at`

@@ -1,0 +1,18 @@
+{
+  "project": {"name": "Synthetic Investment Pipeline"},
+  "entity_kinds": ["Investor", "Company"],
+  "entities": [
+    {"kind":"Investor","name":"Northstar Ventures"},
+    {"kind":"Investor","name":"Harbor Capital"},
+    {"kind":"Company","name":"Aster Labs"},
+    {"kind":"Company","name":"Beacon Robotics"},
+    {"kind":"Company","name":"Cedar Health"}
+  ],
+  "questions": [
+    {"name":"stage","subject_kind":"Company","value_type":"Enum[pre_seed,seed,series_a,growth,public]","definition":{"label":"Financing stage"}},
+    {"name":"amount_raised","subject_kind":"Company","value_type":"Quantity[USD]","definition":{"label":"Total amount raised","volatility":"dynamic","freshness_days":90}},
+    {"name":"lead_investor","subject_kind":"Company","value_type":"Ref[Investor]","definition":{"label":"Lead investor"}},
+    {"name":"investment_probability","subject_kind":"Company","value_type":"Probability","definition":{"label":"Internal probability of investment","volatility":"dynamic","freshness_days":30}},
+    {"name":"key_risks","subject_kind":"Company","value_type":"String","definition":{"label":"Key risks","cardinality":"many"}}
+  ]
+}

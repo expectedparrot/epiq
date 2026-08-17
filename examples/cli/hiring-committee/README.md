@@ -63,3 +63,13 @@ Use an evidence ID returned by `dossier` in place of the placeholder. A reviewer
 - Durable reviewer identity through `--actor`
 - Queries, dossiers, and provisional claim review
 
+## Executable documentation check
+
+The documentation test runs this block verbatim with a fresh temporary database:
+
+<!-- epiq-example -->
+```bash
+examples/cli/hiring-committee/build.sh "$EPIQ_EXAMPLE_DB"
+epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Candidate \
+  --where 'committee_recommendation=hire'
+```

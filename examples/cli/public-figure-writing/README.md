@@ -41,13 +41,12 @@ uv run epiq --db /tmp/epiq-public-writing.sqlite query --kind Work \
   --where '{"question":"work_type","op":"eq","value":"essay"}'
 ```
 
-Find works attributed to Paul Graham. `Ref[Person]` values are stored as stable entity IDs, so first
-read the ID from the `Person` matrix and use it in the predicate:
+Find works attributed to Paul Graham. Epiq resolves the human-readable name to the stable
+`Ref[Person]` ID before applying the predicate:
 
 ```bash
-uv run epiq --db /tmp/epiq-public-writing.sqlite matrix --kind Person
 uv run epiq --db /tmp/epiq-public-writing.sqlite query --kind Work \
-  --where '{"question":"author","op":"eq","value":"ent_REPLACE_WITH_PERSON_ID"}'
+  --where 'author=Paul Graham'
 ```
 
 View writing chronologically:
@@ -78,3 +77,11 @@ uv run epiq --db /tmp/epiq-public-writing.sqlite question coauthor \
 - Many-valued education, occupation, and topic claims
 - Structured queries, dossiers, and chronological timelines
 
+## Executable documentation check
+
+<!-- epiq-example -->
+```bash
+examples/cli/public-figure-writing/build.sh "$EPIQ_EXAMPLE_DB"
+epiq --db "$EPIQ_EXAMPLE_DB" --select count related "Paul Graham" \
+  --via author --direction incoming
+```

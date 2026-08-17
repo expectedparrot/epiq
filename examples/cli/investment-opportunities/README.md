@@ -58,3 +58,11 @@ The second report contains only events since the first report's durable baseline
 - Multi-valued risks
 - Structured numeric filtering, dossiers, timelines, staleness, and deltas
 
+## Executable documentation check
+
+<!-- epiq-example -->
+```bash
+examples/cli/investment-opportunities/build.sh "$EPIQ_EXAMPLE_DB"
+epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Company \
+  --where 'investment_probability >= 0.65'
+```

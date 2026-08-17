@@ -1,0 +1,17 @@
+{
+  "project": {"name": "Synthetic Hiring Committee"},
+  "entity_kinds": ["Role", "Candidate"],
+  "entities": [
+    {"kind": "Role", "name": "Applied Scientist"},
+    {"kind": "Role", "name": "Research Engineer"},
+    {"kind": "Candidate", "name": "Alex Rivera"},
+    {"kind": "Candidate", "name": "Morgan Lee"}
+  ],
+  "questions": [
+    {"name":"current_role","subject_kind":"Candidate","value_type":"String","definition":{"label":"Current role","volatility":"slow","freshness_days":365}},
+    {"name":"technical_strength","subject_kind":"Candidate","value_type":"Enum[weak,mixed,strong,exceptional]","definition":{"label":"Technical strength","cardinality":"many"}},
+    {"name":"interviewer_rating","subject_kind":"Candidate","value_type":"Probability","definition":{"label":"Interviewer confidence in hire","cardinality":"many"}},
+    {"name":"recommended_role","subject_kind":"Candidate","value_type":"Ref[Role]","definition":{"label":"Recommended role","cardinality":"many"}},
+    {"name":"committee_recommendation","subject_kind":"Candidate","value_type":"Enum[no_hire,lean_no,lean_yes,hire]","definition":{"label":"Committee recommendation"}}
+  ]
+}

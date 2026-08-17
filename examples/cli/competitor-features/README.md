@@ -63,3 +63,11 @@ uv run epiq --db /tmp/epiq-competitors.sqlite refresh-plan \
 - Volatility and refresh planning
 - Executable schema evolution after a category error
 
+## Executable documentation check
+
+<!-- epiq-example -->
+```bash
+examples/cli/competitor-features/build.sh "$EPIQ_EXAMPLE_DB"
+epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Product \
+  --where 'starting_price <= 300' --where 'api_access != none'
+```

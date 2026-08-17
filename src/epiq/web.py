@@ -47,6 +47,11 @@ class RowQueryCreate(BaseModel):
     valid_at: str | None = None
 
 
+class ApplyCreate(BaseModel):
+    document: dict[str, Any]
+    actor: str = "human:web"
+
+
 class EntityCreate(BaseModel):
     kind: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -452,6 +457,10 @@ def create_app(
     def project() -> dict[str, Any]:
         return store().overview()
 
+    @app.post("/api/apply")
+    def apply_document(body: ApplyCreate) -> dict[str, Any]:
+        return store().apply_document(body.document, body.actor)
+
     @app.get("/api/doctor")
     def doctor() -> dict[str, Any]:
         return store().doctor()
@@ -504,6 +513,10 @@ def create_app(
     @app.get("/api/reports/dossier/{entity}")
     def dossier(entity: str) -> dict[str, Any]:
         return store().dossier(entity)
+
+    @app.get("/api/related/{entity}")
+    def related(entity: str, via: str | None = None, direction: str = "both") -> dict[str, Any]:
+        return store().related(entity, via, direction)
 
     @app.get("/api/reports/timeline/{entity_kind}/{question}")
     def timeline(entity_kind: str, question: str) -> dict[str, Any]:
@@ -647,6 +660,7 @@ def create_app(
             body.excerpt,
             body.actor,
             body.published_at,
+            body.source_type,
         )
         return {"source_id": source_id, "evidence_id": evidence_id}
 
@@ -938,6 +952,7 @@ def create_app(
                         str(finding["excerpt"]),
                         "agent:codex",
                         finding.get("source_published_at"),
+                        source_type,
                     )
                     evidence: str | list[str] = evidence_id
                     value = finding["value"]

@@ -1,0 +1,16 @@
+{
+  "project": {"name": "Synthetic Competitor Feature Matrix"},
+  "entity_kinds": ["Product"],
+  "entities": [
+    {"kind":"Product","name":"Atlas Research"},
+    {"kind":"Product","name":"Beacon Insights"},
+    {"kind":"Product","name":"Cobalt Interviewer"}
+  ],
+  "questions": [
+    {"name":"api_access","subject_kind":"Product","value_type":"Enum[none,limited,full]","definition":{"label":"API access"}},
+    {"name":"model_selection","subject_kind":"Product","value_type":"Enum[fixed,vendor_selected,user_selected]","definition":{"label":"Language-model selection"}},
+    {"name":"starting_price","subject_kind":"Product","value_type":"Quantity[USD/month]","definition":{"label":"Starting monthly price","volatility":"dynamic","freshness_days":30}},
+    {"name":"deployment","subject_kind":"Product","value_type":"Enum[cloud,on_premises,hybrid]","definition":{"label":"Deployment model"}},
+    {"name":"sso_support","subject_kind":"Product","value_type":"Bool","definition":{"label":"Supports SSO"}}
+  ]
+}

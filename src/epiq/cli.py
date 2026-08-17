@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -50,6 +52,61 @@ def _json_file(path: str) -> Any:
         raise EpiqError("invalid_json", f"Invalid JSON input: {error}") from error
 
 
+def _predicate(raw: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    match = re.fullmatch(
+        r"\s*([a-z_][a-z0-9_]*)\s*(<=|>=|!=|=|<|>|contains_all|contains_any|contains|any_ref|state)\s*(.+?)\s*",
+        raw,
+    )
+    if not match:
+        raise EpiqError(
+            "invalid_query_predicate",
+            f"Cannot parse --where {raw!r}",
+            "Use field=value, 'field >= 10', or a JSON predicate object.",
+        )
+    question, operator, value = match.groups()
+    operations = {
+        "=": "eq",
+        "!=": "ne",
+        ">": "gt",
+        ">=": "gte",
+        "<": "lt",
+        "<=": "lte",
+    }
+    return {"question": question, "op": operations.get(operator, operator), "value": _value(value)}
+
+
+def _select(value: Any, path: str) -> Any:
+    current = value
+    for component in path.split("."):
+        if isinstance(current, dict) and component in current:
+            current = current[component]
+        else:
+            raise EpiqError("select_not_found", f"Output path not found: {path}")
+    return current
+
+
+def _ids(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.endswith("_id") and isinstance(item, str):
+                found.append(item)
+            elif key.endswith("_ids") and isinstance(item, list):
+                found.extend(str(identifier) for identifier in item)
+            else:
+                found.extend(_ids(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_ids(item))
+    return list(dict.fromkeys(found))
+
+
 def _database(explicit: str | None) -> tuple[Path, str]:
     """Resolve the database using CLI, environment, workspace, then conventional default."""
     if explicit:
@@ -72,6 +129,9 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--db", help="SQLite project path; overrides EPIQ_DB and workspace config")
     root.add_argument("--actor", default="human:cli", help="Actor recorded for write commands")
+    root.add_argument("--quiet", action="store_true", help="Suppress successful command output")
+    root.add_argument("--select", help="Emit only a dotted output path, such as entity_id")
+    root.add_argument("--format", choices=["json", "ids"], default="json")
     commands = root.add_subparsers(dest="command", required=True)
 
     init = commands.add_parser("init", help="Initialize a project")
@@ -81,6 +141,12 @@ def parser() -> argparse.ArgumentParser:
     use.add_argument("database")
 
     commands.add_parser("db", help="Show the currently selected database")
+
+    apply = commands.add_parser("apply", help="Atomically converge a declarative project document")
+    apply.add_argument("--input", required=True, help="JSON document, or - for standard input")
+
+    seed = commands.add_parser("seed", help="Idempotently apply a fixture document")
+    seed.add_argument("--input", required=True, help="JSON document, or - for standard input")
 
     commands.add_parser("doctor", help="Check SQLite integrity and event consistency")
 
@@ -192,10 +258,18 @@ def parser() -> argparse.ArgumentParser:
     question_lineage.add_argument("question")
 
     evidence = commands.add_parser("evidence", help="Add a source and evidence fragment")
-    evidence.add_argument("--url", required=True)
+    evidence.add_argument(
+        "--type",
+        dest="source_type",
+        choices=["web", "personal", "model", "report", "interview", "other"],
+        default="web",
+    )
+    evidence.add_argument("--url")
     evidence.add_argument("--title", required=True)
     evidence.add_argument("--retrieved-at", required=True)
-    evidence.add_argument("--excerpt", required=True)
+    excerpt_input = evidence.add_mutually_exclusive_group(required=True)
+    excerpt_input.add_argument("--excerpt")
+    excerpt_input.add_argument("--excerpt-file")
 
     assess_evidence = commands.add_parser(
         "assess-evidence", help="Append a quality assessment to immutable evidence"
@@ -336,6 +410,11 @@ def parser() -> argparse.ArgumentParser:
     dossier = commands.add_parser("dossier", help="Generate a sourced entity dossier")
     dossier.add_argument("entity")
 
+    related = commands.add_parser("related", help="Traverse typed entity relationships")
+    related.add_argument("entity")
+    related.add_argument("--via")
+    related.add_argument("--direction", choices=["incoming", "outgoing", "both"], default="both")
+
     timeline = commands.add_parser("timeline", help="Generate a field timeline across a table")
     timeline.add_argument("--kind", required=True)
     timeline.add_argument("--question", required=True)
@@ -409,6 +488,20 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "import-bundle":
         imported = Store.import_bundle(args.bundle, database)
         return {"ok": True, "database": str(database), "project": imported.overview()["project"]}
+    if args.command in {"apply", "seed"}:
+        document = _json_file(args.input)
+        if not isinstance(document, dict):
+            raise EpiqError("invalid_apply_document", "Apply input must be a JSON object")
+        if not database.exists():
+            project = document.get("project", {})
+            name = project.get("name") if isinstance(project, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                raise EpiqError(
+                    "project_name_required",
+                    "A new database requires project.name in the apply document",
+                )
+            store.initialize(name)
+        return store.apply_document(document, args.actor)
     if not database.exists():
         raise EpiqError(
             "project_not_found",
@@ -435,6 +528,10 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "project": overview["project"],
             "value_types": [
                 "String",
+                "Date",
+                "DateTime",
+                "Year",
+                "Interval[Date]",
                 "Int",
                 "Float",
                 "Probability",
@@ -643,8 +740,20 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "question-lineage":
         return store.question_lineage(args.question)
     if args.command == "evidence":
+        excerpt = Path(args.excerpt_file).read_text() if args.excerpt_file else args.excerpt
+        if args.source_type == "web" and not args.url:
+            raise EpiqError("source_url_required", "A web source requires --url")
+        locator = args.url or (
+            f"urn:epiq:{args.source_type}:"
+            + hashlib.sha256(f"{args.title}\n{excerpt}".encode()).hexdigest()[:24]
+        )
         source_id, evidence_id = store.add_evidence(
-            args.url, args.title, args.retrieved_at, args.excerpt, args.actor
+            locator,
+            args.title,
+            args.retrieved_at,
+            excerpt,
+            args.actor,
+            source_type=args.source_type,
         )
         return {"ok": True, "source_id": source_id, "evidence_id": evidence_id}
     if args.command == "assess-evidence":
@@ -759,10 +868,12 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         questions = args.questions.split(",") if args.questions else None
         return store.matrix(args.kind, questions, args.known_at, args.valid_at)
     if args.command == "query":
-        predicates = [_attributes(item) for item in args.where]
+        predicates = [_predicate(item) for item in args.where]
         return store.query_rows(args.kind, predicates, args.known_at, args.valid_at)
     if args.command == "dossier":
         return store.dossier(args.entity)
+    if args.command == "related":
+        return store.related(args.entity, args.via, args.direction)
     if args.command == "timeline":
         return store.timeline(args.kind, args.question)
     if args.command == "delta":
@@ -819,7 +930,15 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> None:
     """Run Epiq and emit exactly one JSON value."""
     try:
-        _emit(run(parser().parse_args(argv)))
+        args = parser().parse_args(argv)
+        result = run(args)
+        if args.quiet:
+            return
+        if args.select:
+            result = _select(result, args.select)
+        if args.format == "ids":
+            result = _ids(result)
+        _emit(result)
     except EpiqError as exc:
         print(json.dumps({"error": exc.as_dict()}, sort_keys=True), file=sys.stderr)
         raise SystemExit(2) from None

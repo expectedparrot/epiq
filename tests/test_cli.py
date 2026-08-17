@@ -203,6 +203,73 @@ def test_cli_claim_review_and_atomic_bulk_write(tmp_path: Path, capsys) -> None:
     assert invoke("bulk-assert", "--input", str(batch))["count"] == 1
 
 
+def test_cli_apply_concise_query_output_and_non_web_evidence(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "ergonomics.sqlite"
+    declaration = tmp_path / "project.json"
+    declaration.write_text(
+        json.dumps(
+            {
+                "project": {"name": "Ergonomics"},
+                "entities": [{"kind": "Person", "name": "Ada"}],
+                "questions": [{"name": "born", "subject_kind": "Person", "value_type": "Year"}],
+            }
+        )
+    )
+    main(["--db", str(database), "--quiet", "apply", "--input", str(declaration)])
+    assert capsys.readouterr().out == ""
+
+    notes = tmp_path / "notes.md"
+    notes.write_text("Ada was born in 1815.")
+    main(
+        [
+            "--db",
+            str(database),
+            "evidence",
+            "--type",
+            "personal",
+            "--title",
+            "Research notes",
+            "--retrieved-at",
+            "2026-08-17",
+            "--excerpt-file",
+            str(notes),
+        ]
+    )
+    evidence = json.loads(capsys.readouterr().out)["evidence_id"]
+    main(
+        [
+            "--db",
+            str(database),
+            "assert",
+            "--subject",
+            "Ada",
+            "--question",
+            "born",
+            "--value",
+            "1815",
+            "--valid-from",
+            "1815-12-10",
+            "--evidence",
+            evidence,
+        ]
+    )
+    capsys.readouterr()
+    main(
+        [
+            "--db",
+            str(database),
+            "--select",
+            "query.matched",
+            "query",
+            "--kind",
+            "Person",
+            "--where",
+            "born >= 1800",
+        ]
+    )
+    assert json.loads(capsys.readouterr().out) == 1
+
+
 def test_cli_question_challenge_lifecycle(tmp_path: Path, capsys) -> None:
     database = tmp_path / "boats.sqlite"
 

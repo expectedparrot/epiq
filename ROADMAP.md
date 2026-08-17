@@ -17,7 +17,7 @@ tables.
 - Reversible field retirement: `question.retire` removes an unsuitable column from current
   projections and agent work without deleting its schema, claims, evidence, or history;
   `question.restore` brings it back.
-- Schema-versioned automatic migrations (currently v10).
+- Schema-versioned automatic migrations (currently v11).
 - Stable entity identity with normalized duplicate rejection, aliases, merge redirects, and
   reversible entity retirement. Historical claims keep their original subject IDs while current
   projections unify merged identities.
@@ -31,6 +31,11 @@ tables.
   learned a fact had ceased, plus append-only evidence quality assessments surfaced in lineage.
 - Structured, composable row predicates and deterministic entity dossier, cross-entity timeline,
   and change-since-prior-report projections. Delta reports record their own hashed baselines.
+- Human-readable typed-reference projections, name-resolving predicates, incoming/outgoing
+  relationship traversal, concise query expressions, many-value operators, and quiet/select/ID
+  output controls.
+- Atomic declarative `apply`/`seed`, per-operation provenance, first-class non-web source types,
+  temporal value types, and Markdown code fences executed by the test suite.
 - Portable `.epiq` project bundles containing a transactionally consistent SQLite snapshot and a
   versioned SHA-256 manifest, with checksum and SQLite integrity verification on import.
 - Inspectable migration planning, explicit migration with optional pre-migration backup, rejection

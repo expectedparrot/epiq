@@ -139,6 +139,123 @@ def test_structured_query_dossier_timeline_and_delta_reports(store: Store) -> No
     assert [event["event_type"] for event in third_delta["events"]] == ["entity.create"]
 
 
+def test_declarative_apply_is_atomic_idempotent_and_versions_changed_schema(store: Store) -> None:
+    document = {
+        "entity_kinds": ["Person", "Work"],
+        "entities": [
+            {"kind": "Person", "name": "Ada"},
+            {"kind": "Work", "name": "Notes"},
+        ],
+        "questions": [{"name": "author", "subject_kind": "Work", "value_type": "Ref[Person]"}],
+        "aliases": [{"entity": "Ada", "alias": "Ada Lovelace"}],
+    }
+    first = store.apply_document(document, "deployer")
+    assert {item["status"] for item in first["entities"]} == {"created"}
+    before = len(store.history())
+    second = store.apply_document(document, "deployer")
+    assert len(store.history()) == before
+    assert {item["status"] for item in second["entities"]} == {"unchanged"}
+    assert second["questions"][0]["status"] == "unchanged"
+
+    changed = {
+        **document,
+        "questions": [
+            {
+                "name": "author",
+                "subject_kind": "Work",
+                "value_type": "Ref[Person]",
+                "definition": {"cardinality": "many"},
+            }
+        ],
+    }
+    result = store.apply_document(changed, "deployer")
+    assert result["questions"][0]["status"] == "versioned"
+
+    failing = {
+        "entities": [{"kind": "Work", "name": "Rolled Back"}],
+        "questions": [{"name": "bad", "subject_kind": "Work", "value_type": "BadType"}],
+    }
+    before = len(store.history())
+    with pytest.raises(EpiqError):
+        store.apply_document(failing, "deployer")
+    assert len(store.history()) == before
+    assert all(row["name"] != "Rolled Back" for row in store.matrix("Work")["rows"])
+
+
+def test_reference_projection_queries_and_bidirectional_traversal(store: Store) -> None:
+    person = store.add_entity("Person", "Paul Graham", {}, "test")
+    work = store.add_entity("Work", "An Essay", {}, "test")
+    store.add_question("author", "Work", "Ref[Person]", {}, "test")
+    store.add_question("topic", "Work", "String", {"cardinality": "many"}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/essay", "Essay", "2026-08-17", "An essay by Paul Graham.", "test"
+    )
+    store.assert_claim(work, "author", "Paul Graham", "2026-08-17", evidence, "test")
+    store.assert_claim(work, "topic", "Startups", "2026-08-17", evidence, "test")
+    store.assert_claim(work, "topic", "Programming", "2026-08-17", evidence, "test")
+    cell = store.matrix("Work")["rows"][0]["cells"]["author"]
+    assert cell["value"] == person
+    assert cell["display_value"] == {"entity_id": person, "name": "Paul Graham", "kind": "Person"}
+    assert (
+        store.query_rows("Work", [{"question": "author", "op": "eq", "value": "Paul Graham"}])[
+            "query"
+        ]["matched"]
+        == 1
+    )
+    assert (
+        store.query_rows(
+            "Work",
+            [{"question": "topic", "op": "contains_all", "value": ["Startups", "Programming"]}],
+        )["query"]["matched"]
+        == 1
+    )
+    incoming = store.related("Paul Graham", "author", "incoming")
+    assert incoming["edges"][0]["from"]["name"] == "An Essay"
+    outgoing = store.related("An Essay", "author", "outgoing")
+    assert outgoing["edges"][0]["to"]["name"] == "Paul Graham"
+
+
+def test_batch_operation_actor_and_non_web_source_type_are_preserved(store: Store) -> None:
+    person = store.add_entity("Person", "Candidate", {}, "test")
+    store.add_question("rating", "Person", "Probability", {}, "test")
+    results = store.write_batch(
+        [
+            {
+                "op": "evidence.add",
+                "ref": "interview",
+                "source_type": "interview",
+                "url": "urn:epiq:interview:1",
+                "title": "Interview",
+                "retrieved_at": "2026-08-17",
+                "excerpt": "The interviewer assigned 0.8.",
+                "actor": "interviewer:one",
+            },
+            {
+                "op": "claim.assert",
+                "subject": person,
+                "question": "rating",
+                "value": 0.8,
+                "valid_from": "2026-08-17",
+                "evidence_refs": ["interview"],
+                "actor": "interviewer:one",
+            },
+        ],
+        "agent:importer",
+    )
+    evidence_id = results[0]["evidence_id"]
+    events = store.history()
+    evidence_event = next(
+        event for event in events if event["payload"].get("evidence_id") == evidence_id
+    )
+    claim_event = next(
+        event for event in events if event["payload"].get("claim_id") == results[1]["claim_id"]
+    )
+    assert evidence_event["actor"] == claim_event["actor"] == "interviewer:one"
+    assert evidence_event["payload"]["submitted_by"] == "agent:importer"
+    lineage = store.matrix("Person")["rows"][0]["cells"]["rating"]["lineage"]
+    assert lineage[0]["source"]["source_type"] == "interview"
+
+
 def test_project_bundle_round_trip_and_checksum_rejection(store: Store, tmp_path: Path) -> None:
     store.add_entity("Company", "Acme", {}, "test")
     bundle = store.export_bundle(tmp_path / "project.epiq")
@@ -331,7 +448,7 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "10"
+    assert store.overview()["project"]["schema_version"] == "11"
 
 
 def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) -> None:
@@ -341,12 +458,13 @@ def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) 
         connection.execute("UPDATE meta SET value='9' WHERE key='schema_version'")
     plan = store.migration_plan()
     assert plan["pending"] == [
-        {"version": 10, "description": "claim validity endings and evidence assessments"}
+        {"version": 10, "description": "claim validity endings and evidence assessments"},
+        {"version": 11, "description": "first-class evidence source types"},
     ]
     backup = tmp_path / "before-v10.sqlite"
     result = store.migrate(backup)
     assert result["before"]["current_version"] == 9
-    assert result["after"]["current_version"] == 10
+    assert result["after"]["current_version"] == 11
     assert result["after"]["pending"] == []
     with sqlite3.connect(backup) as connection:
         assert (
@@ -460,6 +578,47 @@ def test_quantity_type_encodes_unit_and_requires_finite_number(store: Store) -> 
     assert store.matrix("Town")["rows"][0]["cells"]["area"]["value"] == 68.2
     with pytest.raises(EpiqError, match="finite quantity"):
         store.assert_claim(town, "area", "68.2", "2026-08-17", evidence, "test")
+
+
+@pytest.mark.parametrize(
+    ("value_type", "value"),
+    [
+        ("Date", "2026-08-17"),
+        ("DateTime", "2026-08-17T12:30:00Z"),
+        ("Year", 2026),
+        ("Interval[Date]", {"start": "2026-01-01", "end": "2026-08-17"}),
+    ],
+)
+def test_temporal_value_types(store: Store, value_type: str, value: object) -> None:
+    item = store.add_entity("Item", value_type, {}, "test")
+    store.add_question("when", "Item", value_type, {}, "test")
+    _, evidence = store.add_evidence(
+        f"https://example.test/{value_type}", "When", "2026-08-17", "Temporal value.", "test"
+    )
+    store.assert_claim(item, "when", value, "2026-08-17", evidence, "test")
+    assert store.matrix("Item")["rows"][0]["cells"]["when"]["value"] == value
+
+
+@pytest.mark.parametrize(
+    ("value_type", "value"),
+    [
+        ("Date", "08/17/2026"),
+        ("DateTime", "2026-08-17T12:30:00"),
+        ("Year", "2026"),
+        ("Interval[Date]", {"start": "2026-08-17", "end": "2026-01-01"}),
+    ],
+)
+def test_temporal_value_types_reject_malformed_values(
+    store: Store, value_type: str, value: object
+) -> None:
+    item = store.add_entity("Item", value_type, {}, "test")
+    store.add_question("when", "Item", value_type, {}, "test")
+    _, evidence = store.add_evidence(
+        f"https://example.test/{value_type}", "When", "2026-08-17", "Temporal value.", "test"
+    )
+    with pytest.raises(EpiqError) as error:
+        store.assert_claim(item, "when", value, "2026-08-17", evidence, "test")
+    assert error.value.code == "value_type_error"
 
 
 def test_claim_proposals_are_invisible_until_atomically_approved(store: Store) -> None:

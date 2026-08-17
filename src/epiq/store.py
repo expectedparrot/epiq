@@ -34,7 +34,7 @@ QUESTION_CHALLENGE_PROBLEMS = {
     "other",
 }
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 MIGRATION_DESCRIPTIONS = {
     2: "multi-evidence claims and derivation lineage",
     3: "source publication time and claim temporal basis",
@@ -45,6 +45,7 @@ MIGRATION_DESCRIPTIONS = {
     8: "durable claim proposal review queue",
     9: "executable question evolution lineage",
     10: "claim validity endings and evidence assessments",
+    11: "first-class evidence source types",
 }
 
 SCHEMA = """
@@ -132,6 +133,8 @@ CREATE TABLE IF NOT EXISTS question_lineage (
 CREATE TABLE IF NOT EXISTS sources (
     source_id TEXT PRIMARY KEY,
     url TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'web'
+        CHECK(source_type IN ('web', 'personal', 'model', 'report', 'interview', 'other')),
     title TEXT NOT NULL,
     retrieved_at TEXT NOT NULL,
     published_at TEXT,
@@ -433,6 +436,10 @@ class Store:
             }
             if "published_at" not in source_columns:
                 connection.execute("ALTER TABLE sources ADD COLUMN published_at TEXT")
+            if "source_type" not in source_columns:
+                connection.execute(
+                    "ALTER TABLE sources ADD COLUMN source_type TEXT NOT NULL DEFAULT 'web'"
+                )
             claim_columns = {
                 str(row["name"]) for row in connection.execute("PRAGMA table_info(claims)")
             }
@@ -570,6 +577,8 @@ class Store:
                 BEFORE UPDATE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
                 CREATE TRIGGER IF NOT EXISTS immutable_sources_delete
                 BEFORE DELETE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
+                UPDATE meta SET value='11'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<11;
                 """
             )
             connection.commit()
@@ -949,6 +958,20 @@ class Store:
         self, kind: str, name: str, attributes: dict[str, Any] | None, actor: str
     ) -> str:
         """Add an entity through an event."""
+        try:
+            with self.transaction() as connection:
+                return self._add_entity_tx(connection, kind, name, attributes, actor)
+        except sqlite3.IntegrityError as exc:
+            raise EpiqError("duplicate_entity", f"Entity already exists: {kind} {name}") from exc
+
+    def _add_entity_tx(
+        self,
+        connection: sqlite3.Connection,
+        kind: str,
+        name: str,
+        attributes: dict[str, Any] | None,
+        actor: str,
+    ) -> str:
         entity_id = _id("ent")
         payload = {
             "entity_id": entity_id,
@@ -956,22 +979,18 @@ class Store:
             "name": name,
             "attributes": attributes or {},
         }
-        try:
-            with self.transaction() as connection:
-                duplicate = self._find_entity_by_identity(connection, name, kind)
-                if duplicate is not None:
-                    raise EpiqError(
-                        "duplicate_entity",
-                        f"Entity already exists: {duplicate['name']} ({duplicate['entity_id']})",
-                    )
-                seq, _, _ = self._event(connection, "entity.create", actor, payload)
-                connection.execute("INSERT OR IGNORE INTO entity_kinds VALUES(?,?)", (kind, seq))
-                connection.execute(
-                    "INSERT INTO entities VALUES(?,?,?,?,?)",
-                    (entity_id, kind, name, _json(attributes or {}), seq),
-                )
-        except sqlite3.IntegrityError as exc:
-            raise EpiqError("duplicate_entity", f"Entity already exists: {kind} {name}") from exc
+        duplicate = self._find_entity_by_identity(connection, name, kind)
+        if duplicate is not None:
+            raise EpiqError(
+                "duplicate_entity",
+                f"Entity already exists: {duplicate['name']} ({duplicate['entity_id']})",
+            )
+        seq, _, _ = self._event(connection, "entity.create", actor, payload)
+        connection.execute("INSERT OR IGNORE INTO entity_kinds VALUES(?,?)", (kind, seq))
+        connection.execute(
+            "INSERT INTO entities VALUES(?,?,?,?,?)",
+            (entity_id, kind, name, _json(attributes or {}), seq),
+        )
         return entity_id
 
     def _find_entity_by_identity(
@@ -1305,7 +1324,19 @@ class Store:
 
     @staticmethod
     def _check_type_declaration(value_type: str) -> None:
-        if value_type in {"Int", "Float", "Probability", "Bool", "String", "Json"}:
+        if value_type in {
+            "Int",
+            "Float",
+            "Probability",
+            "Bool",
+            "String",
+            "Json",
+            "Date",
+            "DateTime",
+            "Year",
+        }:
+            return
+        if value_type == "Interval[Date]":
             return
         if value_type.startswith("Enum[") and value_type.endswith("]"):
             if all(part.strip() for part in value_type[5:-1].split(",")):
@@ -1332,11 +1363,19 @@ class Store:
         excerpt: str,
         actor: str,
         published_at: str | None = None,
+        source_type: str = "web",
     ) -> tuple[str, str]:
         """Atomically add a source and an immutable evidence fragment."""
         with self.transaction() as connection:
             return self._add_evidence_tx(
-                connection, url, title, retrieved_at, excerpt, actor, published_at
+                connection,
+                url,
+                title,
+                retrieved_at,
+                excerpt,
+                actor,
+                published_at,
+                source_type,
             )
 
     def _add_evidence_tx(
@@ -1348,7 +1387,11 @@ class Store:
         excerpt: str,
         actor: str,
         published_at: str | None = None,
+        source_type: str = "web",
+        submitted_by: str | None = None,
     ) -> tuple[str, str]:
+        if source_type not in {"web", "personal", "model", "report", "interview", "other"}:
+            raise EpiqError("invalid_source_type", f"Unknown evidence source type: {source_type}")
         canonical_url = canonicalize_url(url)
         normalized_excerpt = _normalize_excerpt(excerpt)
         if not normalized_excerpt:
@@ -1371,20 +1414,25 @@ class Store:
                 "source_id": source_id,
                 "evidence_id": evidence_id,
                 "url": canonical_url,
+                "source_type": source_type,
                 "title": title,
                 "retrieved_at": retrieved_at,
                 "published_at": published_at,
                 "excerpt": normalized_excerpt,
                 "content_hash": evidence_hash,
+                **(
+                    {"submitted_by": submitted_by} if submitted_by and submitted_by != actor else {}
+                ),
             },
         )
         connection.execute(
             """INSERT INTO sources
-               (source_id,url,title,retrieved_at,published_at,content_hash,created_seq)
-               VALUES(?,?,?,?,?,?,?)""",
+               (source_id,url,source_type,title,retrieved_at,published_at,content_hash,created_seq)
+               VALUES(?,?,?,?,?,?,?,?)""",
             (
                 source_id,
                 canonical_url,
+                source_type,
                 title,
                 retrieved_at,
                 published_at,
@@ -1581,76 +1629,206 @@ class Store:
             raise EpiqError("empty_batch", "A write batch must contain at least one operation")
         if len(operations) > 2000:
             raise EpiqError("batch_too_large", "A write batch cannot exceed 2,000 operations")
+        with self.transaction() as connection:
+            return self._write_batch_tx(connection, operations, actor)
+
+    def _write_batch_tx(
+        self, connection: sqlite3.Connection, operations: list[dict[str, Any]], actor: str
+    ) -> list[dict[str, Any]]:
         evidence_refs: dict[str, str] = {}
         results: list[dict[str, Any]] = []
-        with self.transaction() as connection:
-            for index, operation in enumerate(operations):
-                try:
-                    kind = str(operation["op"])
-                    if kind == "evidence.add":
-                        reference = str(operation.get("ref", "")).strip()
-                        if reference and reference in evidence_refs:
-                            raise EpiqError(
-                                "duplicate_batch_ref", f"Duplicate evidence ref: {reference}"
-                            )
-                        source_id, evidence_id = self._add_evidence_tx(
-                            connection,
-                            str(operation["url"]),
-                            str(operation["title"]),
-                            str(operation["retrieved_at"]),
-                            str(operation["excerpt"]),
-                            actor,
-                            (
-                                str(operation["published_at"])
-                                if operation.get("published_at") is not None
-                                else None
-                            ),
+        for index, operation in enumerate(operations):
+            try:
+                kind = str(operation["op"])
+                operation_actor = str(operation.get("actor", actor))
+                if kind == "evidence.add":
+                    reference = str(operation.get("ref", "")).strip()
+                    if reference and reference in evidence_refs:
+                        raise EpiqError(
+                            "duplicate_batch_ref", f"Duplicate evidence ref: {reference}"
                         )
-                        if reference:
-                            evidence_refs[reference] = evidence_id
-                        results.append(
-                            {
-                                "op": kind,
-                                "ref": reference or None,
-                                "source_id": source_id,
-                                "evidence_id": evidence_id,
-                            }
-                        )
-                    elif kind == "claim.assert":
-                        evidence_ids = [str(item) for item in operation.get("evidence_ids", [])]
-                        for reference in operation.get("evidence_refs", []):
-                            key = str(reference)
-                            if key not in evidence_refs:
-                                raise EpiqError(
-                                    "batch_ref_not_found", f"Evidence ref not found: {key}"
-                                )
-                            evidence_ids.append(evidence_refs[key])
-                        claim_id, _, _ = self._assert_claim_tx(
-                            connection,
-                            str(operation["subject"]),
-                            str(operation["question"]),
-                            operation["value"],
-                            str(operation["valid_from"]),
-                            evidence_ids,
-                            actor,
-                            confidence=str(operation.get("confidence", "high")),
-                            temporal_basis=str(operation.get("temporal_basis", "observed")),
-                        )
-                        results.append({"op": kind, "claim_id": claim_id})
-                    else:
-                        raise EpiqError("unsupported_batch_operation", f"Unknown operation: {kind}")
-                except KeyError as error:
-                    raise EpiqError(
-                        "invalid_batch_item",
-                        f"Write batch item {index} is missing {error.args[0]}",
-                    ) from error
-                except EpiqError as error:
-                    raise EpiqError(
-                        error.code,
-                        f"Write batch item {index}: {error.message}",
-                        error.suggestion,
-                    ) from error
+                    source_id, evidence_id = self._add_evidence_tx(
+                        connection,
+                        str(operation["url"]),
+                        str(operation["title"]),
+                        str(operation["retrieved_at"]),
+                        str(operation["excerpt"]),
+                        operation_actor,
+                        (
+                            str(operation["published_at"])
+                            if operation.get("published_at") is not None
+                            else None
+                        ),
+                        str(operation.get("source_type", "web")),
+                        actor,
+                    )
+                    if reference:
+                        evidence_refs[reference] = evidence_id
+                    results.append(
+                        {
+                            "op": kind,
+                            "ref": reference or None,
+                            "source_id": source_id,
+                            "evidence_id": evidence_id,
+                        }
+                    )
+                elif kind == "claim.assert":
+                    evidence_ids = [str(item) for item in operation.get("evidence_ids", [])]
+                    for reference in operation.get("evidence_refs", []):
+                        key = str(reference)
+                        if key not in evidence_refs:
+                            raise EpiqError("batch_ref_not_found", f"Evidence ref not found: {key}")
+                        evidence_ids.append(evidence_refs[key])
+                    claim_id, _, _ = self._assert_claim_tx(
+                        connection,
+                        str(operation["subject"]),
+                        str(operation["question"]),
+                        operation["value"],
+                        str(operation["valid_from"]),
+                        evidence_ids,
+                        operation_actor,
+                        confidence=str(operation.get("confidence", "high")),
+                        temporal_basis=str(operation.get("temporal_basis", "observed")),
+                        extra_payload=(
+                            {"submitted_by": actor} if operation_actor != actor else None
+                        ),
+                    )
+                    results.append({"op": kind, "claim_id": claim_id})
+                else:
+                    raise EpiqError("unsupported_batch_operation", f"Unknown operation: {kind}")
+            except KeyError as error:
+                raise EpiqError(
+                    "invalid_batch_item",
+                    f"Write batch item {index} is missing {error.args[0]}",
+                ) from error
+            except EpiqError as error:
+                raise EpiqError(
+                    error.code,
+                    f"Write batch item {index}: {error.message}",
+                    error.suggestion,
+                ) from error
         return results
+
+    def apply_document(self, document: dict[str, Any], actor: str) -> dict[str, Any]:
+        """Converge declarative schema, entities, evidence, and claims atomically."""
+        allowed = {"project", "entity_kinds", "entities", "questions", "aliases", "operations"}
+        unknown = set(document) - allowed
+        if unknown:
+            raise EpiqError("invalid_apply_document", f"Unknown apply keys: {sorted(unknown)}")
+        requirements = {
+            "entities": {"kind", "name"},
+            "questions": {"name", "subject_kind", "value_type"},
+            "aliases": {"entity", "alias"},
+        }
+        for section in ("entity_kinds", "entities", "questions", "aliases", "operations"):
+            if not isinstance(document.get(section, []), list):
+                raise EpiqError("invalid_apply_document", f"{section} must be a JSON array")
+        for section, required in requirements.items():
+            for index, item in enumerate(document.get(section, [])):
+                if not isinstance(item, dict) or not required.issubset(item):
+                    missing = sorted(required - set(item) if isinstance(item, dict) else required)
+                    raise EpiqError(
+                        "invalid_apply_document",
+                        f"{section}[{index}] is missing required fields: {missing}",
+                    )
+        results: dict[str, list[dict[str, Any]]] = {
+            "entity_kinds": [],
+            "entities": [],
+            "questions": [],
+            "aliases": [],
+            "operations": [],
+        }
+        with self.transaction() as connection:
+            for raw_kind in document.get("entity_kinds", []):
+                kind = str(raw_kind).strip()
+                existing = connection.execute(
+                    "SELECT 1 FROM entity_kinds WHERE kind=?", (kind,)
+                ).fetchone()
+                if existing:
+                    results["entity_kinds"].append({"kind": kind, "status": "unchanged"})
+                    continue
+                seq, _, _ = self._event(connection, "entity_kind.define", actor, {"kind": kind})
+                connection.execute("INSERT INTO entity_kinds VALUES(?,?)", (kind, seq))
+                results["entity_kinds"].append({"kind": kind, "status": "created"})
+            for item in document.get("entities", []):
+                kind, name = str(item["kind"]), str(item["name"])
+                existing = self._find_entity_by_identity(connection, name, kind)
+                if existing:
+                    expected_attributes = dict(item.get("attributes", {}))
+                    if json.loads(str(existing["attributes_json"])) != expected_attributes:
+                        raise EpiqError(
+                            "entity_definition_conflict",
+                            f"Existing entity attributes differ: {kind} {name}",
+                        )
+                    entity_id, status = str(existing["entity_id"]), "unchanged"
+                else:
+                    entity_id = self._add_entity_tx(
+                        connection, kind, name, dict(item.get("attributes", {})), actor
+                    )
+                    status = "created"
+                results["entities"].append(
+                    {"entity_id": entity_id, "kind": kind, "name": name, "status": status}
+                )
+            for item in document.get("questions", []):
+                name = str(item["name"])
+                latest = connection.execute(
+                    "SELECT * FROM questions WHERE name=? ORDER BY version DESC LIMIT 1", (name,)
+                ).fetchone()
+                definition = dict(item.get("definition", {}))
+                desired = (
+                    str(item["subject_kind"]),
+                    str(item["value_type"]),
+                    _json(definition),
+                )
+                current = (
+                    (
+                        str(latest["subject_kind"]),
+                        str(latest["value_type"]),
+                        str(latest["definition_json"]),
+                    )
+                    if latest
+                    else None
+                )
+                if current == desired:
+                    question_id, status = str(latest["question_id"]), "unchanged"
+                else:
+                    question_id, _ = self._add_question_tx(
+                        connection, name, desired[0], desired[1], definition, actor
+                    )
+                    status = "created" if latest is None else "versioned"
+                results["questions"].append(
+                    {"question_id": question_id, "name": name, "status": status}
+                )
+            for item in document.get("aliases", []):
+                target = self._resolve_entity(connection, str(item["entity"]))
+                alias = str(item["alias"])
+                existing = self._find_entity_by_identity(connection, alias)
+                if existing:
+                    existing = self._follow_entity_redirect(connection, existing)
+                    if existing["entity_id"] != target["entity_id"]:
+                        raise EpiqError(
+                            "alias_conflict", f"Alias identifies another entity: {alias}"
+                        )
+                    results["aliases"].append({"alias": alias, "status": "unchanged"})
+                    continue
+                alias_id = _id("als")
+                seq, _, _ = self._event(
+                    connection,
+                    "entity.alias",
+                    actor,
+                    {"alias_id": alias_id, "entity_id": target["entity_id"], "alias": alias},
+                )
+                connection.execute(
+                    "INSERT INTO entity_aliases VALUES(?,?,?,?,?)",
+                    (alias_id, target["entity_id"], alias, _identity_key(alias), seq),
+                )
+                results["aliases"].append(
+                    {"alias_id": alias_id, "alias": alias, "status": "created"}
+                )
+            operations = list(document.get("operations", []))
+            if operations:
+                results["operations"] = self._write_batch_tx(connection, operations, actor)
+        return {"ok": True, **results}
 
     def propose_claim(
         self,
@@ -2124,6 +2302,43 @@ class Store:
             raise EpiqError("value_type_error", f"Expected Bool; received {value!r}")
         elif value_type == "String" and not isinstance(value, str):
             raise EpiqError("value_type_error", f"Expected String; received {value!r}")
+        elif value_type == "Date":
+            if not isinstance(value, str):
+                raise EpiqError("value_type_error", f"Expected ISO Date; received {value!r}")
+            try:
+                if date.fromisoformat(value).isoformat() != value:
+                    raise ValueError
+            except ValueError as error:
+                raise EpiqError(
+                    "value_type_error", f"Expected ISO Date YYYY-MM-DD; received {value!r}"
+                ) from error
+        elif value_type == "DateTime":
+            if not isinstance(value, str):
+                raise EpiqError("value_type_error", f"Expected ISO DateTime; received {value!r}")
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise ValueError
+            except ValueError as error:
+                raise EpiqError(
+                    "value_type_error", f"Expected timezone-aware ISO DateTime; received {value!r}"
+                ) from error
+        elif value_type == "Year" and (
+            not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 9999
+        ):
+            raise EpiqError(
+                "value_type_error", f"Expected Year integer 1..9999; received {value!r}"
+            )
+        elif value_type == "Interval[Date]":
+            if not isinstance(value, dict) or set(value) - {"start", "end"} or "start" not in value:
+                raise EpiqError(
+                    "value_type_error", "Expected Interval[Date] object with start and optional end"
+                )
+            Store._check_value_type("Date", value["start"])
+            if value.get("end") is not None:
+                Store._check_value_type("Date", value["end"])
+                if value["end"] <= value["start"]:
+                    raise EpiqError("value_type_error", "Interval end must be after start")
         elif value_type.startswith("Ref[") and value_type.endswith("]"):
             if not isinstance(value, str):
                 raise EpiqError(
@@ -2136,7 +2351,18 @@ class Store:
                 or not math.isfinite(value)
             ):
                 raise EpiqError("value_type_error", f"Expected finite quantity; received {value!r}")
-        elif value_type not in {"Int", "Float", "Bool", "String", "Json", "Probability"}:
+        elif value_type not in {
+            "Int",
+            "Float",
+            "Bool",
+            "String",
+            "Json",
+            "Probability",
+            "Date",
+            "DateTime",
+            "Year",
+            "Interval[Date]",
+        }:
             raise EpiqError("value_type_error", f"Unknown value type: {value_type}")
 
     @staticmethod
@@ -2703,8 +2929,9 @@ class Store:
                            ORDER BY t.created_seq DESC LIMIT 1""",
                         (*entity_ids, question["name"]),
                     ).fetchone()
-                    cells[str(question["name"])] = self._project_cell(
-                        connection, claims, definition, task, cutoff
+                    cell = self._project_cell(connection, claims, definition, task, cutoff)
+                    cells[str(question["name"])] = self._decorate_reference_cell(
+                        connection, cell, str(question["value_type"])
                     )
                 rows.append(
                     {
@@ -2741,6 +2968,29 @@ class Store:
             "rows": rows,
         }
 
+    def _decorate_reference_cell(
+        self, connection: sqlite3.Connection, cell: dict[str, Any], value_type: str
+    ) -> dict[str, Any]:
+        if not value_type.startswith("Ref["):
+            return cell
+        references: list[dict[str, str]] = []
+        for value in cell.get("values", []):
+            if not isinstance(value, str):
+                continue
+            entity = self._resolve_entity(connection, value)
+            item = {
+                "entity_id": str(entity["entity_id"]),
+                "name": str(entity["name"]),
+                "kind": str(entity["kind"]),
+            }
+            if item not in references:
+                references.append(item)
+        cell["references"] = references
+        if cell.get("value") is not None and references:
+            cell["display_value"] = references[0]
+        cell["display_values"] = references
+        return cell
+
     def query_rows(
         self,
         entity_kind: str,
@@ -2750,17 +3000,46 @@ class Store:
     ) -> dict[str, Any]:
         """Filter a projection with a small, structured, agent-safe predicate language."""
         projection = self.matrix(entity_kind, known_at=known_at, valid_at=valid_at)
-        question_names = {str(item["name"]) for item in projection["questions"]}
-        allowed = {"eq", "ne", "gt", "gte", "lt", "lte", "contains", "in", "state"}
-        for index, predicate in enumerate(predicates):
+        questions = {str(item["name"]): item for item in projection["questions"]}
+        allowed = {
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "contains",
+            "contains_any",
+            "contains_all",
+            "any_ref",
+            "in",
+            "state",
+        }
+        normalized_predicates = [dict(item) for item in predicates]
+        for index, predicate in enumerate(normalized_predicates):
             question = str(predicate.get("question", ""))
             operation = str(predicate.get("op", "eq"))
-            if question not in question_names:
+            if question not in questions:
                 raise EpiqError("question_not_found", f"Query predicate {index}: {question}")
             if operation not in allowed:
                 raise EpiqError("invalid_query_operator", f"Query predicate {index}: {operation}")
             if "value" not in predicate:
                 raise EpiqError("invalid_query_predicate", f"Query predicate {index} needs value")
+            value_type = str(questions[question]["value_type"])
+            if value_type.startswith("Ref["):
+                values = (
+                    predicate["value"]
+                    if isinstance(predicate["value"], list)
+                    else [predicate["value"]]
+                )
+                with self.connect() as connection:
+                    resolved_values = [
+                        str(self._resolve_entity(connection, str(value))["entity_id"])
+                        for value in values
+                    ]
+                predicate["value"] = (
+                    resolved_values if isinstance(predicate["value"], list) else resolved_values[0]
+                )
 
         def matches(row: dict[str, Any], predicate: dict[str, Any]) -> bool:
             cell = row["cells"][str(predicate["question"])]
@@ -2773,9 +3052,11 @@ class Store:
                 actual = cell["values"]
             try:
                 if operation == "eq":
-                    return actual == expected
+                    return expected in actual if isinstance(actual, list) else actual == expected
                 if operation == "ne":
-                    return actual != expected
+                    return (
+                        expected not in actual if isinstance(actual, list) else actual != expected
+                    )
                 if operation == "gt":
                     return actual > expected
                 if operation == "gte":
@@ -2786,6 +3067,12 @@ class Store:
                     return actual <= expected
                 if operation == "contains":
                     return expected in actual
+                if operation == "any_ref":
+                    return expected in actual if isinstance(actual, list) else actual == expected
+                if operation == "contains_any":
+                    return any(item in actual for item in expected)
+                if operation == "contains_all":
+                    return all(item in actual for item in expected)
                 if operation == "in":
                     return actual in expected
             except (TypeError, ValueError):
@@ -2795,9 +3082,12 @@ class Store:
         projection["rows"] = [
             row
             for row in projection["rows"]
-            if all(matches(row, predicate) for predicate in predicates)
+            if all(matches(row, predicate) for predicate in normalized_predicates)
         ]
-        projection["query"] = {"predicates": predicates, "matched": len(projection["rows"])}
+        projection["query"] = {
+            "predicates": normalized_predicates,
+            "matched": len(projection["rows"]),
+        }
         return projection
 
     def dossier(self, entity: str) -> dict[str, Any]:
@@ -2825,7 +3115,76 @@ class Store:
             "entity_kind": str(resolved["kind"]),
             "entity": row,
             "questions": projection["questions"],
+            "relationships": self.related(str(resolved["entity_id"])),
             "events": events,
+        }
+
+    def related(
+        self, entity: str, via: str | None = None, direction: str = "both"
+    ) -> dict[str, Any]:
+        """Traverse current typed references in either direction."""
+        if direction not in {"incoming", "outgoing", "both"}:
+            raise EpiqError("invalid_direction", f"Unknown relationship direction: {direction}")
+        with self.connect() as connection:
+            target = self._resolve_entity(connection, entity)
+        target_id = str(target["entity_id"])
+        edges: list[dict[str, Any]] = []
+        overview = self.overview()
+        for table in overview["entity_kinds"]:
+            projection = self.matrix(str(table["kind"]))
+            ref_questions = {
+                str(question["name"])
+                for question in projection["questions"]
+                if str(question["value_type"]).startswith("Ref[")
+                and (via is None or question["name"] == via)
+            }
+            for row in projection["rows"]:
+                for question in ref_questions:
+                    cell = row["cells"][question]
+                    for reference in cell.get("references", []):
+                        if row["entity_id"] == target_id and direction in {"outgoing", "both"}:
+                            edges.append(
+                                {
+                                    "direction": "outgoing",
+                                    "question": question,
+                                    "from": {
+                                        "entity_id": target_id,
+                                        "name": str(target["name"]),
+                                        "kind": str(target["kind"]),
+                                    },
+                                    "to": reference,
+                                }
+                            )
+                        if reference["entity_id"] == target_id and direction in {
+                            "incoming",
+                            "both",
+                        }:
+                            edges.append(
+                                {
+                                    "direction": "incoming",
+                                    "question": question,
+                                    "from": {
+                                        "entity_id": row["entity_id"],
+                                        "name": row["name"],
+                                        "kind": projection["entity_kind"],
+                                    },
+                                    "to": {
+                                        "entity_id": target_id,
+                                        "name": str(target["name"]),
+                                        "kind": str(target["kind"]),
+                                    },
+                                }
+                            )
+        return {
+            "entity": {
+                "entity_id": target_id,
+                "name": str(target["name"]),
+                "kind": str(target["kind"]),
+            },
+            "via": via,
+            "direction": direction,
+            "count": len(edges),
+            "edges": edges,
         }
 
     @staticmethod
@@ -2966,10 +3325,13 @@ class Store:
         lineage: list[dict[str, Any]] = []
         for claim in claims:
             evidence_rows = connection.execute(
-                """SELECT ce.evidence_id,e.excerpt,s.url,s.title,s.published_at,s.retrieved_at
+                """SELECT ce.evidence_id,e.excerpt,s.url,s.source_type,s.title,
+                          s.published_at,s.retrieved_at,source_event.actor evidence_actor,
+                          source_event.payload_json evidence_payload
                    FROM claim_evidence ce
                    JOIN evidence e ON e.evidence_id=ce.evidence_id
                    JOIN sources s ON s.source_id=e.source_id
+                   JOIN events source_event ON source_event.seq=e.created_seq
                    JOIN events ev ON ev.seq=ce.created_seq
                    JOIN claims owner ON owner.claim_id=ce.claim_id
                    WHERE ce.claim_id=? AND (ce.created_seq=owner.created_seq OR ev.recorded_at<=?)
@@ -2979,6 +3341,10 @@ class Store:
             derivation = connection.execute(
                 "SELECT * FROM derivations WHERE claim_id=?", (claim["claim_id"],)
             ).fetchone()
+            claim_event = connection.execute(
+                "SELECT actor,payload_json FROM events WHERE seq=?", (claim["created_seq"],)
+            ).fetchone()
+            claim_payload = json.loads(str(claim_event["payload_json"]))
             input_claim_ids = [
                 str(row["input_claim_id"])
                 for row in connection.execute(
@@ -3004,10 +3370,17 @@ class Store:
                     "claim_id": claim["claim_id"],
                     "value": json.loads(claim["value_json"]),
                     "confidence": claim["confidence"],
+                    "actor": str(claim_event["actor"]),
+                    "submitted_by": claim_payload.get("submitted_by"),
                     "evidence_id": evidence_row["evidence_id"],
                     "source": {
                         "title": evidence_row["title"],
                         "url": evidence_row["url"],
+                        "source_type": evidence_row["source_type"],
+                        "actor": evidence_row["evidence_actor"],
+                        "submitted_by": json.loads(str(evidence_row["evidence_payload"])).get(
+                            "submitted_by"
+                        ),
                         "published_at": evidence_row["published_at"],
                         "retrieved_at": evidence_row["retrieved_at"],
                     },

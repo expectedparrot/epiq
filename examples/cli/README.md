@@ -4,6 +4,7 @@ These examples build complete Epiq projects using only the `epiq` CLI. Each dire
 
 - a Markdown tutorial explaining the data model and useful follow-up commands;
 - a `build.sh` integration script that creates a new SQLite project; and
+- a declarative, idempotent `schema.json` consumed by `epiq apply`; and
 - a `writeback.json` atomic evidence-and-claim batch.
 
 Run one example from the repository root:
@@ -19,8 +20,14 @@ Or build all four into a new directory:
 uv run examples/cli/build-all.sh /tmp/epiq-cli-examples
 ```
 
-The builders refuse to replace existing databases. This makes accidental data loss visible and
-also verifies that every tutorial starts from an empty project.
+Execute the code fences marked `<!-- epiq-example -->` directly from their Markdown sources:
+
+```bash
+uv run python scripts/check_markdown_examples.py
+```
+
+The builders are convergent and rerunnable: `apply` skips unchanged schema/entities, while evidence
+and claim idempotency prevents duplicate research events. They never delete or replace a project.
 
 | Example | Main concepts exercised |
 | --- | --- |
