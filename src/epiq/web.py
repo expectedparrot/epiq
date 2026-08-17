@@ -289,7 +289,9 @@ class AggregateCreate(BaseModel):
 class DeriveCreate(BaseModel):
     subject: str
     question: str
-    operation: Literal["sum", "avg", "min", "max", "count", "weighted_avg", "linear"]
+    operation: Literal[
+        "sum", "avg", "min", "max", "count", "divide", "weighted_avg", "linear"
+    ]
     input_claim_ids: list[str] = Field(default_factory=list)
     input_cells: list[tuple[str, str]] = Field(default_factory=list)
     weight_cells: list[tuple[str, str]] = Field(default_factory=list)

@@ -85,6 +85,21 @@ const today = () => new Date().toISOString().slice(0, 10);
 const integerFormat = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
+const spreadsheetColumn = (index: number) => {
+  let value = index + 1;
+  let label = "";
+  while (value > 0) {
+    value -= 1;
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26);
+  }
+  return label;
+};
+const spreadsheetColumnIndex = (label: string) =>
+  [...label.toUpperCase()].reduce(
+    (total, character) => total * 26 + character.charCodeAt(0) - 64,
+    0,
+  ) - 1;
 const display = (value: unknown) => {
   if (value === null || value === undefined) return "—";
   if (typeof value === "object") return JSON.stringify(value);
@@ -198,6 +213,8 @@ export default function App() {
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeViewId, setActiveViewId] = useState("");
   const [pastedClaims, setPastedClaims] = useState<PastedClaim[]>([]);
+  const [formulaDragQuestion, setFormulaDragQuestion] =
+    useState<Question | null>(null);
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
   const [schemaChallengeQuestion, setSchemaChallengeQuestion] =
     useState<Question | null>(null);
@@ -473,12 +490,16 @@ export default function App() {
       );
     }
   };
-  const materializeFormula = async (question: Question) => {
+  const materializeFormula = async (
+    question: Question,
+    subjects?: string[],
+  ) => {
     try {
       await post("/api/materialize", {
         entity_kind: kind,
         question: question.name,
         valid_from: today(),
+        ...(subjects ? { subjects } : {}),
       });
       await loadMatrix();
     } catch (caught) {
@@ -1512,6 +1533,7 @@ export default function App() {
                 <tr className="field-header-row">
                   <th className="row-number">#</th>
                   <th className="name-column entity-column-head">
+                    <em className="spreadsheet-column-letter">A</em>
                     <div className="entity-column-label column-header-title">
                       <button
                         className="column-sort-button"
@@ -1541,7 +1563,7 @@ export default function App() {
                     <span>Row research</span>
                     <small>Agent action</small>
                   </th>
-                  {displayedQuestions.map((question) => {
+                  {displayedQuestions.map((question, questionIndex) => {
                     const job = activeJobs.get(question.question_id);
                     return (
                       <th
@@ -1549,6 +1571,12 @@ export default function App() {
                         className={`reorderable-column ${question.schema_state === "challenged" ? "column-challenged" : ""}`}
                         draggable
                         onDragStart={(event) => {
+                          if (
+                            (event.target as HTMLElement).closest(
+                              ".formula-fill-button",
+                            )
+                          )
+                            return;
                           if (
                             (event.target as HTMLElement).closest(
                               "button,summary,.column-resizer",
@@ -1563,6 +1591,9 @@ export default function App() {
                         onDrop={() => reorderColumn(question.name)}
                         onDragEnd={() => setDraggedColumn(null)}
                       >
+                        <em className="spreadsheet-column-letter">
+                          {spreadsheetColumn(questionIndex + 1)}
+                        </em>
                         <div className="column-header-title">
                           <button
                             className="column-sort-button"
@@ -1583,24 +1614,40 @@ export default function App() {
                           </small>
                         </div>
                         <div className="column-actions">
-                          <button
-                            className={
-                              job ? "agent-button running" : "agent-button"
-                            }
-                            title={
-                              job
-                                ? "Research in progress"
-                                : "Research this column"
-                            }
-                            disabled={Boolean(job)}
-                            onClick={() =>
-                              openResearch(question, "fill_missing")
-                            }
-                          >
-                            {job
-                              ? `✦ ${job.completed}/${job.total || "…"}`
-                              : "✦ Research"}
-                          </button>
+                          {Boolean(question.definition.formula) ? (
+                            <button
+                              className="formula-button formula-fill-button"
+                              title="Click to fill every row, or drag down the column"
+                              draggable
+                              onDragStart={(event) => {
+                                event.dataTransfer.effectAllowed = "copy";
+                                setFormulaDragQuestion(question);
+                              }}
+                              onDragEnd={() => setFormulaDragQuestion(null)}
+                              onClick={() => void materializeFormula(question)}
+                            >
+                              ƒ Fill down
+                            </button>
+                          ) : (
+                            <button
+                              className={
+                                job ? "agent-button running" : "agent-button"
+                              }
+                              title={
+                                job
+                                  ? "Research in progress"
+                                  : "Research this column"
+                              }
+                              disabled={Boolean(job)}
+                              onClick={() =>
+                                openResearch(question, "fill_missing")
+                              }
+                            >
+                              {job
+                                ? `✦ ${job.completed}/${job.total || "…"}`
+                                : "✦ Research"}
+                            </button>
+                          )}
                           <details className="column-menu">
                             <summary title="Field actions">•••</summary>
                             <div>
@@ -1758,7 +1805,29 @@ export default function App() {
                                 ? 0
                                 : -1
                             }
-                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${provisional.length ? "has-provisional" : ""} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${isInSelectedRange ? "selected-cell" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
+                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${provisional.length ? "has-provisional" : ""} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${formulaDragQuestion?.question_id === question.question_id ? "formula-drop-target" : ""} ${isInSelectedRange ? "selected-cell" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
+                            onDragOver={(event) => {
+                              if (
+                                formulaDragQuestion?.question_id ===
+                                question.question_id
+                              ) {
+                                event.preventDefault();
+                                event.dataTransfer.dropEffect = "copy";
+                              }
+                            }}
+                            onDrop={(event) => {
+                              if (
+                                formulaDragQuestion?.question_id !==
+                                question.question_id
+                              )
+                                return;
+                              event.preventDefault();
+                              const subjects = displayedRows
+                                .slice(0, index + 1)
+                                .map((item) => item.name);
+                              setFormulaDragQuestion(null);
+                              void materializeFormula(question, subjects);
+                            }}
                             onFocus={() => {
                               const focused = {
                                 entityId: row.entity_id,
@@ -2064,7 +2133,7 @@ export default function App() {
       {dialog === "question" && (
         <QuestionDialog
           kind={kind}
-          questions={matrix?.questions ?? []}
+          questions={displayedQuestions}
           entityKinds={kinds.map((item) => item.kind)}
           onClose={() => setDialog(null)}
           onSaved={refresh}
@@ -2568,6 +2637,7 @@ function QuestionDialog({
   const [computed, setComputed] = useState(false);
   const [formulaOperation, setFormulaOperation] = useState("sum");
   const [formulaInputs, setFormulaInputs] = useState<string[]>([]);
+  const [formulaExpression, setFormulaExpression] = useState("");
   const [error, setError] = useState("");
   const freshness =
     volatility === "dynamic" ? 90 : volatility === "slow" ? 365 : null;
@@ -2592,9 +2662,46 @@ function QuestionDialog({
         setError("Enum choices cannot contain square brackets.");
         return;
       }
-      if (computed && formulaInputs.length === 0) {
-        setError("Calculated fields need at least one input field.");
-        return;
+      let formula = null;
+      if (computed && formulaExpression.trim()) {
+        const match = formulaExpression
+          .trim()
+          .match(/^=\s*([A-Z]+)(\d+)\s*\/\s*([A-Z]+)(\d+)\s*$/i);
+        if (!match) {
+          setError("Use a row-relative division formula such as =B1/C1.");
+          return;
+        }
+        if (match[2] !== match[4]) {
+          setError("Both formula references must use the same row.");
+          return;
+        }
+        const inputIndexes = [
+          spreadsheetColumnIndex(match[1]) - 1,
+          spreadsheetColumnIndex(match[3]) - 1,
+        ];
+        const inputs = inputIndexes.map((index) => questions[index]?.name);
+        if (inputs.some((input) => !input)) {
+          setError(
+            "Formula references must point to visible research fields, not the entity column.",
+          );
+          return;
+        }
+        formula = {
+          operation: "divide",
+          inputs,
+          expression: formulaExpression.trim().toUpperCase(),
+        };
+      } else if (computed) {
+        if (formulaInputs.length === 0) {
+          setError(
+            "Calculated fields need a formula or at least one input field.",
+          );
+          return;
+        }
+        formula = {
+          operation: formulaOperation,
+          inputs: formulaInputs,
+        };
       }
       const valueType =
         type === "Enum"
@@ -2615,14 +2722,7 @@ function QuestionDialog({
           cardinality: many ? "many" : "one",
           volatility,
           freshness_days: freshness,
-          ...(computed
-            ? {
-                formula: {
-                  operation: formulaOperation,
-                  inputs: formulaInputs,
-                },
-              }
-            : {}),
+          ...(formula ? { formula } : {}),
         },
       });
       onClose();
@@ -2748,21 +2848,54 @@ function QuestionDialog({
           <input
             type="checkbox"
             checked={computed}
-            onChange={(event) => setComputed(event.target.checked)}
+            onChange={(event) => {
+              const checked = event.target.checked;
+              setComputed(checked);
+              if (checked && !["Int", "Float", "Probability"].includes(type))
+                setType("Float");
+            }}
           />
           Calculate this field from other fields
         </label>
         {computed && (
           <div className="formula-builder">
+            <label className="formula-expression-field">
+              Spreadsheet formula
+              <input
+                value={formulaExpression}
+                onChange={(event) => setFormulaExpression(event.target.value)}
+                placeholder="=B1/C1"
+              />
+              <span className="field-hint">
+                References are row-relative. Epiq stores stable field names, so
+                the formula remains correct after columns move.
+              </span>
+            </label>
+            <div className="formula-column-key">
+              <span>
+                <code>A</code> {kind} identity
+              </span>
+              {questions.map((question, index) => (
+                <span key={question.question_id}>
+                  <code>{spreadsheetColumn(index + 1)}</code>{" "}
+                  {String(question.definition.label ?? question.name)}
+                </span>
+              ))}
+            </div>
+            <div className="formula-or">
+              <span>or use the builder</span>
+            </div>
             <label>
               Operation
               <select
                 value={formulaOperation}
                 onChange={(event) => setFormulaOperation(event.target.value)}
               >
-                {["sum", "avg", "min", "max", "count"].map((operation) => (
-                  <option key={operation}>{operation}</option>
-                ))}
+                {["sum", "avg", "min", "max", "count", "divide"].map(
+                  (operation) => (
+                    <option key={operation}>{operation}</option>
+                  ),
+                )}
               </select>
             </label>
             <fieldset>

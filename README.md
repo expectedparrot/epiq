@@ -1119,7 +1119,8 @@ The application currently supports:
 - using AI to propose additional typed fields, with checkbox-based human approval;
 - assigning stable, slow-changing, or dynamic temporal policies and surfacing stale evidence;
 - reviewing contradictions, stale evidence, and invalidated calculations from a unified queue;
-- defining calculated fields, materializing them by field, and inspecting typed derivation lineage;
+- defining calculated fields with a builder or row-relative expressions such as `=B1/C1`, filling
+  them down by click or drag, and inspecting typed derivation lineage;
 - sorting any column, filtering rows by text or research status, and preserving view preferences;
 - keyboard navigation with arrows/Tab, Enter or double-click inspection, and clipboard copy;
 - frozen headers and identity columns, draggable column order, resizable columns, and compact or
@@ -1128,9 +1129,8 @@ The application currently supports:
 
 Single-click selects a cell without changing the sheet layout. Use the arrow keys or Tab to move,
 Enter (or double-click) to open its evidence inspector, Escape to clear selection, and
-Command/Ctrl+C to copy the displayed value. Pasting values is deliberately not yet a generic grid
-operation: an Epiq answer needs evidence, confidence, and temporal context rather than an unsourced
-scalar silently entering the database.
+Command/Ctrl+C to copy the displayed value. Command/Ctrl+V opens a typed preview and requires
+evidence, confidence, and temporal context before committing the pasted range atomically.
 
 Install both development environments:
 
@@ -1302,6 +1302,12 @@ epiq question landed_cost --for Quote --type 'Quantity[USD]' \
   --definition '{"formula":{"operation":"sum","inputs":["price","shipping"]}}'
 epiq materialize --kind Quote --valid-from 2026-08-17
 ```
+
+The web interface also accepts spreadsheet notation for row-relative division. With the entity in
+column A and research fields in B and C, `=B1/C1` is normalized to stable field names before it is
+stored. Reordering the visible columns therefore cannot change the formula's meaning. Click
+`ƒ Fill down` to calculate every ready row, or drag it to a row in the derived column to calculate
+through that row. Division by zero fails explicitly and does not create a derived claim.
 
 Relationship traversal can also produce a derived claim. `propagate` selects the nearest related
 entity with the requested source claim and rejects ambiguous equally-near matches:

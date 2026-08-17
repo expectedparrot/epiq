@@ -2589,7 +2589,17 @@ class Store:
         path_claim_ids: list[str] | None = None,
     ) -> str:
         """Compute and persist a typed claim with complete input-claim lineage."""
-        allowed = {"sum", "avg", "min", "max", "count", "weighted_avg", "linear", "copy"}
+        allowed = {
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "count",
+            "divide",
+            "weighted_avg",
+            "linear",
+            "copy",
+        }
         if operation not in allowed:
             raise EpiqError("invalid_derivation", f"Unknown derivation operation: {operation}")
         inputs = list(dict.fromkeys(input_claim_ids))
@@ -2673,6 +2683,16 @@ class Store:
                     result = min(values)
                 elif operation == "max":
                     result = max(values)
+                elif operation == "divide":
+                    if len(values) != 2:
+                        raise EpiqError(
+                            "invalid_derivation_parameters", "divide requires two inputs"
+                        )
+                    if values[1] == 0:
+                        raise EpiqError(
+                            "division_by_zero", "Cannot divide by a zero-valued claim"
+                        )
+                    result = values[0] / values[1]
                 elif operation == "weighted_avg":
                     weights = parameter_values or params.get("weights")
                     if not isinstance(weights, list) or len(weights) != len(values):

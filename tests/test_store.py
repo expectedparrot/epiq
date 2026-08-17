@@ -501,6 +501,44 @@ def test_general_derivation_persists_formula_inputs_and_evidence(store: Store) -
     assert derived == cell["lineage"][0]["claim_id"]
 
 
+def test_division_formula_materializes_row_relative_values(store: Store) -> None:
+    store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("revenue", "Company", "Float", {}, "test")
+    store.add_question("employees", "Company", "Int", {}, "test")
+    store.add_question(
+        "revenue_per_employee",
+        "Company",
+        "Float",
+        {
+            "formula": {
+                "operation": "divide",
+                "inputs": ["revenue", "employees"],
+                "expression": "=B1/C1",
+            }
+        },
+        "test",
+    )
+    _, evidence = store.add_evidence(
+        "urn:test:accounts", "Accounts", "2026-08-17", "Revenue 120, staff 4", "test"
+    )
+    store.assert_claim("Acme", "revenue", 120.0, "2026-08-17", evidence, "test")
+    store.assert_claim("Acme", "employees", 4, "2026-08-17", evidence, "test")
+
+    result = store.materialize_formulas("Company", "2026-08-17", "human:test")
+
+    assert result["results"] == [
+        {
+            "subject": "Acme",
+            "question": "revenue_per_employee",
+            "status": "materialized",
+            "claim_id": result["results"][0]["claim_id"],
+        }
+    ]
+    cell = store.matrix("Company")["rows"][0]["cells"]["revenue_per_employee"]
+    assert cell["value"] == 30.0
+    assert cell["lineage"][0]["derivation"]["operation"] == "divide"
+
+
 def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) -> None:
     with sqlite3.connect(store.path) as connection:
         connection.execute("DROP TABLE evidence_assessments")
