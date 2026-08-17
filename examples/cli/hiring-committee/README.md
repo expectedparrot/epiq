@@ -46,6 +46,28 @@ epiq question committee_recommendation --for Candidate \
 The first three are many-valued because reviewers can independently provide legitimate answers.
 The committee outcome is single-valued because it represents the final institutional decision.
 
+### What did those commands build?
+
+Run the matrix projection:
+
+```bash
+epiq matrix --kind Candidate
+```
+
+Conceptually, the database now projects to this table:
+
+| Candidate | Technical strength (`String`, many) | Interviewer confidence (`Probability`, many) | Recommended role (`Ref[Role]`, many) | Committee recommendation (`Enum`, one) |
+| --- | --- | ---: | --- | --- |
+| Alex Rivera | Unasked | Unasked | Unasked | Unasked |
+| Morgan Lee | Unasked | Unasked | Unasked | Unasked |
+
+The two `Candidate` entities became rows. The four questions whose `--for` value is `Candidate`
+became columns. `Product Engineer` does **not** appear as a row here: it belongs to the separate
+`Role` entity kind and can be referenced from cells in the Recommended role column.
+
+`Unasked` is a real state, not an empty string or a false answer. It means no answer and no
+completed unsuccessful search have been recorded for that candidate and question.
+
 ## 3. Add private interview notes as evidence
 
 There is no public URL, and Epiq does not require one:
@@ -78,6 +100,17 @@ epiq --actor interviewer:maya assert \
   --subject "Alex Rivera" --question recommended_role --value "Product Engineer" \
   --valid-from 2026-08-17 --evidence "$MAYA_NOTES" --confidence medium
 ```
+
+The same matrix now looks like this:
+
+| Candidate | Technical strength | Interviewer confidence | Recommended role | Committee recommendation |
+| --- | --- | ---: | --- | --- |
+| Alex Rivera | Clear decomposition of queueing problems | 0.82 | Product Engineer | Unasked |
+| Morgan Lee | Unasked | Unasked | Unasked | Unasked |
+
+Three claims populated three cells in Alex's row. The committee column remains `Unasked` because
+none of those commands asserted a committee decision. Each displayed value still links back to
+`MAYA_NOTES`; the table is only the current projection, not the whole record.
 
 Now add another interviewer's note and claims using `--actor interviewer:...`. Because these fields
 have `cardinality: many`, Epiq retains both reviewers' evidence and values rather than averaging
