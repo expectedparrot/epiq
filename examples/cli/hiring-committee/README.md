@@ -182,15 +182,67 @@ remains in the audit history.
 
 ## 6. Understand disagreement versus contradiction
 
-Multiple reviewer assessments are expected observations, hence `cardinality: many`. Two current
-values for the single-valued `committee_recommendation` field indicate a contradiction that needs
-explicit review:
+Multiple reviewer assessments are expected observations, hence `cardinality: many`. The
+`committee_recommendation` field, however, is supposed to hold one institutional decision.
+
+Suppose two internal records disagree about the outcome of the same meeting:
 
 ```bash
-epiq contradictions
+epiq --actor coordinator:recruiting record \
+  --subject "Alex Rivera" \
+  --source-type report \
+  --source-title "Recruiting meeting notes" \
+  --retrieved-at 2026-08-19 \
+  --excerpt "The hiring committee decision for Alex Rivera was hire." \
+  --valid-from 2026-08-19 \
+  --question committee_recommendation \
+  --value hire
+
+epiq --actor coordinator:operations record \
+  --subject "Alex Rivera" \
+  --source-type report \
+  --source-title "Committee outcome tracker" \
+  --retrieved-at 2026-08-19 \
+  --excerpt "The recorded hiring committee outcome for Alex Rivera is hold." \
+  --valid-from 2026-08-19 \
+  --question committee_recommendation \
+  --value hold
 ```
 
-Modeling cardinality correctly is more important than forcing every domain into one-cell semantics.
+The Candidate matrix now marks that cell `Contested`; it does not silently pick the newest claim.
+Find all such cells with:
+
+```bash
+epiq contradictions --kind Candidate
+```
+
+The response is verbose because it includes full lineage. An abridged view is:
+
+```json
+{
+  "count": 1,
+  "entity_kind": "Candidate",
+  "cells": [
+    {
+      "entity_name": "Alex Rivera",
+      "question": "committee_recommendation",
+      "values": ["hire", "hold"],
+      "lineage": [
+        {"actor": "coordinator:recruiting", "value": "hire"},
+        {"actor": "coordinator:operations", "value": "hold"}
+      ]
+    }
+  ]
+}
+```
+
+The lineage gives a reviewer the claim IDs and evidence needed to investigate. Once the correct
+record is established, explicitly `retract` the erroneous claim or `supersede` it; the rejected
+value remains in history rather than disappearing.
+
+This is the cardinality distinction in practice: `0.82` and `0.68` coexist because several
+interviewer observations are allowed, while `hire` and `hold` trigger review because the schema
+says there should be one committee outcome.
 
 ## Finished fixture
 
