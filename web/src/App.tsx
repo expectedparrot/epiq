@@ -16,6 +16,7 @@ import {
   ProjectInfo,
   QuestionChallenge,
   Question,
+  RelationshipSuggestion,
   ResearchJob,
   StaleDerivation,
   api,
@@ -29,6 +30,7 @@ type Selection = {
   question: Question;
   cell: Cell;
 };
+type ProvisionalRelationship = RelationshipSuggestion & { jobId: string };
 type SortState = {
   key: string;
   direction: "asc" | "desc";
@@ -653,6 +655,15 @@ export default function App() {
       return leftPosition - rightPosition;
     });
   }, [matrix, columnOrder]);
+  const provisionalRelationships = useMemo(
+    () =>
+      jobs.flatMap((job) =>
+        (job.relationship_suggestions ?? [])
+          .filter((suggestion) => suggestion.status === "pending")
+          .map((suggestion) => ({ ...suggestion, jobId: job.job_id })),
+      ),
+    [jobs],
+  );
   const tableWidth =
     132 +
     (columnWidths.__entity__ ?? 220) +
@@ -1298,6 +1309,11 @@ export default function App() {
                       </td>
                       {displayedQuestions.map((question) => {
                         const cell = row.cells[question.name];
+                        const provisional = provisionalRelationships.filter(
+                          (suggestion) =>
+                            suggestion.subject_entity_id === row.entity_id &&
+                            suggestion.question_name === question.name,
+                        );
                         const derivedClaims = cell.lineage.filter(
                           (item) => item.derivation,
                         );
@@ -1316,7 +1332,7 @@ export default function App() {
                                 ? 0
                                 : -1
                             }
-                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
+                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${provisional.length ? "has-provisional" : ""} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
                             onFocus={() =>
                               setActiveGridCell({
                                 entityId: row.entity_id,
@@ -1369,6 +1385,16 @@ export default function App() {
                                 cellDisplay(cell)
                               )}
                             </div>
+                            {provisional.length > 0 && (
+                              <div className="provisional-cell-values">
+                                {provisional.map((suggestion) => (
+                                  <span key={suggestion.suggestion_id}>
+                                    {suggestion.target_name}
+                                  </span>
+                                ))}
+                                <em>provisional</em>
+                              </div>
+                            )}
                             {cell.state !== "Unasked" && (
                               <span className="state-dot" title={cell.state} />
                             )}
@@ -1453,6 +1479,11 @@ export default function App() {
         {selection && (
           <CellDrawer
             selection={selection}
+            provisionalRelationships={provisionalRelationships.filter(
+              (suggestion) =>
+                suggestion.subject_entity_id === selection.entityId &&
+                suggestion.question_name === selection.question.name,
+            )}
             staleDerivedClaimIds={staleDerivedClaimIds}
             isResearching={isCellResearching(
               selection.entityId,
@@ -1482,6 +1513,11 @@ export default function App() {
             onChallenge={(claimId) => {
               setChallengedClaimId(claimId);
               setDialog("challenge");
+            }}
+            onAcceptProvisional={async (suggestion) => {
+              await acceptRelationshipSuggestions(suggestion.jobId, [
+                suggestion.suggestion_id,
+              ]);
             }}
             onChanged={refresh}
           />
@@ -4124,6 +4160,7 @@ function SchemaReviewPanel({
 
 function CellDrawer({
   selection,
+  provisionalRelationships,
   staleDerivedClaimIds,
   isResearching,
   onClose,
@@ -4135,9 +4172,11 @@ function CellDrawer({
   onSchemaChallenge,
   onChallengeResearch,
   onChallenge,
+  onAcceptProvisional,
   onChanged,
 }: {
   selection: Selection;
+  provisionalRelationships: ProvisionalRelationship[];
   staleDerivedClaimIds: Set<string>;
   isResearching: boolean;
   onClose: () => void;
@@ -4149,6 +4188,9 @@ function CellDrawer({
   onSchemaChallenge: () => void;
   onChallengeResearch: () => void;
   onChallenge: (claimId: string) => void;
+  onAcceptProvisional: (
+    suggestion: ProvisionalRelationship,
+  ) => Promise<void>;
   onChanged: () => Promise<void>;
 }) {
   const { cell, entityName, question } = selection;
@@ -4230,6 +4272,58 @@ function CellDrawer({
             <b>Research interpretation</b>
             <span>{String(question.definition.research_guidance)}</span>
           </div>
+        )}
+        {provisionalRelationships.length > 0 && (
+          <section className="provisional-relationships">
+            <div className="proposal-heading">
+              <b>Provisional related rows</b>
+              <small>Agent findings—not part of the database until approved.</small>
+            </div>
+            {provisionalRelationships.map((suggestion) => (
+              <article
+                className="provisional-relationship-card"
+                key={suggestion.suggestion_id}
+              >
+                <div>
+                  <span className="provisional-badge">PROVISIONAL</span>
+                  <b>{suggestion.target_name}</b>
+                  <small>
+                    {suggestion.action === "link"
+                      ? `Links an existing ${suggestion.target_kind} row`
+                      : `Creates a ${suggestion.target_kind} row and links it`}
+                  </small>
+                </div>
+                <blockquote>{suggestion.excerpt}</blockquote>
+                {suggestion.source_url ? (
+                  <a
+                    href={suggestion.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    ↗ {suggestion.source_title}
+                  </a>
+                ) : (
+                  <small>{suggestion.source_title}</small>
+                )}
+                <button
+                  className="primary"
+                  disabled={busy === suggestion.suggestion_id}
+                  onClick={async () => {
+                    setBusy(suggestion.suggestion_id);
+                    try {
+                      await onAcceptProvisional(suggestion);
+                    } finally {
+                      setBusy("");
+                    }
+                  }}
+                >
+                  {busy === suggestion.suggestion_id
+                    ? "Accepting…"
+                    : `Accept ${suggestion.target_name}`}
+                </button>
+              </article>
+            ))}
+          </section>
         )}
         {cell.state === "NotFound" && (
           <div className="research-card">
@@ -4339,7 +4433,7 @@ function CellDrawer({
             </div>
           </article>
         ))}
-        {cell.state === "Unasked" && (
+        {cell.state === "Unasked" && provisionalRelationships.length === 0 && (
           <div className="drawer-empty">
             <div>?</div>
             <p>No answer or completed research has been recorded.</p>
