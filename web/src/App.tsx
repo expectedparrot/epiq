@@ -93,10 +93,14 @@ const display = (value: unknown) => {
     return integerFormat.format(value);
   return String(value);
 };
-const cellDisplay = (cell: Cell) => {
+const cellDisplay = (cell: Cell, valueType?: string) => {
   if (cell.references?.length)
     return cell.references.map((item) => item.name).join(", ");
-  if (cell.state === "Answered") return display(cell.value ?? cell.values);
+  if (cell.state === "Answered") {
+    const value = cell.value ?? cell.values;
+    if (valueType === "Year" && typeof value === "number") return String(value);
+    return display(value);
+  }
   if (cell.state === "Contested")
     return `${cell.values.length} competing answers`;
   if (cell.state === "NotFound") return "No evidence found";
@@ -111,6 +115,26 @@ function parseValue(raw: string, type: string): unknown {
     type.startsWith("Ref[")
   )
     return raw;
+  if (type === "Date") {
+    const normalized = raw.trim();
+    const parsed = new Date(`${normalized}T00:00:00Z`);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(normalized) ||
+      Number.isNaN(parsed.valueOf()) ||
+      parsed.toISOString().slice(0, 10) !== normalized
+    )
+      throw new Error("Expected a date in YYYY-MM-DD format");
+    return normalized;
+  }
+  if (type === "DateTime") return raw.trim();
+  if (type === "Year") {
+    if (!/^\d{1,4}$/.test(raw.trim()))
+      throw new Error("Expected a year from 1 to 9999");
+    const value = Number.parseInt(raw, 10);
+    if (value < 1 || value > 9999)
+      throw new Error("Expected a year from 1 to 9999");
+    return value;
+  }
   if (type === "Int") {
     if (!/^-?\d+$/.test(raw.trim())) throw new Error("Expected a whole number");
     return Number.parseInt(raw, 10);
@@ -1022,11 +1046,13 @@ export default function App() {
                     selectedRange.firstColumn,
                     selectedRange.lastColumn + 1,
                   )
-                  .map((question) => cellDisplay(row.cells[question.name]))
+                  .map((question) =>
+                    cellDisplay(row.cells[question.name], question.value_type),
+                  )
                   .join("\t"),
               )
               .join("\n")
-          : cellDisplay(cell);
+          : cellDisplay(cell, displayedQuestions[columnIndex]?.value_type);
         await navigator.clipboard.writeText(value);
         setClipboardNotice(
           selectedCellCount > 1
@@ -1446,7 +1472,10 @@ export default function App() {
                 <code>{selectedCellCount} cells selected</code>
               )}
               <span className="selection-value">
-                {cellDisplay(activeSelection.cell) || "No value"}
+                {cellDisplay(
+                  activeSelection.cell,
+                  activeSelection.question.value_type,
+                ) || "No value"}
               </span>
               <button
                 onClick={() =>
@@ -1792,7 +1821,7 @@ export default function App() {
                                   {cell.value} ↗
                                 </a>
                               ) : (
-                                cellDisplay(cell)
+                                cellDisplay(cell, question.value_type)
                               )}
                             </div>
                             {provisional.length > 0 && (
@@ -2652,6 +2681,8 @@ function QuestionDialog({
               <option>Float</option>
               <option>Probability</option>
               <option>Bool</option>
+              <option>Year</option>
+              <option>Date</option>
               <option value="Enum">Enum · fixed choices</option>
               <option value="Relationship">Relationship · another table</option>
               <option>Json</option>
@@ -3161,7 +3192,17 @@ function ClaimDialog({
             </select>
           ) : (
             <input
-              type={selection.question.value_type === "URL" ? "url" : "text"}
+              type={
+                selection.question.value_type === "URL"
+                  ? "url"
+                  : selection.question.value_type === "Date"
+                    ? "date"
+                    : selection.question.value_type === "Year"
+                      ? "number"
+                      : "text"
+              }
+              min={selection.question.value_type === "Year" ? 1 : undefined}
+              max={selection.question.value_type === "Year" ? 9999 : undefined}
               value={value}
               onChange={(event) => setValue(event.target.value)}
               placeholder={
@@ -5253,6 +5294,9 @@ function CellDrawer({
                     (reference) => reference.entity_id === claim.value,
                   )?.name ?? claim.value}
                 </span>
+              ) : question.value_type === "Year" &&
+                typeof claim.value === "number" ? (
+                String(claim.value)
               ) : (
                 display(claim.value)
               )}
