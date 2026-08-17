@@ -754,7 +754,7 @@ export default function App() {
     return { row, question, cell: row.cells[question.name] };
   }, [activeGridCell, matrix]);
   const tableWidth =
-    132 +
+    48 +
     (columnWidths.__entity__ ?? 220) +
     118 +
     displayedQuestions.reduce(
@@ -1319,6 +1319,10 @@ export default function App() {
                     <span>✦ Suggest fields</span>
                     <small>Propose complementary research questions</small>
                   </button>
+                  <button onClick={() => void launchTableResearch()}>
+                    <span>✦ Research whole table</span>
+                    <small>Fill every unanswered research cell</small>
+                  </button>
                   <b>View</b>
                   <button onClick={toggleRows}>
                     <span>
@@ -1331,19 +1335,6 @@ export default function App() {
             </div>
           </div>
           <div className="view-toolbar" aria-label="Table view controls">
-            <select
-              className="saved-view-select"
-              value={activeViewId}
-              onChange={(event) => applyView(event.target.value)}
-              aria-label="Saved view"
-            >
-              <option value="">Current view</option>
-              {savedViews.map((view) => (
-                <option key={view.id} value={view.id}>
-                  {view.name}
-                </option>
-              ))}
-            </select>
             <label className="table-search">
               <span>⌕</span>
               <input
@@ -1358,6 +1349,7 @@ export default function App() {
               />
             </label>
             <select
+              className="status-filter-select"
               value={statusFilter}
               onChange={(event) => updateStatusFilter(event.target.value)}
               aria-label="Filter by research status"
@@ -1367,8 +1359,21 @@ export default function App() {
               <option value="unanswered">Has unanswered fields</option>
               <option value="review">Needs review</option>
             </select>
+            <select
+              className="saved-view-select"
+              value={activeViewId}
+              onChange={(event) => applyView(event.target.value)}
+              aria-label="Saved view"
+            >
+              <option value="">Current view</option>
+              {savedViews.map((view) => (
+                <option key={view.id} value={view.id}>
+                  {view.name}
+                </option>
+              ))}
+            </select>
             <button className="view-action-button" onClick={saveCurrentView}>
-              Save view
+              Save
             </button>
             {activeViewId && (
               <button className="view-action-button" onClick={deleteActiveView}>
@@ -1463,7 +1468,7 @@ export default function App() {
               style={{ width: tableWidth }}
             >
               <colgroup>
-                <col style={{ width: 132 }} />
+                <col style={{ width: 48 }} />
                 <col style={{ width: columnWidths.__entity__ ?? 220 }} />
                 <col style={{ width: 118 }} />
                 {displayedQuestions.map((question) => (
@@ -1478,7 +1483,7 @@ export default function App() {
                 <tr className="field-header-row">
                   <th className="row-number">#</th>
                   <th className="name-column entity-column-head">
-                    <div className="entity-column-label">
+                    <div className="entity-column-label column-header-title">
                       <button
                         className="column-sort-button"
                         onClick={() => toggleSort("__entity__")}
@@ -1491,6 +1496,13 @@ export default function App() {
                       </button>
                       <small>Entity · row identity</small>
                     </div>
+                    <button
+                      className="suggest-entities-button"
+                      title={`Find more ${kind.toLowerCase()} rows`}
+                      onClick={() => setDialog("suggestEntities")}
+                    >
+                      ✦ Find rows
+                    </button>
                     <span
                       className="column-resizer"
                       onMouseDown={(event) => resizeColumn("__entity__", event)}
@@ -1501,6 +1513,7 @@ export default function App() {
                     <small>Agent action</small>
                   </th>
                   {displayedQuestions.map((question) => {
+                    const job = activeJobs.get(question.question_id);
                     return (
                       <th
                         key={question.question_id}
@@ -1509,7 +1522,7 @@ export default function App() {
                         onDragStart={(event) => {
                           if (
                             (event.target as HTMLElement).closest(
-                              "button,.column-resizer",
+                              "button,summary,.column-resizer",
                             )
                           ) {
                             event.preventDefault();
@@ -1521,74 +1534,26 @@ export default function App() {
                         onDrop={() => reorderColumn(question.name)}
                         onDragEnd={() => setDraggedColumn(null)}
                       >
-                        <button
-                          className="column-sort-button"
-                          onClick={() => toggleSort(question.name)}
-                          title={`Sort by ${String(question.definition.label ?? question.name)}`}
-                        >
-                          {String(question.definition.label ?? question.name)}
-                          {sort.key === question.name && (
-                            <i>{sort.direction === "asc" ? "↑" : "↓"}</i>
-                          )}
-                        </button>
-                        <small>
-                          {question.value_type}
-                          {question.definition.volatility &&
-                          question.definition.volatility !== "stable"
-                            ? ` · ${question.definition.volatility}`
-                            : ""}
-                        </small>
-                        <span
-                          className="column-resizer"
-                          onMouseDown={(event) =>
-                            resizeColumn(question.name, event)
-                          }
-                        />
-                      </th>
-                    );
-                  })}
-                  <th className="add-column">
-                    <button onClick={() => setDialog("question")}>＋</button>
-                  </th>
-                </tr>
-                <tr className="column-action-row">
-                  <th className="row-number table-research-corner">
-                    <button
-                      title="Research every unanswered cell"
-                      onClick={() => void launchTableResearch()}
-                    >
-                      ✦ Research all
-                    </button>
-                  </th>
-                  <th className="name-column entity-action-head">
-                    <button
-                      className="suggest-entities-button"
-                      title={`Find more ${kind.toLowerCase()} rows`}
-                      onClick={() => setDialog("suggestEntities")}
-                    >
-                      ✦ Find more {kind.toLowerCase()}s
-                    </button>
-                  </th>
-                  <th className="row-action-column action-row-label">
-                    Per row ↓
-                  </th>
-                  {displayedQuestions.map((question) => {
-                    const job = activeJobs.get(question.question_id);
-                    return (
-                      <th
-                        className="field-action-cell"
-                        key={question.question_id}
-                      >
+                        <div className="column-header-title">
+                          <button
+                            className="column-sort-button"
+                            onClick={() => toggleSort(question.name)}
+                            title={`Sort by ${String(question.definition.label ?? question.name)}`}
+                          >
+                            {String(question.definition.label ?? question.name)}
+                            {sort.key === question.name && (
+                              <i>{sort.direction === "asc" ? "↑" : "↓"}</i>
+                            )}
+                          </button>
+                          <small>
+                            {question.value_type}
+                            {question.definition.volatility &&
+                            question.definition.volatility !== "stable"
+                              ? ` · ${question.definition.volatility}`
+                              : ""}
+                          </small>
+                        </div>
                         <div className="column-actions">
-                          {Boolean(question.definition.formula) && (
-                            <button
-                              className="formula-button"
-                              title="Calculate this formula for every ready row"
-                              onClick={() => void materializeFormula(question)}
-                            >
-                              ƒ Calculate
-                            </button>
-                          )}
                           <button
                             className={
                               job ? "agent-button running" : "agent-button"
@@ -1610,6 +1575,15 @@ export default function App() {
                           <details className="column-menu">
                             <summary title="Field actions">•••</summary>
                             <div>
+                              {Boolean(question.definition.formula) && (
+                                <button
+                                  onClick={() =>
+                                    void materializeFormula(question)
+                                  }
+                                >
+                                  Calculate formula
+                                </button>
+                              )}
                               <button onClick={() => toggleSort(question.name)}>
                                 Sort{" "}
                                 {sort.key === question.name &&
@@ -1656,10 +1630,18 @@ export default function App() {
                             </div>
                           </details>
                         </div>
+                        <span
+                          className="column-resizer"
+                          onMouseDown={(event) =>
+                            resizeColumn(question.name, event)
+                          }
+                        />
                       </th>
                     );
                   })}
-                  <th className="add-column" />
+                  <th className="add-column">
+                    <button onClick={() => setDialog("question")}>＋</button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
