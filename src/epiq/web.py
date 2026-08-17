@@ -1160,6 +1160,11 @@ def create_app(
     def execute_research(job_id: str, body: ResearchCreate) -> None:
         jobs: dict[str, dict[str, Any]] = app.state.research_jobs
         with app.state.research_lock:
+            if jobs[job_id].get("cancel_requested"):
+                jobs[job_id]["status"] = "cancelled"
+                jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
+                persist_job(job_id)
+                return
             jobs[job_id]["status"] = "running"
             jobs[job_id]["started_at"] = datetime.now(UTC).isoformat()
             persist_job(job_id)
@@ -1168,6 +1173,19 @@ def create_app(
             with app.state.research_lock:
                 jobs[job_id]["messages"].append(
                     {"at": datetime.now(UTC).isoformat(), "message": message}
+                )
+                persist_job(job_id)
+
+        def cancelled() -> bool:
+            with app.state.research_lock:
+                return bool(jobs[job_id].get("cancel_requested"))
+
+        def finish_cancelled() -> None:
+            with app.state.research_lock:
+                jobs[job_id]["status"] = "cancelled"
+                jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
+                jobs[job_id]["messages"].append(
+                    {"at": datetime.now(UTC).isoformat(), "message": "Research cancelled"}
                 )
                 persist_job(job_id)
 
@@ -1239,9 +1257,15 @@ def create_app(
                 findings = app.state.research_runner(
                     body.entity_kind, research_question, targets, progress
                 )
+            if cancelled():
+                finish_cancelled()
+                return
             target_ids = {item["entity_id"] for item in targets}
             targets_by_id = {item["entity_id"]: item for item in targets}
             for finding in findings:
+                if cancelled():
+                    finish_cancelled()
+                    return
                 entity_id = str(finding["entity_id"])
                 if entity_id not in target_ids:
                     continue
@@ -1348,6 +1372,7 @@ def create_app(
             "target_entity_ids": [],
             "created_at": datetime.now(UTC).isoformat(),
             "error": None,
+            "cancel_requested": False,
             "messages": [{"at": datetime.now(UTC).isoformat(), "message": "Research job queued"}],
         }
         with app.state.research_lock:
@@ -1392,6 +1417,46 @@ def create_app(
     def research_jobs() -> list[dict[str, Any]]:
         with app.state.research_lock:
             return list(reversed(list(app.state.research_jobs.values())))
+
+    @app.post("/api/research/jobs/{job_id}/cancel")
+    def cancel_research(job_id: str) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None:
+                raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
+            if job["status"] not in {"queued", "running"}:
+                raise EpiqError(
+                    "research_job_finished",
+                    f"Research job is already {job['status']}",
+                )
+            job["cancel_requested"] = True
+            job["messages"].append(
+                {"at": datetime.now(UTC).isoformat(), "message": "Cancellation requested"}
+            )
+            persist_job(job_id)
+            return job
+
+    @app.post("/api/research/jobs/{job_id}/retry", status_code=202)
+    def retry_research(job_id: str) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None:
+                raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
+            if job["status"] not in {"failed", "cancelled"}:
+                raise EpiqError(
+                    "research_job_not_retryable",
+                    "Only failed or cancelled research jobs can be retried; "
+                    f"this job is {job['status']}",
+                )
+            request = ResearchCreate(
+                entity_kind=str(job["entity_kind"]),
+                question=str(job["question_id"]),
+                mode=str(job["mode"]),
+                instructions=str(job.get("instructions") or ""),
+                entity_ids=job.get("requested_entity_ids"),
+                scope=str(job.get("scope") or "column"),
+            )
+        return launch_research(request)
 
     @app.post("/api/research/rows", status_code=202)
     def launch_row_research(body: RowResearchCreate) -> dict[str, Any]:

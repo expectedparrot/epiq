@@ -1255,6 +1255,118 @@ button:hover {
   overflow: auto;
   height: calc(100% - 125px);
 }
+.review-panel {
+  width: 440px;
+}
+.review-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.review-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 8px 5px;
+  color: #737870;
+  font-size: 10px;
+}
+.review-tabs button.active {
+  background: #e9f3ed;
+  color: var(--green);
+}
+.review-tabs span {
+  display: inline-flex;
+  min-width: 17px;
+  height: 17px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 5px;
+  border-radius: 9px;
+  background: #e8e8e2;
+  font: 8px DM Mono;
+}
+.review-tabs button.active span {
+  background: #cee4d7;
+}
+.review-list {
+  height: calc(100% - 190px);
+}
+.review-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 10px;
+}
+.review-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.review-card-head > code,
+.review-card-head > small {
+  max-width: 185px;
+  overflow: hidden;
+  color: #8a8e87;
+  font: 8px DM Mono;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-kind {
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: 8px DM Mono;
+}
+.review-kind.contradictions {
+  background: #f7e8e5;
+  color: #a45144;
+}
+.review-kind.stale,
+.review-kind.calculations {
+  background: #fff1ce;
+  color: #8c6214;
+}
+.review-card h3 {
+  margin: 12px 0 3px;
+  font-size: 15px;
+}
+.review-card p {
+  margin: 0 0 10px;
+  color: #6f756d;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.review-card > small {
+  display: block;
+  margin: 8px 0 12px;
+  color: #858981;
+  font: 9px DM Mono;
+}
+.review-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0 12px;
+}
+.review-values code {
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #f1f1ec;
+  padding: 5px 7px;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-card > button {
+  width: 100%;
+  margin-top: 3px;
+  padding: 8px;
+}
+.review-empty {
+  margin-top: 50px;
+}
 .activity-job {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1290,6 +1402,18 @@ button:hover {
 .job-status.failed {
   background: #f7e8e5;
   color: #a45144;
+}
+.job-status.cancelled {
+  background: #eeeae2;
+  color: #746c5e;
+}
+.job-action {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  padding: 5px 9px;
+  color: #666c65;
+  font-size: 9px;
 }
 .job-progress {
   height: 4px;

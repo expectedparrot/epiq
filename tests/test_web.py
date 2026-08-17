@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Event
 from time import monotonic, sleep
 
 from fastapi.testclient import TestClient
@@ -13,10 +14,64 @@ def wait_for_job(client: TestClient, job_id: str) -> dict:
         job = next(
             item for item in client.get("/api/research/jobs").json() if item["job_id"] == job_id
         )
-        if job["status"] in {"completed", "failed"}:
+        if job["status"] in {"completed", "failed", "cancelled"}:
             return job
         sleep(0.01)
     raise AssertionError("Research job did not finish")
+
+
+def test_research_jobs_can_be_cancelled_without_writing_late_results(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+
+    def research(_kind, _question, targets, _progress=None):
+        started.set()
+        assert release.wait(1)
+        return [
+            {
+                "entity_id": targets[0]["entity_id"],
+                "status": "answered",
+                "value": True,
+                "confidence": "high",
+                "source_title": "Late source",
+                "source_url": "https://example.test/late",
+                "excerpt": "This result arrived after cancellation.",
+            }
+        ]
+
+    client = TestClient(
+        create_app(tmp_path / "cancel.sqlite", tmp_path / "missing-frontend", research)
+    )
+    client.post("/api/project", json={"name": "Cancellation"})
+    entity = client.post("/api/entities", json={"kind": "Person", "name": "Ada"}).json()
+    question = client.post(
+        "/api/questions",
+        json={"name": "is_founder", "subject_kind": "Person", "value_type": "Bool"},
+    ).json()
+    launched = client.post(
+        "/api/research/jobs",
+        json={
+            "entity_kind": "Person",
+            "question": question["question_id"],
+            "entity_ids": [entity["entity_id"]],
+            "scope": "cell",
+        },
+    ).json()
+    assert started.wait(1)
+    cancelled = client.post(f"/api/research/jobs/{launched['job_id']}/cancel")
+    assert cancelled.status_code == 200
+    release.set()
+    job = wait_for_job(client, launched["job_id"])
+    assert job["status"] == "cancelled"
+    assert (
+        client.get("/api/matrix/Person").json()["rows"][0]["cells"]["is_founder"]["state"]
+        == "Unasked"
+    )
+
+    retried = client.post(f"/api/research/jobs/{launched['job_id']}/retry")
+    assert retried.status_code == 202
+    assert retried.json()["job_id"] != launched["job_id"]
+    assert wait_for_job(client, retried.json()["job_id"])["status"] == "completed"
 
 
 def test_entity_suggestions_are_provisional_until_accepted(tmp_path: Path) -> None:

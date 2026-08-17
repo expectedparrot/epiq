@@ -1031,9 +1031,12 @@ The application currently supports:
   human guidance for subsequent agent runs;
 - reversibly removing fields without deleting their historical claims or evidence;
 - launching cell, row, column, and whole-table research with incremental progress indicators;
+- cancelling queued or running research without accepting late results, and retrying failed jobs;
 - finding independent supporting evidence without returning sources already attached to a claim;
 - using AI to propose additional entity rows and typed fields, with checkbox-based human approval;
 - assigning stable, slow-changing, or dynamic temporal policies and surfacing stale evidence;
+- reviewing contradictions, stale evidence, and invalidated calculations from a unified queue;
+- defining calculated fields, materializing them by field, and inspecting typed derivation lineage;
 - sorting any column, filtering rows by text or research status, and preserving view preferences;
 - keyboard navigation with arrows/Tab, Enter or double-click inspection, and clipboard copy;
 - frozen headers and identity columns, draggable column order, resizable columns, and compact or
@@ -1089,6 +1092,9 @@ The principal endpoints are:
 | `GET` | `/api/refresh-plan/{kind}` | Deterministic external-agent research tasks |
 | `GET` | `/api/stale-derivations` | Derived claims with changed dependencies |
 | `GET` | `/api/search` | Search identities, schema, evidence, and claims |
+| `GET` | `/api/research/jobs` | Durable background-research activity |
+| `POST` | `/api/research/jobs/{id}/cancel` | Cooperatively cancel work and discard late results |
+| `POST` | `/api/research/jobs/{id}/retry` | Relaunch a failed or cancelled request |
 | `POST` | `/api/entities` | Add a row |
 | `POST` | `/api/apply` | Atomically converge a declarative project document |
 | `POST` | `/api/entities/{id}/aliases` | Add an alternate stable identity |
@@ -1342,8 +1348,8 @@ Epiq is an executable vertical slice, not yet a production database server. In p
 
 - the web server is intentionally loopback-oriented; there is no authentication or multi-tenancy,
   so it must not be exposed to an untrusted network;
-- spreadsheet interactions do not yet include rectangular selection, copy/paste, formulas, or
-  bulk fill;
+- spreadsheet interactions do not yet include rectangular selection, paste, or bulk fill; formula
+  fields support row-level numeric operations but not arbitrary spreadsheet expressions;
 - there are no web searches, scrapers, or LLM calls inside the CLI;
 - question replacement migrations are not yet exposed as a full CLI workflow;
 - EpiQL implements only question declarations and a narrow count-over-filter derivation;

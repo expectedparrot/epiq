@@ -2,6 +2,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   Cell,
+  DiagnosticCell,
+  DiagnosticResult,
   Matrix,
   Overview,
   ProjectInfo,
@@ -93,6 +95,11 @@ export default function App() {
     missing: number;
   } | null>(null);
   const [showActivity, setShowActivity] = useState(false);
+  const [showReview, setShowReview] = useState(false);
+  const [reviewItems, setReviewItems] = useState<{
+    stale: DiagnosticCell[];
+    contradictions: DiagnosticCell[];
+  }>({ stale: [], contradictions: [] });
   const [challengedClaimId, setChallengedClaimId] = useState<string | null>(
     null,
   );
@@ -171,6 +178,23 @@ export default function App() {
     () => new Set(staleDerivations.map((item) => item.claim_id)),
     [staleDerivations],
   );
+  const loadReviewItems = useCallback(async () => {
+    if (!kind || needsInit) return;
+    try {
+      const [stale, contradictions] = await Promise.all([
+        api<DiagnosticResult>(`/api/stale/${encodeURIComponent(kind)}`),
+        api<DiagnosticResult>(
+          `/api/contradictions/${encodeURIComponent(kind)}`,
+        ),
+      ]);
+      setReviewItems({
+        stale: stale.cells,
+        contradictions: contradictions.cells,
+      });
+    } catch {
+      /* Review diagnostics do not block the spreadsheet. */
+    }
+  }, [kind, needsInit]);
   const loadQuestionChallenges = useCallback(async () => {
     if (needsInit || projectClosed) return;
     try {
@@ -188,6 +212,9 @@ export default function App() {
   useEffect(() => {
     void loadMatrix();
   }, [loadMatrix]);
+  useEffect(() => {
+    void loadReviewItems();
+  }, [loadReviewItems]);
   useEffect(() => {
     void loadQuestionChallenges();
   }, [loadQuestionChallenges, kind]);
@@ -268,6 +295,21 @@ export default function App() {
     setSelection(null);
     await loadOverview();
     await loadMatrix();
+    await loadReviewItems();
+  };
+  const inspectDiagnostic = (item: DiagnosticCell) => {
+    const row = matrix?.rows.find((candidate) => candidate.entity_id === item.entity_id);
+    const question = matrix?.questions.find(
+      (candidate) => candidate.question_id === item.question_id,
+    );
+    if (!row || !question) return;
+    setSelection({
+      entityId: row.entity_id,
+      entityName: row.name,
+      question,
+      cell: row.cells[question.name],
+    });
+    setShowReview(false);
   };
   const projectReady = async () => {
     setKind("");
@@ -344,6 +386,22 @@ export default function App() {
       setError(
         caught instanceof Error ? caught.message : "Could not launch research",
       );
+    }
+  };
+  const cancelResearch = async (jobId: string) => {
+    try {
+      await post(`/api/research/jobs/${jobId}/cancel`, {});
+      setJobs(await api<ResearchJob[]>("/api/research/jobs"));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not cancel research");
+    }
+  };
+  const retryResearch = async (jobId: string) => {
+    try {
+      const job = await post<ResearchJob>(`/api/research/jobs/${jobId}/retry`, {});
+      setJobs((current) => [job, ...current]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not retry research");
     }
   };
   const activeJobs = useMemo(
@@ -757,6 +815,18 @@ export default function App() {
             {jobs.filter(
               (job) => job.status === "queued" || job.status === "running",
             ).length || ""}
+          </button>
+          <button className="ghost" onClick={() => setShowReview(true)}>
+            ◈ Review
+            {reviewItems.stale.length +
+              reviewItems.contradictions.length +
+              staleDerivations.length
+              ? ` ${
+                  reviewItems.stale.length +
+                  reviewItems.contradictions.length +
+                  staleDerivations.length
+                }`
+              : ""}
           </button>
           <button className="ghost" onClick={() => setShowSchemaReview(true)}>
             ⚠ Schema
@@ -1275,6 +1345,24 @@ export default function App() {
             onClose={() => setShowActivity(false)}
             onSuggestion={updateSuggestion}
             onAcceptFields={acceptFieldSuggestions}
+            onCancel={cancelResearch}
+            onRetry={retryResearch}
+          />
+        )}
+        {showReview && (
+          <ReviewPanel
+            stale={reviewItems.stale}
+            contradictions={reviewItems.contradictions}
+            staleDerivations={staleDerivations}
+            onClose={() => setShowReview(false)}
+            onInspect={inspectDiagnostic}
+            onRecalculate={async (item) => {
+              const question = matrix?.questions.find(
+                (candidate) => candidate.name === item.question,
+              );
+              if (question) await materializeFormula(question);
+              await loadReviewItems();
+            }}
           />
         )}
         {showSchemaReview && (
@@ -2360,11 +2448,106 @@ function RowResearchDialog({
   );
 }
 
+function ReviewPanel({
+  stale,
+  contradictions,
+  staleDerivations,
+  onClose,
+  onInspect,
+  onRecalculate,
+}: {
+  stale: DiagnosticCell[];
+  contradictions: DiagnosticCell[];
+  staleDerivations: StaleDerivation[];
+  onClose: () => void;
+  onInspect: (item: DiagnosticCell) => void;
+  onRecalculate: (item: StaleDerivation) => Promise<void>;
+}) {
+  const [tab, setTab] = useState<"contradictions" | "stale" | "calculations">(
+    contradictions.length ? "contradictions" : stale.length ? "stale" : "calculations",
+  );
+  const [busy, setBusy] = useState("");
+  const tabs = [
+    ["contradictions", "Contradictions", contradictions.length],
+    ["stale", "Stale evidence", stale.length],
+    ["calculations", "Calculations", staleDerivations.length],
+  ] as const;
+  const items = tab === "contradictions" ? contradictions : stale;
+  return (
+    <aside className="activity-panel review-panel">
+      <div className="drawer-head">
+        <div className="eyebrow">REVIEW QUEUE</div>
+        <button className="close" onClick={onClose}>×</button>
+        <h2>Needs attention</h2>
+        <p>Inspect disagreements and information that may no longer be current.</p>
+      </div>
+      <div className="review-tabs">
+        {tabs.map(([key, label, count]) => (
+          <button
+            key={key}
+            className={tab === key ? "active" : ""}
+            onClick={() => setTab(key)}
+          >
+            {label}<span>{count}</span>
+          </button>
+        ))}
+      </div>
+      <div className="activity-list review-list">
+        {tab !== "calculations" && items.map((item) => (
+          <article className="review-card" key={`${tab}:${item.entity_id}:${item.question_id}`}>
+            <div className="review-card-head">
+              <span className={`review-kind ${tab}`}>{tab === "stale" ? "STALE" : "CONTESTED"}</span>
+              {item.temporal?.as_of && <small>as of {item.temporal.as_of}</small>}
+            </div>
+            <h3>{item.entity_name}</h3>
+            <p>{item.question.replaceAll("_", " ")}</p>
+            {item.values.length > 0 && (
+              <div className="review-values">
+                {item.values.map((value, index) => <code key={index}>{display(value)}</code>)}
+              </div>
+            )}
+            <button className="primary" onClick={() => onInspect(item)}>
+              Inspect and resolve
+            </button>
+          </article>
+        ))}
+        {tab === "calculations" && staleDerivations.map((item) => (
+          <article className="review-card" key={item.claim_id}>
+            <div className="review-card-head">
+              <span className="review-kind calculations">STALE ƒ</span>
+              <code>{item.claim_id}</code>
+            </div>
+            <h3>{item.subject}</h3>
+            <p>{item.question.replaceAll("_", " ")}</p>
+            <small>{item.reasons.length} changed dependenc{item.reasons.length === 1 ? "y" : "ies"}</small>
+            <button
+              className="primary"
+              disabled={busy === item.claim_id}
+              onClick={async () => {
+                setBusy(item.claim_id);
+                try { await onRecalculate(item); } finally { setBusy(""); }
+              }}
+            >
+              {busy === item.claim_id ? "Calculating…" : "Recalculate field"}
+            </button>
+          </article>
+        ))}
+        {((tab !== "calculations" && items.length === 0) ||
+          (tab === "calculations" && staleDerivations.length === 0)) && (
+          <div className="drawer-empty review-empty"><div>✓</div><p>Nothing in this queue.</p></div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 function ActivityPanel({
   jobs,
   onClose,
   onSuggestion,
   onAcceptFields,
+  onCancel,
+  onRetry,
 }: {
   jobs: ResearchJob[];
   onClose: () => void;
@@ -2374,6 +2557,8 @@ function ActivityPanel({
     action: "accept" | "dismiss",
   ) => Promise<void>;
   onAcceptFields: (jobId: string, suggestionIds: string[]) => Promise<void>;
+  onCancel: (jobId: string) => Promise<void>;
+  onRetry: (jobId: string) => Promise<void>;
 }) {
   return (
     <aside className="activity-panel">
@@ -2433,6 +2618,16 @@ function ActivityPanel({
               ))}
             </ol>
             {job.error && <div className="form-error">{job.error}</div>}
+            {(job.status === "queued" || job.status === "running") && (
+              <button className="job-action" onClick={() => void onCancel(job.job_id)}>
+                Cancel
+              </button>
+            )}
+            {(job.status === "failed" || job.status === "cancelled") && (
+              <button className="job-action" onClick={() => void onRetry(job.job_id)}>
+                Retry
+              </button>
+            )}
             {job.suggestions?.map((suggestion) => (
               <div className="suggestion-card" key={suggestion.suggestion_id}>
                 <div>

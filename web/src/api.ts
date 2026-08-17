@@ -96,7 +96,7 @@ export interface ResearchJob {
   job_id: string;
   entity_kind: string;
   question_id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   total: number;
   completed: number;
   target_entity_ids: string[];
@@ -149,6 +149,23 @@ export interface StaleDerivation {
       | "dependency_inactive"
       | "newer_claim_available";
   }>;
+}
+
+export interface DiagnosticCell {
+  entity_id: string;
+  entity_name: string;
+  question_id: string;
+  question: string;
+  state: CellState;
+  values: unknown[];
+  lineage: Lineage[];
+  temporal?: Cell["temporal"];
+}
+
+export interface DiagnosticResult {
+  entity_kind: string;
+  count: number;
+  cells: DiagnosticCell[];
 }
 
 export class ApiError extends Error {
