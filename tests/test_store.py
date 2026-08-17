@@ -334,6 +334,61 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
     assert store.overview()["project"]["schema_version"] == "10"
 
 
+def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) -> None:
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TABLE evidence_assessments")
+        connection.execute("DROP TABLE claim_validity_ends")
+        connection.execute("UPDATE meta SET value='9' WHERE key='schema_version'")
+    plan = store.migration_plan()
+    assert plan["pending"] == [
+        {"version": 10, "description": "claim validity endings and evidence assessments"}
+    ]
+    backup = tmp_path / "before-v10.sqlite"
+    result = store.migrate(backup)
+    assert result["before"]["current_version"] == 9
+    assert result["after"]["current_version"] == 10
+    assert result["after"]["pending"] == []
+    with sqlite3.connect(backup) as connection:
+        assert (
+            connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+            == "9"
+        )
+
+
+def test_immutable_record_guards_and_doctor_projection_checks(store: Store) -> None:
+    company = store.add_entity("Company", "Acme", {}, "test")
+    store.add_question("active", "Company", "Bool", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/acme", "Acme", "2026-08-17", "Acme is active.", "test"
+    )
+    claim = store.assert_claim(company, "active", True, "2026-08-17", evidence, "test")
+    with (
+        sqlite3.connect(store.path) as connection,
+        pytest.raises(sqlite3.IntegrityError, match="events are immutable"),
+    ):
+        connection.execute("UPDATE events SET actor='tampered' WHERE seq=1")
+    with (
+        sqlite3.connect(store.path) as connection,
+        pytest.raises(sqlite3.IntegrityError, match="evidence is immutable"),
+    ):
+        connection.execute(
+            "UPDATE evidence SET excerpt='tampered' WHERE evidence_id=?", (evidence,)
+        )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DELETE FROM claim_evidence WHERE claim_id=?", (claim,))
+    report = store.doctor()
+    assert report["ok"] is False
+    assert any(item["code"] == "claim_evidence_projection_mismatch" for item in report["findings"])
+
+
+def test_newer_schema_is_rejected_without_mutation(store: Store) -> None:
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE meta SET value='999' WHERE key='schema_version'")
+    with pytest.raises(EpiqError) as error:
+        store.overview()
+    assert error.value.code == "schema_too_new"
+
+
 def test_entity_alias_merge_and_retirement_preserve_identity_history(store: Store) -> None:
     canonical = store.add_entity("Company", "Acme", {}, "test")
     duplicate = store.add_entity("Company", "Acme Incorporated", {}, "test")

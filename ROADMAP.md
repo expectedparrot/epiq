@@ -32,6 +32,9 @@ tables.
   and change-since-prior-report projections. Delta reports record their own hashed baselines.
 - Portable `.epiq` project bundles containing a transactionally consistent SQLite snapshot and a
   versioned SHA-256 manifest, with checksum and SQLite integrity verification on import.
+- Inspectable migration planning, explicit migration with optional pre-migration backup, rejection
+  of newer unsupported schemas, immutable event/evidence/source triggers, and `doctor` checks that
+  validate materialized rows against their originating event types and claim-evidence projections.
 - Durable agent jobs and proposals. Completed jobs survive restarts; interrupted jobs become explicit
   failures rather than remaining permanently “running.”
 - Consistent online SQLite backups and a `doctor` integrity command.
@@ -43,8 +46,9 @@ tables.
 
 ## P1 — hardening for trusted local deployment
 
-- Replace implicit migrations in `connect()` with a migration registry, migration lock, dry-run
-  inspection, and backup-before-major-migration policy.
+- Move the implemented ordered migration plan into independently packaged migration functions and
+  add a cross-process migration lock; explicit `migrate --backup` is available now while normal
+  connections retain compatibility auto-upgrade behavior.
 - Persist an explicit job request envelope sufficient to retry interrupted work safely, with retry,
   cancellation, and bounded retention controls.
 - Add canonical URL normalization and stronger evidence idempotency across tracking URLs.

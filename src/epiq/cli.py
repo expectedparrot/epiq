@@ -84,6 +84,10 @@ def parser() -> argparse.ArgumentParser:
 
     commands.add_parser("doctor", help="Check SQLite integrity and event consistency")
 
+    commands.add_parser("migration-plan", help="Inspect pending migrations without applying them")
+    migrate = commands.add_parser("migrate", help="Apply pending database migrations explicitly")
+    migrate.add_argument("--backup", help="Optional pre-migration SQLite backup path")
+
     backup = commands.add_parser("backup", help="Create a consistent SQLite backup")
     backup.add_argument("--output", required=True)
     backup.add_argument("--force", action="store_true")
@@ -406,6 +410,10 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             f"Database does not exist: {database}",
             "Run: epiq init --name 'My research space' or select another database with epiq use",
         )
+    if args.command == "migration-plan":
+        return store.migration_plan()
+    if args.command == "migrate":
+        return store.migrate(args.backup)
     if args.command == "doctor":
         return store.doctor()
     if args.command == "backup":

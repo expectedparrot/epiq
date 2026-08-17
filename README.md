@@ -1048,6 +1048,19 @@ cross-table references with:
 epiq doctor
 ```
 
+Inspect upgrades before applying them, and take a transactionally consistent snapshot of the old
+schema as part of an explicit migration:
+
+```bash
+epiq migration-plan
+epiq migrate --backup backups/market-before-v10.sqlite
+```
+
+Epiq refuses databases created by a newer unsupported schema version. SQLite triggers prevent
+updates or deletions of events, evidence fragments, and sources even if an application path is
+implemented incorrectly. `doctor` additionally checks materialized entities, questions, evidence,
+and claims against their originating event types and verifies every claim's primary evidence link.
+
 Agents can orient themselves without reading this tutorial or guessing the schema:
 
 ```bash

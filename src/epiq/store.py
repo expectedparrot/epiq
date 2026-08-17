@@ -34,6 +34,19 @@ QUESTION_CHALLENGE_PROBLEMS = {
     "other",
 }
 
+LATEST_SCHEMA_VERSION = 10
+MIGRATION_DESCRIPTIONS = {
+    2: "multi-evidence claims and derivation lineage",
+    3: "source publication time and claim temporal basis",
+    4: "question challenges and supporting evidence",
+    5: "durable operational agent jobs",
+    6: "reversible question visibility",
+    7: "entity aliases, merges, and visibility",
+    8: "durable claim proposal review queue",
+    9: "executable question evolution lineage",
+    10: "claim validity endings and evidence assessments",
+}
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -266,6 +279,19 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_jobs_updated ON agent_jobs(updated_at);
+
+CREATE TRIGGER IF NOT EXISTS immutable_events_update
+BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_events_delete
+BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'events are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_evidence_update
+BEFORE UPDATE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_evidence_delete
+BEFORE DELETE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_sources_update
+BEFORE UPDATE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS immutable_sources_delete
+BEFORE DELETE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
 """
 
 
@@ -340,7 +366,7 @@ class Store:
                 [
                     ("project_id", _id("prj")),
                     ("name", name),
-                    ("schema_version", "10"),
+                    ("schema_version", str(LATEST_SCHEMA_VERSION)),
                     ("created_at", _now()),
                 ],
             )
@@ -355,6 +381,16 @@ class Store:
         if connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claims'"
         ).fetchone():
+            version_row = connection.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            if version_row is not None and int(version_row["value"]) > LATEST_SCHEMA_VERSION:
+                connection.close()
+                raise EpiqError(
+                    "schema_too_new",
+                    f"Database schema v{version_row['value']} is newer than supported "
+                    f"v{LATEST_SCHEMA_VERSION}",
+                )
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS entity_kinds (
@@ -387,7 +423,8 @@ class Store:
                     CHECK(claim_id <> input_claim_id)
                 );
                 INSERT OR IGNORE INTO claim_evidence(claim_id,evidence_id,ordinal,created_seq)
-                SELECT claim_id,evidence_id,0,created_seq FROM claims;
+                SELECT claim_id,evidence_id,0,created_seq FROM claims
+                WHERE (SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version')<2;
                 UPDATE meta SET value='2' WHERE key='schema_version' AND CAST(value AS INTEGER)<2;
                 """
             )
@@ -521,10 +558,68 @@ class Store:
                 );
                 UPDATE meta SET value='10'
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<10;
+                CREATE TRIGGER IF NOT EXISTS immutable_events_update
+                BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS immutable_events_delete
+                BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'events are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS immutable_evidence_update
+                BEFORE UPDATE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS immutable_evidence_delete
+                BEFORE DELETE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence is immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS immutable_sources_update
+                BEFORE UPDATE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
+                CREATE TRIGGER IF NOT EXISTS immutable_sources_delete
+                BEFORE DELETE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
                 """
             )
             connection.commit()
         return connection
+
+    def migration_plan(self) -> dict[str, Any]:
+        """Inspect pending database migrations without applying them."""
+        if not self.path.exists():
+            raise EpiqError("project_not_found", f"Database does not exist: {self.path}")
+        with sqlite3.connect(self.path) as connection:
+            row = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if row is None:
+            raise EpiqError("invalid_project", "Database has no schema_version metadata")
+        current = int(row[0])
+        if current > LATEST_SCHEMA_VERSION:
+            raise EpiqError(
+                "schema_too_new",
+                f"Database schema v{current} is newer than supported v{LATEST_SCHEMA_VERSION}",
+            )
+        pending = [
+            {"version": version, "description": MIGRATION_DESCRIPTIONS[version]}
+            for version in range(current + 1, LATEST_SCHEMA_VERSION + 1)
+        ]
+        return {
+            "database": str(self.path.resolve()),
+            "current_version": current,
+            "target_version": LATEST_SCHEMA_VERSION,
+            "pending": pending,
+            "migration_required": bool(pending),
+        }
+
+    def migrate(self, backup: str | Path | None = None) -> dict[str, Any]:
+        """Apply pending migrations, optionally taking a raw pre-migration SQLite backup."""
+        before = self.migration_plan()
+        backup_path = None
+        if before["migration_required"] and backup is not None:
+            backup_path = Path(backup).expanduser().resolve()
+            if backup_path.exists():
+                raise EpiqError("backup_exists", f"Backup already exists: {backup_path}")
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(self.path) as source, sqlite3.connect(backup_path) as target:
+                source.backup(target)
+        with self.connect():
+            pass
+        after = self.migration_plan()
+        return {
+            "before": before,
+            "after": after,
+            "backup": str(backup_path) if backup_path else None,
+        }
 
     def save_agent_job(self, job: dict[str, Any]) -> None:
         """Persist replaceable execution state; research facts remain event-sourced."""
@@ -610,6 +705,51 @@ class Store:
                 str(row["key"]): str(row["value"])
                 for row in connection.execute("SELECT key,value FROM meta")
             }
+            schema_version = int(project.get("schema_version", "0"))
+            if schema_version != LATEST_SCHEMA_VERSION:
+                findings.append(
+                    {
+                        "code": "schema_version_mismatch",
+                        "message": (
+                            f"Schema is v{schema_version}; expected v{LATEST_SCHEMA_VERSION}"
+                        ),
+                    }
+                )
+            materializations = {
+                "entities": {"entity.create"},
+                "questions": {"question.define"},
+                "evidence": {"evidence.add"},
+                "claims": {"claim.assert", "claim.derive"},
+            }
+            for table, expected_types in materializations.items():
+                placeholders = ",".join("?" for _ in expected_types)
+                bad = connection.execute(
+                    f"""SELECT COUNT(*) FROM {table} item JOIN events ev ON ev.seq=item.created_seq
+                        WHERE ev.event_type NOT IN ({placeholders})""",
+                    tuple(expected_types),
+                ).fetchone()[0]
+                if bad:
+                    findings.append(
+                        {
+                            "code": "materialization_event_mismatch",
+                            "message": f"{table} has {bad} rows backed by the wrong event type",
+                        }
+                    )
+            missing_primary_links = connection.execute(
+                """SELECT COUNT(*) FROM claims c WHERE NOT EXISTS (
+                     SELECT 1 FROM claim_evidence ce
+                     WHERE ce.claim_id=c.claim_id AND ce.evidence_id=c.evidence_id AND ce.ordinal=0
+                   )"""
+            ).fetchone()[0]
+            if missing_primary_links:
+                findings.append(
+                    {
+                        "code": "claim_evidence_projection_mismatch",
+                        "message": (
+                            f"{missing_primary_links} claims lack their primary evidence link"
+                        ),
+                    }
+                )
         return {
             "ok": not findings,
             "database": str(self.path.resolve()),
