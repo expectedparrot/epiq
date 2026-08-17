@@ -2113,7 +2113,11 @@ function QuestionDialog({
             Value type
             <select
               value={type}
-              onChange={(event) => setType(event.target.value)}
+              onChange={(event) => {
+                const nextType = event.target.value;
+                setType(nextType);
+                if (nextType === "Relationship") setMany(true);
+              }}
             >
               <option>String</option>
               <option>URL</option>
