@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .demo import load_patriots
 from .dsl import describe, parse
 from .errors import EpiqError
@@ -22,6 +23,347 @@ from .xlsx import write_xlsx
 
 CONFIG_PATH = Path(".epiq/config.json")
 DEFAULT_DB = Path(".epiq/epiq.sqlite")
+
+CAPABILITY_EXAMPLES = {
+    "init": "epiq init --name 'Market research'",
+    "entity": 'epiq entity Company Acme --attributes \'{"domain":"acme.test"}\'',
+    "question": "epiq question funding --for Company --type 'Quantity[USD]'",
+    "record": (
+        "epiq --actor agent:research record --subject Acme --source-type report "
+        "--source-title 'Funding memo' --retrieved-at 2026-08-17 "
+        "--excerpt '$10m raised.' --valid-from 2026-08-17 --question funding --value 10000000"
+    ),
+    "matrix": "epiq matrix --kind Company",
+    "refresh-plan": "epiq refresh-plan --kind Company --include all",
+    "derive": (
+        "epiq derive --subject Quote-A --question total --operation sum "
+        "--input-cell Quote-A price --input-cell Quote-A shipping --valid-from 2026-08-17"
+    ),
+    "materialize": "epiq materialize --kind Quote --valid-from 2026-08-17",
+    "propagate": (
+        "epiq propagate --subject Acme --via parent_company --question risk "
+        "--to-question inherited_risk --depth 5 --valid-from 2026-08-17"
+    ),
+    "stale-derivations": "epiq stale-derivations --kind Company",
+}
+
+CAPABILITY_RETURNS = {
+    "entity": {"ok": "bool", "entity_id": "string"},
+    "question": {"ok": "bool", "question_id": "string"},
+    "evidence": {"ok": "bool", "source_id": "string", "evidence_id": "string"},
+    "assert": {"ok": "bool", "claim_id": "string"},
+    "record": {
+        "ok": "bool",
+        "source_id": "string",
+        "evidence_id": "string",
+        "claim_ids": "string[]",
+        "answer_count": "integer",
+    },
+    "matrix": {
+        "entity_kind": "string",
+        "questions": "Question[]",
+        "rows": "ProjectedEntity[]",
+    },
+    "refresh-plan": {"count": "integer", "tasks": "ResearchTask[]"},
+    "derive": {
+        "ok": "bool",
+        "claim_id": "string",
+        "operation": "string",
+        "input_claim_ids": "string[]",
+        "parameter_claim_ids": "string[]",
+    },
+    "stale-derivations": {"count": "integer", "stale_derivations": "StaleDerivation[]"},
+}
+
+CAPABILITY_NOTES = {
+    "record": [
+        "Provide exactly one of --excerpt or --excerpt-file.",
+        "Use --question with --value for one subject, repeat --answer for several questions, "
+        "or repeat --cell to write across subjects.",
+        "Non-web evidence may omit --url; source types include personal, model, report, "
+        "and interview.",
+    ],
+    "derive": [
+        "Provide operands with --input-claim and/or --input-cell.",
+        "weighted_avg accepts literal parameters.weights or repeated --weight-cell claims.",
+    ],
+    "question": [
+        "definition is a JSON object; cardinality is one or many.",
+        "formula may contain operation, inputs, parameters, and confidence.",
+    ],
+}
+
+
+def _argument_schema(action: argparse.Action) -> dict[str, Any]:
+    """Convert one argparse action into stable, machine-readable metadata."""
+    result: dict[str, Any] = {
+        "name": action.dest,
+        "flags": action.option_strings,
+        "required": bool(action.required),
+        "help": action.help,
+    }
+    if action.nargs is not None:
+        result["nargs"] = action.nargs
+    if action.choices is not None:
+        result["choices"] = list(action.choices)
+    if action.type is not None:
+        result["value_type"] = getattr(action.type, "__name__", str(action.type))
+    if isinstance(action, argparse._AppendAction):
+        result["repeatable"] = True
+    if action.default not in (None, argparse.SUPPRESS) and isinstance(
+        action.default, str | int | float | bool
+    ):
+        result["default"] = action.default
+    return result
+
+
+def _capabilities(command: str | None = None) -> dict[str, Any]:
+    """Describe the CLI protocol without requiring an initialized project."""
+    root = parser()
+    subparsers = next(
+        action for action in root._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    summaries = {str(action.dest): action.help for action in subparsers._choices_actions}
+    if command is not None and command not in subparsers.choices:
+        raise EpiqError(
+            "command_not_found",
+            f"Unknown command: {command}",
+            "Run `epiq capabilities` to list supported commands.",
+        )
+    names = [command] if command else sorted(subparsers.choices)
+    writes = {
+        "apply",
+        "seed",
+        "entity",
+        "entity-alias",
+        "merge-entities",
+        "retire-entity",
+        "restore-entity",
+        "question",
+        "retire-question",
+        "restore-question",
+        "evolve-question",
+        "evidence",
+        "assess-evidence",
+        "assert",
+        "bulk-assert",
+        "batch-write",
+        "record",
+        "propose-claim",
+        "review-claims",
+        "retract",
+        "end-validity",
+        "supersede",
+        "challenge-question",
+        "resolve-question-challenge",
+        "not-found",
+        "derive-distribution",
+        "derive",
+        "materialize",
+        "propagate",
+    }
+    atomic = {
+        "apply",
+        "seed",
+        "bulk-assert",
+        "batch-write",
+        "record",
+        "review-claims",
+        "supersede",
+        "evolve-question",
+        "derive",
+        "materialize",
+        "propagate",
+    }
+    commands = []
+    for name in names:
+        child = subparsers.choices[name]
+        groups = [
+            {
+                "required": bool(group.required),
+                "members": [action.dest for action in group._group_actions],
+                "rule": "at_most_one" if not group.required else "exactly_one",
+            }
+            for group in child._mutually_exclusive_groups
+        ]
+        item: dict[str, Any] = {
+            "name": name,
+            "summary": summaries.get(name),
+            "mutates_project": name in writes,
+        }
+        if command is not None:
+            item.update(
+                {
+                    "usage": child.format_usage().strip(),
+                    "arguments": [
+                        _argument_schema(action)
+                        for action in child._actions
+                        if action.dest != "help"
+                    ],
+                    "transactional": name in atomic,
+                    "example": CAPABILITY_EXAMPLES.get(name),
+                    "returns": CAPABILITY_RETURNS.get(name, "JSON object or array"),
+                    "constraints": groups,
+                    "notes": CAPABILITY_NOTES.get(name, []),
+                }
+            )
+        commands.append(item)
+    return {
+        "protocol": {"name": "epiq-cli", "version": 1, "epiq_version": __version__},
+        "transport": {
+            "input": "command arguments plus JSON strings/files where declared",
+            "success": "one JSON value on stdout and exit status 0",
+            "error": {
+                "stream": "stderr",
+                "exit_status": 2,
+                "shape": {
+                    "error": {"code": "string", "message": "string", "suggestion": "string|null"}
+                },
+            },
+            "global_options": [
+                _argument_schema(action)
+                for action in root._actions
+                if action.dest not in {"help", "command"}
+            ],
+        },
+        "semantics": {
+            "source_of_truth": (
+                "append-only events and immutable evidence; matrices are projections"
+            ),
+            "writes": "validated and transactionally appended; corrections use retract/supersede",
+            "provenance": "claims require evidence; record atomically creates evidence and claims",
+            "idempotency": (
+                "entity compound identities, evidence content, and identical claims deduplicate"
+            ),
+            "database_resolution": ["--db", "EPIQ_DB", ".epiq/config.json", ".epiq/epiq.sqlite"],
+            "time_fields": {
+                "retrieved_at": "when evidence was obtained",
+                "published_at": "when a source was published, if known",
+                "valid_from": "when the asserted fact became true",
+                "known_at": "transaction-time cutoff for historical projection",
+                "valid_at": "valid-time cutoff for historical projection",
+            },
+            "confidence": "low|medium|high; does not decay automatically",
+            "temporal_basis": "observed|source|unknown",
+        },
+        "value_types": [
+            "String",
+            "Date",
+            "DateTime",
+            "Year",
+            "Interval[Date]",
+            "Int",
+            "Float",
+            "Probability",
+            "Bool",
+            "Json",
+            "Enum[a,b,c]",
+            "Distribution[Float]",
+            "Distribution[Enum[a,b,c]]",
+            "Ref[EntityKind]",
+            "Quantity[unit]",
+        ],
+        "operations": {
+            "derive": ["sum", "avg", "min", "max", "count", "weighted_avg", "linear"],
+            "query": [
+                "eq",
+                "ne",
+                "gt",
+                "gte",
+                "lt",
+                "lte",
+                "contains",
+                "contains_any",
+                "contains_all",
+                "any_ref",
+                "in",
+                "state",
+            ],
+            "dependency_roles": ["operand", "parameter", "path"],
+        },
+        "event_types": [
+            "entity_kind.define",
+            "entity.create",
+            "entity.alias",
+            "entity.merge",
+            "entity.retire",
+            "entity.restore",
+            "question.define",
+            "question.evolve",
+            "question.retire",
+            "question.restore",
+            "question.challenge",
+            "evidence.add",
+            "evidence.assess",
+            "claim.assert",
+            "claim.derive",
+            "claim.evidence_link",
+            "claim.propose",
+            "claim.supersede",
+            "claim.retract",
+            "claim.validity_end",
+            "research.not_found",
+            "report.generated",
+        ],
+        "document_schemas": {
+            "apply": {
+                "project": {"name": "string"},
+                "entity_kinds": "string[]",
+                "entities": "[{kind,name?,attributes?,role?,identity?}]",
+                "questions": "[{name,subject_kind,value_type,definition?}]",
+                "aliases": "[{entity,alias}]",
+                "operations": "batch-write operations[]",
+            },
+            "batch_write_operations": {
+                "evidence.add": "{op,ref?,url?,source_type?,title,retrieved_at,excerpt,...}",
+                "claim.assert": "{op,subject,question,value,valid_from,evidence_refs,...}",
+            },
+            "question_definition": {
+                "label": "string",
+                "cardinality": "one|many",
+                "volatility": "stable|dynamic",
+                "freshness_days": "integer",
+                "research_guidance": "string",
+                "formula": (
+                    "{operation,inputs:string[],parameters?:object,confidence?:low|medium|high}"
+                ),
+            },
+        },
+        "workflows": [
+            ["schema", "context", "gaps", "refresh-plan", "record"],
+            ["stale", "refresh-plan", "record", "delta"],
+            ["contradictions", "dossier", "supersede"],
+            ["stale-derivations", "dossier", "materialize"],
+        ],
+        "common_errors": {
+            "project_not_found": "initialize or select a database",
+            "entity_not_found": "create the entity or use a returned suggestion",
+            "question_not_found": "define the question or inspect schema",
+            "invalid_value": "match the question value_type",
+            "evidence_required": "record evidence before asserting a claim",
+            "ambiguous_propagation": "resolve competing sources or restrict the path",
+        },
+        "commands": commands,
+        "next_actions": [
+            "Run `epiq capabilities --command record` for write syntax.",
+            "Run `epiq schema` and `epiq context` after selecting a project.",
+        ],
+    }
+
+
+def _project_schema(store: Store, kind: str | None = None) -> dict[str, Any]:
+    """Return the authoritative current project schema."""
+    overview = store.overview()
+    kinds = [str(item["kind"]) for item in overview["entity_kinds"]]
+    selected = [kind] if kind else kinds
+    return {
+        "project": overview["project"],
+        "value_types": _capabilities()["value_types"],
+        "tables": [
+            {"entity_kind": selected_kind, "questions": store.matrix(selected_kind)["questions"]}
+            for selected_kind in selected
+        ],
+    }
 
 
 def _emit(value: Any) -> None:
@@ -252,6 +594,16 @@ def parser() -> argparse.ArgumentParser:
 
     import_bundle = commands.add_parser("import-bundle", help="Import a verified project bundle")
     import_bundle.add_argument("bundle")
+
+    capabilities = commands.add_parser(
+        "capabilities", help="Describe the versioned machine-readable CLI protocol"
+    )
+    capabilities.add_argument(
+        "--command", dest="capability_command", help="Return metadata for one command"
+    )
+    capabilities.add_argument(
+        "--include-schema", action="store_true", help="Include current project schema when present"
+    )
 
     schema = commands.add_parser("schema", help="Describe row types and typed research fields")
     schema.add_argument("--kind")
@@ -668,6 +1020,13 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "exists": database.exists(),
         }
     database, database_source = _database(args.db)
+    if args.command == "capabilities":
+        result = _capabilities(args.capability_command)
+        if args.include_schema:
+            result["project_schema"] = (
+                _project_schema(Store(database)) if database.exists() else None
+            )
+        return result
     if args.command == "db":
         return {
             "ok": True,
@@ -715,36 +1074,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         output = store.export_bundle(args.output, args.force)
         return {"ok": True, "database": str(database), "bundle": str(output)}
     if args.command == "schema":
-        overview = store.overview()
-        kinds = [item["kind"] for item in overview["entity_kinds"]]
-        selected = [args.kind] if args.kind else kinds
-        return {
-            "project": overview["project"],
-            "value_types": [
-                "String",
-                "Date",
-                "DateTime",
-                "Year",
-                "Interval[Date]",
-                "Int",
-                "Float",
-                "Probability",
-                "Bool",
-                "Json",
-                "Enum[a,b,c]",
-                "Distribution[Float]",
-                "Distribution[Enum[a,b,c]]",
-                "Ref[EntityKind]",
-                "Quantity[unit]",
-            ],
-            "tables": [
-                {
-                    "entity_kind": kind,
-                    "questions": store.matrix(kind)["questions"],
-                }
-                for kind in selected
-            ],
-        }
+        return _project_schema(store, args.kind)
     if args.command == "context":
         if args.budget < 100:
             raise EpiqError("invalid_budget", "Context budget must be at least 100 tokens")

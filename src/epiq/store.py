@@ -424,6 +424,8 @@ class Store:
                 );
                 INSERT OR IGNORE INTO entity_kinds(kind,created_seq)
                 SELECT kind,MIN(created_seq) FROM entities GROUP BY kind;
+                INSERT OR IGNORE INTO entity_kinds(kind,created_seq)
+                SELECT subject_kind,MIN(created_seq) FROM questions GROUP BY subject_kind;
                 CREATE TABLE IF NOT EXISTS claim_evidence (
                     claim_id TEXT NOT NULL REFERENCES claims(claim_id),
                     evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
@@ -1263,6 +1265,7 @@ class Store:
             "definition": definition,
         }
         seq, _, _ = self._event(connection, "question.define", actor, payload)
+        connection.execute("INSERT OR IGNORE INTO entity_kinds VALUES(?,?)", (subject_kind, seq))
         connection.execute(
             "INSERT INTO questions VALUES(?,?,?,?,?,?,?)",
             (question_id, name, version, subject_kind, value_type, _json(definition), seq),

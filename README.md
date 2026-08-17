@@ -1282,6 +1282,9 @@ and claims against their originating event types and verifies every claim's prim
 Agents can orient themselves without reading this tutorial or guessing the schema:
 
 ```bash
+epiq capabilities
+epiq capabilities --command record
+epiq capabilities --include-schema
 epiq schema --kind Company
 epiq context --kind Company --budget 4000
 epiq gaps --kind Company
@@ -1290,6 +1293,12 @@ epiq contradictions --kind Company
 epiq refresh-plan --kind Company
 epiq search "pricing announcement"
 ```
+
+`capabilities` does not require an initialized database. It returns a versioned protocol declaration
+with every command's arguments, constraints, mutation and transaction behavior, return shape,
+examples, supported types and operations, JSON document shapes, common errors, and recommended
+agent workflows. `--command` narrows the response for a token-efficient tool lookup;
+`--include-schema` combines protocol discovery with the selected project's current schema.
 
 `context` returns current typed cells and confidence-aware lineage, compacting rows when the
 approximate token budget would be exceeded. `gaps` distinguishes cells that have never been asked

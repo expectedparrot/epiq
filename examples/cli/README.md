@@ -63,6 +63,21 @@ Every tutorial has two ways to run it:
 The visible matrix is a projection of those objects. Epiq stores the underlying research history,
 not merely the latest displayed value.
 
+## Let an agent discover the tool
+
+An agent does not need to scrape this documentation. These commands expose the versioned CLI
+protocol and then the selected project's schema and beliefs:
+
+```bash
+epiq capabilities --command record
+epiq capabilities --include-schema
+epiq context --budget 4000
+```
+
+The first command works before a project exists. It describes `record` arguments, constraints,
+transaction behavior, return fields, and a complete example. The latter commands add the live row
+types, questions, values, confidence, and provenance needed for a research session.
+
 ## Build all finished examples
 
 From the repository root:

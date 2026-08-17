@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,58 @@ def test_cli_can_remember_workspace_database(tmp_path: Path, capsys, monkeypatch
     current = json.loads(capsys.readouterr().out)
     assert current["database"] == str(environment_database)
     assert current["source"] == "environment"
+
+
+def test_capabilities_are_machine_readable_without_a_project(tmp_path: Path, capsys) -> None:
+    missing = tmp_path / "missing.sqlite"
+    main(["--db", str(missing), "capabilities", "--command", "record"])
+    result = json.loads(capsys.readouterr().out)
+
+    assert result["protocol"] == {
+        "epiq_version": "0.1.0",
+        "name": "epiq-cli",
+        "version": 1,
+    }
+    command = result["commands"][0]
+    assert command["name"] == "record"
+    assert command["mutates_project"] is True
+    assert command["transactional"] is True
+    assert command["example"].startswith("epiq --actor")
+    assert {item["name"] for item in command["arguments"]} >= {
+        "subject",
+        "source_type",
+        "excerpt",
+        "cell",
+    }
+    assert command["constraints"] == [
+        {"members": ["excerpt", "excerpt_file"], "required": True, "rule": "exactly_one"}
+    ]
+    assert result["document_schemas"]["apply"]["questions"]
+
+
+def test_schema_and_context_include_question_only_kind(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "empty-kind.sqlite"
+    main(["--db", str(database), "init", "--name", "Question first"])
+    capsys.readouterr()
+    main(["--db", str(database), "question", "score", "--for", "Item", "--type", "Float"])
+    capsys.readouterr()
+    # Simulate a pre-fix database where defining a question did not register its empty kind.
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM entity_kinds WHERE kind='Item'")
+
+    main(["--db", str(database), "schema"])
+    schema = json.loads(capsys.readouterr().out)
+    assert schema["tables"][0]["entity_kind"] == "Item"
+    assert schema["tables"][0]["questions"][0]["name"] == "score"
+
+    main(["--db", str(database), "context", "--budget", "1000"])
+    context = json.loads(capsys.readouterr().out)
+    assert context["tables"][0]["entity_kind"] == "Item"
+    assert context["tables"][0]["rows"] == []
+
+    main(["--db", str(database), "capabilities", "--include-schema"])
+    capabilities = json.loads(capsys.readouterr().out)
+    assert capabilities["project_schema"]["tables"][0]["entity_kind"] == "Item"
 
 
 def test_cli_derives_distribution_from_repeated_input_claims(tmp_path: Path, capsys) -> None:
