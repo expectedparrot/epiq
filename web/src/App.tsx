@@ -170,6 +170,10 @@ export default function App() {
     entityId: string;
     questionId: string;
   } | null>(null);
+  const [selectionAnchor, setSelectionAnchor] = useState<{
+    entityId: string;
+    questionId: string;
+  } | null>(null);
   const [clipboardNotice, setClipboardNotice] = useState("");
   const [jobNotice, setJobNotice] = useState("");
   const jobsRef = useRef<ResearchJob[]>([]);
@@ -783,6 +787,37 @@ export default function App() {
       );
     });
   }, [matrix, filterText, statusFilter, sort]);
+  const selectedRange = useMemo(() => {
+    if (!activeGridCell || !selectionAnchor) return null;
+    const anchorRow = displayedRows.findIndex(
+      (row) => row.entity_id === selectionAnchor.entityId,
+    );
+    const activeRow = displayedRows.findIndex(
+      (row) => row.entity_id === activeGridCell.entityId,
+    );
+    const anchorColumn = displayedQuestions.findIndex(
+      (question) => question.question_id === selectionAnchor.questionId,
+    );
+    const activeColumn = displayedQuestions.findIndex(
+      (question) => question.question_id === activeGridCell.questionId,
+    );
+    if (
+      [anchorRow, activeRow, anchorColumn, activeColumn].some(
+        (value) => value < 0,
+      )
+    )
+      return null;
+    return {
+      firstRow: Math.min(anchorRow, activeRow),
+      lastRow: Math.max(anchorRow, activeRow),
+      firstColumn: Math.min(anchorColumn, activeColumn),
+      lastColumn: Math.max(anchorColumn, activeColumn),
+    };
+  }, [activeGridCell, selectionAnchor, displayedRows, displayedQuestions]);
+  const selectedCellCount = selectedRange
+    ? (selectedRange.lastRow - selectedRange.firstRow + 1) *
+      (selectedRange.lastColumn - selectedRange.firstColumn + 1)
+    : 0;
   const saveLayout = (
     nextWrapText: boolean,
     nextOrder: string[],
@@ -924,14 +959,20 @@ export default function App() {
     saveLayout(wrapText, names, columnWidths);
     setDraggedColumn(null);
   };
-  const activateCell = (rowIndex: number, columnIndex: number) => {
+  const activateCell = (
+    rowIndex: number,
+    columnIndex: number,
+    extendSelection = false,
+  ) => {
     const row = displayedRows[rowIndex];
     const question = displayedQuestions[columnIndex];
     if (!row || !question) return;
-    setActiveGridCell({
+    const next = {
       entityId: row.entity_id,
       questionId: question.question_id,
-    });
+    };
+    if (!extendSelection || !selectionAnchor) setSelectionAnchor(next);
+    setActiveGridCell(next);
     requestAnimationFrame(() => {
       document
         .querySelector<HTMLElement>(
@@ -949,8 +990,26 @@ export default function App() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
       event.preventDefault();
       try {
-        await navigator.clipboard.writeText(cellDisplay(cell));
-        setClipboardNotice("Copied cell value");
+        const value = selectedRange
+          ? displayedRows
+              .slice(selectedRange.firstRow, selectedRange.lastRow + 1)
+              .map((row) =>
+                displayedQuestions
+                  .slice(
+                    selectedRange.firstColumn,
+                    selectedRange.lastColumn + 1,
+                  )
+                  .map((question) => cellDisplay(row.cells[question.name]))
+                  .join("\t"),
+              )
+              .join("\n")
+          : cellDisplay(cell);
+        await navigator.clipboard.writeText(value);
+        setClipboardNotice(
+          selectedCellCount > 1
+            ? `Copied ${selectedCellCount} cells as tab-separated values`
+            : "Copied cell value",
+        );
         window.setTimeout(() => setClipboardNotice(""), 1600);
       } catch {
         setError("Clipboard access was unavailable");
@@ -967,6 +1026,7 @@ export default function App() {
     if (event.key === "Escape") {
       setSelection(null);
       setActiveGridCell(null);
+      setSelectionAnchor(null);
       return;
     }
     if (event.key === "Enter") {
@@ -1000,6 +1060,7 @@ export default function App() {
     activateCell(
       Math.max(0, Math.min(displayedRows.length - 1, nextRow)),
       Math.max(0, Math.min(displayedQuestions.length - 1, nextColumn)),
+      event.shiftKey,
     );
   };
 
@@ -1306,6 +1367,9 @@ export default function App() {
                 </span>
               </div>
               <code>{activeSelection.cell.state}</code>
+              {selectedCellCount > 1 && (
+                <code>{selectedCellCount} cells selected</code>
+              )}
               <span className="selection-value">
                 {cellDisplay(activeSelection.cell) || "No value"}
               </span>
@@ -1580,6 +1644,8 @@ export default function App() {
                         </button>
                       </td>
                       {displayedQuestions.map((question) => {
+                        const columnIndex =
+                          displayedQuestions.indexOf(question);
                         const cell = row.cells[question.name];
                         const provisional = provisionalRelationships.filter(
                           (suggestion) =>
@@ -1591,6 +1657,13 @@ export default function App() {
                         );
                         const derivedIsStale = derivedClaims.some((item) =>
                           staleDerivedClaimIds.has(item.claim_id),
+                        );
+                        const isInSelectedRange = Boolean(
+                          selectedRange &&
+                          index >= selectedRange.firstRow &&
+                          index <= selectedRange.lastRow &&
+                          columnIndex >= selectedRange.firstColumn &&
+                          columnIndex <= selectedRange.lastColumn,
                         );
                         return (
                           <td
@@ -1604,26 +1677,33 @@ export default function App() {
                                 ? 0
                                 : -1
                             }
-                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${provisional.length ? "has-provisional" : ""} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
-                            onFocus={() =>
-                              setActiveGridCell({
+                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${provisional.length ? "has-provisional" : ""} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${isInSelectedRange ? "selected-cell" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
+                            onFocus={() => {
+                              const focused = {
                                 entityId: row.entity_id,
                                 questionId: question.question_id,
-                              })
-                            }
+                              };
+                              setActiveGridCell(focused);
+                              setSelectionAnchor(
+                                (current) => current ?? focused,
+                              );
+                            }}
                             onKeyDown={(event) =>
                               void handleCellKey(
                                 event,
                                 index,
-                                displayedQuestions.indexOf(question),
+                                columnIndex,
                                 cell,
                               )
                             }
-                            onClick={() => {
-                              setActiveGridCell({
+                            onClick={(event) => {
+                              const clicked = {
                                 entityId: row.entity_id,
                                 questionId: question.question_id,
-                              });
+                              };
+                              if (!event.shiftKey || !selectionAnchor)
+                                setSelectionAnchor(clicked);
+                              setActiveGridCell(clicked);
                             }}
                             onDoubleClick={() => {
                               setEntitySelection(null);

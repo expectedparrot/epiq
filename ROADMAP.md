@@ -75,8 +75,8 @@ tables.
 
 ## P3 — spreadsheet interaction
 
-- Rectangular selection, copy/paste, keyboard navigation, undo as compensating events, filtering,
-  frozen columns, and saved views.
+- Keyboard navigation, filtering, frozen identity columns, saved views, and rectangular TSV copying
+  are implemented. Provenance-aware paste, bulk fill, and undo as compensating events remain.
 - Spreadsheet review surfaces for the implemented claim queue and existing schema proposals.
 - Formula/derivation builder backed by a broader typed EpiQL rather than opaque spreadsheet formulas.
 - Resumable live job event stream (SSE or WebSocket) with polling as fallback.
