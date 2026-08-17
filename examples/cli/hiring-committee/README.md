@@ -55,7 +55,7 @@ Run the matrix projection:
 epiq matrix --kind Candidate
 ```
 
-Conceptually, the database now projects to this table:
+The CLI returns JSON containing the field definitions and rows. Rendered as a table, it is:
 
 | Candidate | Technical strength (`String`, many) | Interviewer confidence (`Probability`, many) | Recommended role (`Ref[Role]`, many) | Committee recommendation (`Enum`, one) |
 | --- | --- | ---: | --- | --- |
@@ -109,7 +109,11 @@ research write cannot leak into the project.
 
 ## 4. Inspect the populated projection
 
-The same matrix now looks like this:
+```bash
+epiq matrix --kind Candidate
+```
+
+Rendered as a table, the output is:
 
 | Candidate | Technical strength | Interviewer confidence | Recommended role | Committee recommendation |
 | --- | --- | ---: | --- | --- |
@@ -133,7 +137,12 @@ epiq --actor interviewer:liam record \
   --answer technical_strength "Strong systems reasoning; tradeoffs less clearly communicated" \
   --answer interviewer_rating 0.68 \
   --answer recommended_role "Research Engineer"
+```
 
+Like the first `record`, this returns `answer_count: 3`, one new evidence ID, and three new claim
+IDs. Now inspect both projections:
+
+```bash
 epiq matrix --kind Candidate
 epiq dossier "Alex Rivera"
 ```
@@ -179,6 +188,24 @@ epiq claim-proposals
 Replace the placeholder with the `evidence_id` returned by `record`. The proposal is absent from the
 current matrix until a reviewer runs `review-claims` with the returned proposal ID. Rejection also
 remains in the audit history.
+
+`propose-claim` returns a proposal ID and `claim-proposals` shows the pending item without changing
+the matrix:
+
+```json
+{
+  "count": 1,
+  "proposals": [
+    {
+      "entity_name": "Alex Rivera",
+      "question_name": "interviewer_rating",
+      "status": "pending",
+      "value": 0.84,
+      "rationale": "Extracted from the committee packet"
+    }
+  ]
+}
+```
 
 ## 6. Understand disagreement versus contradiction
 

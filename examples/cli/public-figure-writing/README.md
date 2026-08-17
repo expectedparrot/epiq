@@ -19,6 +19,7 @@ epiq use /tmp/writing.sqlite
 epiq init --name "Public writing tutorial"
 epiq entity Person "Ada Example"
 epiq entity Work "Notes on Small Systems"
+epiq entity Work "Scaling Tiny Teams"
 epiq entity Publication "Example Review"
 epiq entity Institution "Example University"
 ```
@@ -49,30 +50,62 @@ epiq question educated_at --for Person \
 `Ref[Person]` is not arbitrary text. Epiq validates that the target exists and is a `Person`, then
 stores its durable ID. `cardinality: many` allows a coauthored work or several institutions.
 
+The two entity kinds project independently:
+
+```bash
+epiq matrix --kind Person
+epiq matrix --kind Work
+```
+
+| Person | Education |
+| --- | --- |
+| Ada Example | Unasked |
+
+| Work | Author | Publication | Publication date |
+| --- | --- | --- | --- |
+| Notes on Small Systems | Unasked | Unasked | Unasked |
+| Scaling Tiny Teams | Unasked | Unasked | Unasked |
+
 ## 3. Source and connect one work
 
 ```bash
-CATALOG_EVIDENCE=$(epiq --actor agent:catalog evidence \
-  --url 'https://example.test/catalog/notes-small-systems' \
-  --title 'Example Review catalog record' --retrieved-at 2026-08-17 \
-  --excerpt 'Notes on Small Systems, by Ada Example, appeared in Example Review on 2024-05-03.' \
-  | jq -r .evidence_id)
+epiq --actor agent:catalog record \
+  --subject "Notes on Small Systems" \
+  --source-type web \
+  --url "https://example.test/catalog/notes-small-systems" \
+  --source-title "Example Review catalog record" \
+  --retrieved-at 2026-08-17 \
+  --excerpt "Notes on Small Systems, by Ada Example, appeared in Example Review on 2024-05-03." \
+  --valid-from 2024-05-03 \
+  --answer author "Ada Example" \
+  --answer published_in "Example Review" \
+  --answer published_date 2024-05-03
 
-epiq --actor agent:catalog assert \
-  --subject "Notes on Small Systems" --question author --value "Ada Example" \
-  --valid-from 2024-05-03 --evidence "$CATALOG_EVIDENCE" --confidence high
-
-epiq --actor agent:catalog assert \
-  --subject "Notes on Small Systems" --question published_in --value "Example Review" \
-  --valid-from 2024-05-03 --evidence "$CATALOG_EVIDENCE" --confidence high
-
-epiq --actor agent:catalog assert \
-  --subject "Notes on Small Systems" --question published_date --value 2024-05-03 \
-  --valid-from 2024-05-03 --evidence "$CATALOG_EVIDENCE" --confidence high
+epiq --actor agent:catalog record \
+  --subject "Scaling Tiny Teams" \
+  --source-type web \
+  --url "https://example.test/catalog/scaling-tiny-teams" \
+  --source-title "Example Review catalog record" \
+  --retrieved-at 2026-08-17 \
+  --excerpt "Scaling Tiny Teams, by Ada Example, appeared in Example Review on 2025-02-12." \
+  --valid-from 2025-02-12 \
+  --answer author "Ada Example" \
+  --answer published_in "Example Review" \
+  --answer published_date 2025-02-12
 ```
 
-One catalog passage supports three distinct claims. Each can later be corroborated, challenged, or
-superseded independently.
+Each command returns `answer_count: 3`, one evidence ID, and three claim IDs. Each catalog passage
+supports three distinct claims that can later be corroborated, challenged, or superseded
+independently.
+
+```bash
+epiq matrix --kind Work
+```
+
+| Work | Author | Publication | Publication date |
+| --- | --- | --- | --- |
+| Notes on Small Systems | Ada Example | Example Review | 2024-05-03 |
+| Scaling Tiny Teams | Ada Example | Example Review | 2025-02-12 |
 
 ## 4. Traverse the relationship in both directions
 
@@ -84,6 +117,32 @@ epiq query --kind Work --where 'author=Ada Example'
 
 `author` lives on each `Work`, so works are incoming relationships from the person's perspective.
 The query accepts a name; Epiq resolves it to the stable entity ID.
+
+The dossier lineage for the first work includes:
+
+| Field | Value | Actor | Evidence |
+| --- | --- | --- | --- |
+| Author | Ada Example | `agent:catalog` | Example Review catalog record |
+| Publication | Example Review | `agent:catalog` | Example Review catalog record |
+| Publication date | 2024-05-03 | `agent:catalog` | Example Review catalog record |
+
+`related` shows the inverse traversal (IDs abbreviated):
+
+```json
+{
+  "count": 2,
+  "direction": "incoming",
+  "entity": {"kind": "Person", "name": "Ada Example"},
+  "via": "author",
+  "edges": [
+    {"direction": "incoming", "question": "author", "from": {"kind": "Work", "name": "Notes on Small Systems"}},
+    {"direction": "incoming", "question": "author", "from": {"kind": "Work", "name": "Scaling Tiny Teams"}}
+  ]
+}
+```
+
+The query returns the same two Work rows and reports `"matched": 2`; unlike `related`, it also
+projects their other fields.
 
 ## 5. See why rows are more extensible than an array cell
 
@@ -97,7 +156,32 @@ epiq question work_type --for Work \
 epiq question topic --for Work --type String \
   --definition '{"label":"Topic","cardinality":"many"}'
 
+epiq --actor agent:catalog record \
+  --subject "Notes on Small Systems" \
+  --source-type web \
+  --url "https://example.test/catalog/notes-small-systems" \
+  --source-title "Example Review catalog record" \
+  --retrieved-at 2026-08-17 \
+  --excerpt "Notes on Small Systems is an essay about software architecture and small teams." \
+  --valid-from 2024-05-03 \
+  --answer work_type essay \
+  --answer topic "Software architecture" \
+  --answer topic "Small teams"
+
 epiq timeline --kind Work --question published_date
+```
+
+The timeline output orders the two dated claims:
+
+```json
+{
+  "entity_kind": "Work",
+  "observations": [
+    {"entity_name": "Notes on Small Systems", "value": "2024-05-03", "as_of": "2024-05-03"},
+    {"entity_name": "Scaling Tiny Teams", "value": "2025-02-12", "as_of": "2025-02-12"}
+  ],
+  "question": "published_date"
+}
 ```
 
 Each work can acquire its own topics, summary, citations, date, and challenge history without

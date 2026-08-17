@@ -45,23 +45,41 @@ epiq question key_risk --for Company \
 `Probability` accepts only values from 0 through 1. `key_risk` is many-valued because two distinct
 risks can both be supported; they should not be treated as contradictory cell values.
 
+The initial projection is:
+
+```bash
+epiq matrix --kind Company
+```
+
+| Company | Total disclosed funding | Lead investor | Investment probability | Key risk |
+| --- | ---: | --- | ---: | --- |
+| Aster Labs | Unasked | Unasked | Unasked | Unasked |
+
 ## 3. Record a public fact
 
 ```bash
-FUNDING_EVIDENCE=$(epiq --actor agent:diligence evidence \
-  --url 'https://example.test/aster/series-a' \
-  --title 'Aster Labs announces Series A' \
+epiq --actor agent:diligence record \
+  --subject "Aster Labs" \
+  --source-type web \
+  --url "https://example.test/aster/series-a" \
+  --source-title "Aster Labs announces Series A" \
   --retrieved-at 2026-08-17 \
-  --excerpt 'Aster Labs has raised $8 million in a round led by Northstar Ventures.' \
-  | jq -r .evidence_id)
+  --excerpt "Aster Labs has raised $8 million in a round led by Northstar Ventures." \
+  --valid-from 2026-06-10 \
+  --answer amount_raised 8000000 \
+  --answer lead_investor "Northstar Ventures"
+```
 
-epiq --actor agent:diligence assert \
-  --subject "Aster Labs" --question amount_raised --value 8000000 \
-  --valid-from 2026-06-10 --evidence "$FUNDING_EVIDENCE" --confidence high
+Output (IDs vary):
 
-epiq --actor agent:diligence assert \
-  --subject "Aster Labs" --question lead_investor --value "Northstar Ventures" \
-  --valid-from 2026-06-10 --evidence "$FUNDING_EVIDENCE" --confidence high
+```json
+{
+  "answer_count": 2,
+  "claim_ids": ["clm_...", "clm_..."],
+  "evidence_id": "evd_...",
+  "ok": true,
+  "source_id": "src_..."
+}
 ```
 
 The reference value is entered by name but stored as the investor's stable entity ID. Run the
@@ -71,26 +89,39 @@ dossier to see both the stored value and its human-readable decoration:
 epiq dossier "Aster Labs"
 ```
 
+The dossier's relevant lineage renders as:
+
+| Field | Value | Actor | Evidence |
+| --- | --- | --- | --- |
+| Total disclosed funding | 8,000,000 USD | `agent:diligence` | Aster Labs announces Series A |
+| Lead investor | Northstar Ventures | `agent:diligence` | Aster Labs announces Series A |
+
 ## 4. Record an internal judgment without inventing a URL
 
 Evidence may be an interview, personal knowledge, a report, or model output:
 
 ```bash
-MEMO_EVIDENCE=$(epiq --actor partner:maya evidence \
-  --type report --title 'Aster diligence memo, v1' --retrieved-at 2026-08-17 \
-  --excerpt 'The team assigns a 0.65 probability of investing. Main risk: customer concentration.' \
-  | jq -r .evidence_id)
-
-epiq --actor partner:maya assert \
-  --subject "Aster Labs" --question investment_probability --value 0.65 \
-  --valid-from 2026-08-17 --evidence "$MEMO_EVIDENCE" --confidence medium
-
-epiq --actor partner:maya assert \
-  --subject "Aster Labs" --question key_risk --value 'Customer concentration' \
-  --valid-from 2026-08-17 --evidence "$MEMO_EVIDENCE" --confidence medium
+epiq --actor partner:maya record \
+  --subject "Aster Labs" \
+  --source-type report \
+  --source-title "Aster diligence memo, v1" \
+  --retrieved-at 2026-08-17 \
+  --excerpt "The team assigns a 0.65 probability of investing. Main risk: customer concentration." \
+  --valid-from 2026-08-17 \
+  --confidence medium \
+  --answer investment_probability 0.65 \
+  --answer key_risk "Customer concentration"
 ```
 
 The evidence has a source type and durable internal locator, but no fake web address.
+
+```bash
+epiq matrix --kind Company
+```
+
+| Company | Total disclosed funding | Lead investor | Investment probability | Key risk |
+| --- | ---: | --- | ---: | --- |
+| Aster Labs | 8,000,000 USD | Northstar Ventures | 0.65 | Customer concentration |
 
 ## 5. Query the current projection
 
@@ -99,21 +130,53 @@ epiq query --kind Company \
   --where 'investment_probability >= 0.60' --where 'amount_raised <= 10000000'
 ```
 
-## 6. Preserve a changed belief
+Abridged output:
 
-If diligence changes the probability, add the new memo and assertion. Then explicitly supersede
-or retract the old claim after review. Epiq does not overwrite the old judgment: transaction time
-records when each version entered the database, while valid time records when it applied.
-
-Use `dossier "Aster Labs"` to find the existing claim ID, then inspect the correction commands:
-
-```bash
-epiq supersede --help
-epiq retract --help
+```json
+{
+  "entity_kind": "Company",
+  "query": {"matched": 1},
+  "rows": [{"name": "Aster Labs"}]
+}
 ```
 
-This explicit correction step is important: a newer assertion may be corroboration, disagreement,
-or replacement, and the storage layer should not guess which one the researcher intended.
+## 6. Preserve a changed belief
+
+Suppose a second memo raises the probability after customer interviews:
+
+```bash
+epiq --actor partner:maya record \
+  --subject "Aster Labs" \
+  --source-type report \
+  --source-title "Aster diligence memo, v2" \
+  --retrieved-at 2026-08-24 \
+  --excerpt "After customer calls, the team raises its investment probability to 0.80." \
+  --valid-from 2026-08-24 \
+  --confidence medium \
+  --question investment_probability \
+  --value 0.80
+
+epiq contradictions --kind Company
+```
+
+Until a reviewer says that v2 replaces v1, the single-valued field is `Contested`:
+
+```json
+{
+  "count": 1,
+  "cells": [
+    {
+      "entity_name": "Aster Labs",
+      "question": "investment_probability",
+      "values": [0.65, 0.8]
+    }
+  ]
+}
+```
+
+Use `epiq dossier "Aster Labs"` to obtain the exact claim IDs, then `supersede` or `retract` the v1
+claim after review. Epiq does not guess that newer means replacement: the two records might instead
+be rival assessments. Both transaction time and valid time remain in history.
 
 ## Finished fixture
 
