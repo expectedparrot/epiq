@@ -539,22 +539,32 @@ button:hover {
   background: transparent;
   color: #777;
 }
-.empty {
-  position: absolute;
-  inset: 80px 0 auto;
+.empty-table-row td {
+  height: 270px;
+  padding: 0 !important;
+  background: var(--paper);
+  vertical-align: middle;
+}
+.empty-table-state {
+  padding: 42px 24px 48px;
   text-align: center;
   color: #73776f;
 }
-.empty > div {
+.empty-table-icon {
   font-size: 35px;
+  line-height: 1;
 }
-.empty h2 {
+.empty-table-state h2 {
   color: var(--ink);
   font-size: 18px;
   margin: 12px 0 5px;
 }
-.empty p {
+.empty-table-state p {
+  margin: 0 0 18px;
   font-size: 13px;
+}
+.empty-table-state button {
+  position: static;
 }
 .error-banner {
   margin: 10px 28px 0;

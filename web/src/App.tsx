@@ -1263,44 +1263,58 @@ export default function App() {
                     </tr>
                   );
                 })}
-                <tr className="add-row">
-                  <td />
-                  <td colSpan={(matrix?.questions.length ?? 0) + 3}>
-                    <button onClick={() => setDialog("entity")}>
-                      ＋ Add row
-                    </button>
-                  </td>
-                </tr>
+                {(matrix?.rows.length ?? 0) > 0 && (
+                  <tr className="add-row">
+                    <td />
+                    <td colSpan={(matrix?.questions.length ?? 0) + 3}>
+                      <button onClick={() => setDialog("entity")}>
+                        ＋ Add row
+                      </button>
+                    </td>
+                  </tr>
+                )}
+                {matrix?.rows.length === 0 && (
+                  <tr className="empty-table-row">
+                    <td colSpan={(matrix?.questions.length ?? 0) + 4}>
+                      <div className="empty-table-state">
+                        <div className="empty-table-icon">▦</div>
+                        <h2>Your research table is empty</h2>
+                        <p>
+                          Add a row, then define fields you want agents or
+                          people to research.
+                        </p>
+                        <button
+                          className="primary"
+                          onClick={() => setDialog("entity")}
+                        >
+                          Add first {kind.toLowerCase()}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {(matrix?.rows.length ?? 0) > 0 &&
+                  displayedRows.length === 0 && (
+                    <tr className="empty-table-row filtered-table-row">
+                      <td colSpan={(matrix?.questions.length ?? 0) + 4}>
+                        <div className="empty-table-state">
+                          <div className="empty-table-icon">⌕</div>
+                          <h2>No rows match this view</h2>
+                          <p>Try a different search or clear the status filter.</p>
+                          <button
+                            onClick={() => {
+                              setFilterText("");
+                              updateStatusFilter("all");
+                            }}
+                          >
+                            Clear filters
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
               </tbody>
             </table>
-            {matrix?.rows.length === 0 && (
-              <div className="empty">
-                <div>▦</div>
-                <h2>Your research table is empty</h2>
-                <p>
-                  Add a row, then define fields you want agents or people to
-                  research.
-                </p>
-                <button className="primary" onClick={() => setDialog("entity")}>
-                  Add first {kind.toLowerCase()}
-                </button>
-              </div>
-            )}
-            {(matrix?.rows.length ?? 0) > 0 && displayedRows.length === 0 && (
-              <div className="empty filtered-empty">
-                <div>⌕</div>
-                <h2>No rows match this view</h2>
-                <p>Try a different search or clear the status filter.</p>
-                <button
-                  onClick={() => {
-                    setFilterText("");
-                    updateStatusFilter("all");
-                  }}
-                >
-                  Clear filters
-                </button>
-              </div>
-            )}
           </div>
         </main>
         {selection && (
