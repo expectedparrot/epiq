@@ -109,6 +109,12 @@ header {
   margin-left: auto;
   color: #999c94;
 }
+.add-table-link {
+  margin-top: 8px;
+  border: 1px dashed #b8bdb5 !important;
+  background: transparent !important;
+  color: #59645d;
+}
 .table-icon {
   font-size: 18px;
 }
@@ -374,6 +380,9 @@ button:hover {
   text-decoration: underline;
   text-decoration-color: #9bc4b1;
   text-underline-offset: 2px;
+}
+.relationship-value {
+  color: #23664c;
 }
 .cell-url {
   display: block;

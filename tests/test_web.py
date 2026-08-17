@@ -313,6 +313,56 @@ def test_schema_revisions_preview_compatibility_and_preserve_answers(tmp_path: P
     assert rejected.json()["error"]["code"] == "incompatible_schema_revision"
 
 
+def test_web_api_creates_tables_and_many_relationships(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path / "relationships.sqlite", tmp_path / "missing"))
+    client.post("/api/project", json={"name": "Papers"})
+    client.post("/api/entity-kinds", json={"kind": "Paper"})
+    client.post("/api/entity-kinds", json={"kind": "Author"})
+    paper = client.post("/api/entities", json={"kind": "Paper", "name": "Market Design"}).json()[
+        "entity_id"
+    ]
+    authors = [
+        client.post("/api/entities", json={"kind": "Author", "name": name}).json()["entity_id"]
+        for name in ["Ada", "Grace"]
+    ]
+    question = client.post(
+        "/api/questions",
+        json={
+            "name": "authors",
+            "subject_kind": "Paper",
+            "value_type": "Ref[Author]",
+            "definition": {"label": "Authors", "cardinality": "many"},
+        },
+    ).json()["question_id"]
+    evidence = client.post(
+        "/api/evidence",
+        json={
+            "source_type": "report",
+            "title": "Paper title page",
+            "retrieved_at": "2026-08-17",
+            "excerpt": "The title page lists Ada and Grace.",
+        },
+    ).json()["evidence_id"]
+    for author in authors:
+        response = client.post(
+            "/api/claims",
+            json={
+                "subject": paper,
+                "question": question,
+                "value": author,
+                "valid_from": "2026-08-17",
+                "evidence_ids": [evidence],
+            },
+        )
+        assert response.status_code == 201
+
+    cell = client.get("/api/matrix/Paper").json()["rows"][0]["cells"]["authors"]
+    assert cell["state"] == "Answered"
+    assert [item["name"] for item in cell["references"]] == ["Grace", "Ada"]
+    related = client.get(f"/api/related/{paper}").json()
+    assert {item["to"]["name"] for item in related["edges"]} == {"Ada", "Grace"}
+
+
 def test_agent_discovery_diagnostics_and_derivation_api(tmp_path: Path) -> None:
     database = tmp_path / "agent-api.sqlite"
     uninitialized = TestClient(create_app(database, tmp_path / "missing-frontend"))

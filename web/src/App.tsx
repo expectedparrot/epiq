@@ -34,6 +34,7 @@ type SortState = {
 };
 type Dialog =
   | "entity"
+  | "entityKind"
   | "question"
   | "claim"
   | "notFound"
@@ -62,6 +63,8 @@ const display = (value: unknown) => {
   return String(value);
 };
 const cellDisplay = (cell: Cell) => {
+  if (cell.references?.length)
+    return cell.references.map((item) => item.name).join(", ");
   if (cell.state === "Answered") return display(cell.value ?? cell.values);
   if (cell.state === "Contested")
     return `${cell.values.length} competing answers`;
@@ -70,7 +73,12 @@ const cellDisplay = (cell: Cell) => {
 };
 
 function parseValue(raw: string, type: string): unknown {
-  if (type === "String" || type === "URL" || type.startsWith("Enum["))
+  if (
+    type === "String" ||
+    type === "URL" ||
+    type.startsWith("Enum[") ||
+    type.startsWith("Ref[")
+  )
     return raw;
   if (type === "Int") return Number.parseInt(raw, 10);
   if (type === "Float" || type === "Probability") return Number(raw);
@@ -908,6 +916,13 @@ export default function App() {
               </small>
             </button>
           ))}
+          <button
+            className="table-link add-table-link"
+            onClick={() => setDialog("entityKind")}
+          >
+            <span className="table-icon">＋</span>
+            Add table
+          </button>
           <div className="sidebar-foot">
             <span className="pulse" />
             SQLite connected
@@ -1477,10 +1492,21 @@ export default function App() {
           onSaved={refresh}
         />
       )}
+      {dialog === "entityKind" && (
+        <EntityKindDialog
+          onClose={() => setDialog(null)}
+          onSaved={async (createdKind) => {
+            setDialog(null);
+            await loadOverview();
+            setKind(createdKind);
+          }}
+        />
+      )}
       {dialog === "question" && (
         <QuestionDialog
           kind={kind}
           questions={matrix?.questions ?? []}
+          entityKinds={kinds.map((item) => item.kind)}
           onClose={() => setDialog(null)}
           onSaved={refresh}
         />
@@ -1843,6 +1869,54 @@ function Modal({
   );
 }
 
+function EntityKindDialog({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: (kind: string) => Promise<void>;
+}) {
+  const [kind, setKind] = useState("");
+  const [error, setError] = useState("");
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      await post("/api/entity-kinds", { kind: kind.trim() });
+      await onSaved(kind.trim());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not add table");
+    }
+  };
+  return (
+    <Modal
+      title="Add table"
+      subtitle="A table defines a reusable entity type. Relationships can link rows across tables."
+      onClose={onClose}
+    >
+      <form onSubmit={(event) => void submit(event)}>
+        <label>
+          Entity type
+          <input
+            value={kind}
+            onChange={(event) => setKind(event.target.value)}
+            placeholder="Author"
+            autoFocus
+            required
+          />
+          <span className="field-hint">
+            Use a singular name such as Author, Company, or Paper.
+          </span>
+        </label>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+          <button className="primary">Add table</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function EntityDialog({
   kind,
   onClose,
@@ -1896,17 +1970,20 @@ function EntityDialog({
 function QuestionDialog({
   kind,
   questions,
+  entityKinds,
   onClose,
   onSaved,
 }: {
   kind: string;
   questions: Question[];
+  entityKinds: string[];
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [label, setLabel] = useState("");
   const [type, setType] = useState("String");
+  const [relationshipTarget, setRelationshipTarget] = useState("");
   const [enumChoices, setEnumChoices] = useState("");
   const [many, setMany] = useState(false);
   const [volatility, setVolatility] = useState("stable");
@@ -1942,7 +2019,15 @@ function QuestionDialog({
         return;
       }
       const valueType =
-        type === "Enum" ? `Enum[${distinctChoices.join(",")}]` : type;
+        type === "Enum"
+          ? `Enum[${distinctChoices.join(",")}]`
+          : type === "Relationship"
+            ? `Ref[${relationshipTarget}]`
+            : type;
+      if (type === "Relationship" && !relationshipTarget) {
+        setError("Choose the table this relationship points to.");
+        return;
+      }
       await post("/api/questions", {
         name,
         subject_kind: kind,
@@ -2015,6 +2100,7 @@ function QuestionDialog({
               <option>Probability</option>
               <option>Bool</option>
               <option value="Enum">Enum · fixed choices</option>
+              <option value="Relationship">Relationship · another table</option>
               <option>Json</option>
               <option>Distribution[Float]</option>
             </select>
@@ -2046,13 +2132,33 @@ function QuestionDialog({
             </span>
           </label>
         )}
+        {type === "Relationship" && (
+          <label>
+            Related table
+            <select
+              value={relationshipTarget}
+              onChange={(event) => setRelationshipTarget(event.target.value)}
+              required
+            >
+              <option value="">Choose a table…</option>
+              {entityKinds.map((entityKind) => (
+                <option key={entityKind}>{entityKind}</option>
+              ))}
+            </select>
+            <span className="field-hint">
+              Each answer will reference a row in this table.
+            </span>
+          </label>
+        )}
         <label className="checkbox">
           <input
             type="checkbox"
             checked={many}
             onChange={(event) => setMany(event.target.checked)}
           />
-          Allow multiple simultaneous answers
+          {type === "Relationship"
+            ? "Allow this row to link to multiple related rows"
+            : "Allow multiple simultaneous answers"}
         </label>
         <label className="checkbox">
           <input
@@ -2326,6 +2432,8 @@ function ClaimDialog({
   onSaved: () => Promise<void>;
 }) {
   const [value, setValue] = useState("");
+  const relationshipTarget = selection.question.value_type.match(/^Ref\[(.+)\]$/)?.[1];
+  const [relatedRows, setRelatedRows] = useState<Matrix["rows"]>([]);
   const [sourceType, setSourceType] = useState("web");
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
@@ -2335,6 +2443,18 @@ function ClaimDialog({
   const enumOptions = selection.question.value_type.startsWith("Enum[")
     ? selection.question.value_type.slice(5, -1).split(",")
     : [];
+  useEffect(() => {
+    if (!relationshipTarget) return;
+    void api<Matrix>(`/api/matrix/${encodeURIComponent(relationshipTarget)}`)
+      .then((related) => setRelatedRows(related.rows))
+      .catch((caught) =>
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : "Could not load related rows",
+        ),
+      );
+  }, [relationshipTarget]);
   const sourceLabels: Record<string, string> = {
     web: "Web page",
     personal: "Personal knowledge",
@@ -2378,7 +2498,35 @@ function ClaimDialog({
       <form onSubmit={(event) => void submit(event)}>
         <label>
           Answer
-          {selection.question.value_type === "Bool" ? (
+          {relationshipTarget ? (
+            <>
+              <select
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                autoFocus
+                required
+              >
+                <option value="">Choose {relationshipTarget}…</option>
+                {relatedRows.map((row) => (
+                  <option key={row.entity_id} value={row.entity_id}>
+                    {row.name}
+                  </option>
+                ))}
+              </select>
+              {relatedRows.length === 0 && (
+                <span className="field-hint">
+                  Add rows to the {relationshipTarget} table before creating
+                  this relationship.
+                </span>
+              )}
+              {selection.question.definition.cardinality === "many" && (
+                <span className="field-hint">
+                  Save one related row at a time; reopen the cell to add
+                  another.
+                </span>
+              )}
+            </>
+          ) : selection.question.value_type === "Bool" ? (
             <select
               value={value}
               onChange={(event) => setValue(event.target.value)}
@@ -3968,6 +4116,13 @@ function CellDrawer({
                 >
                   {claim.value} ↗
                 </a>
+              ) : question.value_type.startsWith("Ref[") &&
+                typeof claim.value === "string" ? (
+                <span className="relationship-value">
+                  ↗ {cell.references?.find(
+                    (reference) => reference.entity_id === claim.value,
+                  )?.name ?? claim.value}
+                </span>
               ) : (
                 display(claim.value)
               )}

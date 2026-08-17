@@ -32,6 +32,7 @@ export interface Cell {
   values: unknown[];
   lineage: Lineage[];
   research?: { task_id: string; query: string; notes: string };
+  references?: Array<{ entity_id: string; kind: string; name: string }>;
   temporal?: {
     volatility: "stable" | "slow" | "dynamic";
     freshness_days?: number | null;

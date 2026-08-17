@@ -1023,7 +1023,10 @@ second source of truth.
 The application currently supports:
 
 - creating a workspace;
+- adding multiple entity tables from the sidebar and switching between them;
 - adding entity rows and typed question columns on the fly;
+- defining one-to-one or one-to-many relationship fields that reference rows in another table;
+- choosing related rows by name while retaining stable entity IDs underneath;
 - entering evidence-backed answers;
 - inspecting confidence, excerpts, source links, and claim tokens in a cell drawer;
 - displaying `Answered`, `Contested`, `NotFound`, and `Unasked` as distinct states;
