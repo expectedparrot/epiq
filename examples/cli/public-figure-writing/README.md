@@ -15,29 +15,33 @@ than claiming to be a researched biography.
 ## 1. Create several kinds of row
 
 ```bash
-epiq --db /tmp/writing.sqlite init --name "Public writing tutorial"
-epiq --db /tmp/writing.sqlite entity Person "Ada Example"
-epiq --db /tmp/writing.sqlite entity Work "Notes on Small Systems"
-epiq --db /tmp/writing.sqlite entity Publication "Example Review"
-epiq --db /tmp/writing.sqlite entity Institution "Example University"
+epiq use /tmp/writing.sqlite
+epiq init --name "Public writing tutorial"
+epiq entity Person "Ada Example"
+epiq entity Work "Notes on Small Systems"
+epiq entity Publication "Example Review"
+epiq entity Institution "Example University"
 ```
+
+`epiq use` stores the active database selection for this workspace. `epiq db` shows what is
+selected, and an explicit `--db` can still override it for a single command.
 
 An entity kind is analogous to a table. The entities are its rows.
 
 ## 2. Define relationship columns
 
 ```bash
-epiq --db /tmp/writing.sqlite question author --for Work --type 'Ref[Person]' \
+epiq question author --for Work --type 'Ref[Person]' \
   --definition '{"label":"Author","cardinality":"many"}'
 
-epiq --db /tmp/writing.sqlite question published_in --for Work \
+epiq question published_in --for Work \
   --type 'Ref[Publication]' \
   --definition '{"label":"Publication","cardinality":"one"}'
 
-epiq --db /tmp/writing.sqlite question published_date --for Work --type Date \
+epiq question published_date --for Work --type Date \
   --definition '{"label":"Publication date","cardinality":"one"}'
 
-epiq --db /tmp/writing.sqlite question educated_at --for Person \
+epiq question educated_at --for Person \
   --type 'Ref[Institution]' \
   --definition '{"label":"Education","cardinality":"many"}'
 ```
@@ -48,21 +52,21 @@ stores its durable ID. `cardinality: many` allows a coauthored work or several i
 ## 3. Source and connect one work
 
 ```bash
-CATALOG_EVIDENCE=$(epiq --db /tmp/writing.sqlite --actor agent:catalog evidence \
+CATALOG_EVIDENCE=$(epiq --actor agent:catalog evidence \
   --url 'https://example.test/catalog/notes-small-systems' \
   --title 'Example Review catalog record' --retrieved-at 2026-08-17 \
   --excerpt 'Notes on Small Systems, by Ada Example, appeared in Example Review on 2024-05-03.' \
   | jq -r .evidence_id)
 
-epiq --db /tmp/writing.sqlite --actor agent:catalog assert \
+epiq --actor agent:catalog assert \
   --subject "Notes on Small Systems" --question author --value "Ada Example" \
   --valid-from 2024-05-03 --evidence "$CATALOG_EVIDENCE" --confidence high
 
-epiq --db /tmp/writing.sqlite --actor agent:catalog assert \
+epiq --actor agent:catalog assert \
   --subject "Notes on Small Systems" --question published_in --value "Example Review" \
   --valid-from 2024-05-03 --evidence "$CATALOG_EVIDENCE" --confidence high
 
-epiq --db /tmp/writing.sqlite --actor agent:catalog assert \
+epiq --actor agent:catalog assert \
   --subject "Notes on Small Systems" --question published_date --value 2024-05-03 \
   --valid-from 2024-05-03 --evidence "$CATALOG_EVIDENCE" --confidence high
 ```
@@ -73,9 +77,9 @@ superseded independently.
 ## 4. Traverse the relationship in both directions
 
 ```bash
-epiq --db /tmp/writing.sqlite dossier "Notes on Small Systems"
-epiq --db /tmp/writing.sqlite related "Ada Example" --via author --direction incoming
-epiq --db /tmp/writing.sqlite query --kind Work --where 'author=Ada Example'
+epiq dossier "Notes on Small Systems"
+epiq related "Ada Example" --via author --direction incoming
+epiq query --kind Work --where 'author=Ada Example'
 ```
 
 `author` lives on each `Work`, so works are incoming relationships from the person's perspective.
@@ -86,14 +90,14 @@ The query accepts a name; Epiq resolves it to the stable entity ID.
 You can now add fields that apply independently to every work:
 
 ```bash
-epiq --db /tmp/writing.sqlite question work_type --for Work \
+epiq question work_type --for Work \
   --type 'Enum[essay,book,talk,paper,other]' \
   --definition '{"label":"Work type","cardinality":"one"}'
 
-epiq --db /tmp/writing.sqlite question topic --for Work --type String \
+epiq question topic --for Work --type String \
   --definition '{"label":"Topic","cardinality":"many"}'
 
-epiq --db /tmp/writing.sqlite timeline --kind Work --question published_date
+epiq timeline --kind Work --question published_date
 ```
 
 Each work can acquire its own topics, summary, citations, date, and challenge history without

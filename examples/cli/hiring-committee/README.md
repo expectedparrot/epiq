@@ -10,11 +10,15 @@ that two reviewers' assessments should not be flattened into one unexplained cel
 ## 1. Create the project and its rows
 
 ```bash
-epiq --db /tmp/hiring.sqlite init --name "Hiring committee tutorial"
-epiq --db /tmp/hiring.sqlite entity Candidate "Alex Rivera"
-epiq --db /tmp/hiring.sqlite entity Candidate "Morgan Lee"
-epiq --db /tmp/hiring.sqlite entity Role "Product Engineer"
+epiq use /tmp/hiring.sqlite
+epiq init --name "Hiring committee tutorial"
+epiq entity Candidate "Alex Rivera"
+epiq entity Candidate "Morgan Lee"
+epiq entity Role "Product Engineer"
 ```
+
+`epiq use` selects this file for the workspace, so the rest of the tutorial does not need to repeat
+`--db`. Use `epiq db` to check the active project.
 
 Candidates and roles are separate entity kinds. That lets a recommendation refer to a real role
 rather than copy a name that may later change.
@@ -22,19 +26,19 @@ rather than copy a name that may later change.
 ## 2. Define columns according to their meaning
 
 ```bash
-epiq --db /tmp/hiring.sqlite question technical_strength --for Candidate \
+epiq question technical_strength --for Candidate \
   --type String \
   --definition '{"label":"Technical strength","cardinality":"many"}'
 
-epiq --db /tmp/hiring.sqlite question interviewer_rating --for Candidate \
+epiq question interviewer_rating --for Candidate \
   --type Probability \
   --definition '{"label":"Interviewer confidence","cardinality":"many"}'
 
-epiq --db /tmp/hiring.sqlite question recommended_role --for Candidate \
+epiq question recommended_role --for Candidate \
   --type 'Ref[Role]' \
   --definition '{"label":"Recommended role","cardinality":"many"}'
 
-epiq --db /tmp/hiring.sqlite question committee_recommendation --for Candidate \
+epiq question committee_recommendation --for Candidate \
   --type 'Enum[hire,no_hire,hold]' \
   --definition '{"label":"Committee recommendation","cardinality":"one"}'
 ```
@@ -47,7 +51,7 @@ The committee outcome is single-valued because it represents the final instituti
 There is no public URL, and Epiq does not require one:
 
 ```bash
-MAYA_NOTES=$(epiq --db /tmp/hiring.sqlite --actor interviewer:maya evidence \
+MAYA_NOTES=$(epiq --actor interviewer:maya evidence \
   --type interview --title 'Alex Rivera technical interview' \
   --retrieved-at 2026-08-17 \
   --excerpt 'Alex decomposed the queueing problem clearly. Confidence: 0.82. Recommended for Product Engineer.' \
@@ -61,16 +65,16 @@ it is a public webpage.
 ## 4. Make several claims from one note
 
 ```bash
-epiq --db /tmp/hiring.sqlite --actor interviewer:maya assert \
+epiq --actor interviewer:maya assert \
   --subject "Alex Rivera" --question technical_strength \
   --value 'Clear decomposition of queueing problems' \
   --valid-from 2026-08-17 --evidence "$MAYA_NOTES" --confidence medium
 
-epiq --db /tmp/hiring.sqlite --actor interviewer:maya assert \
+epiq --actor interviewer:maya assert \
   --subject "Alex Rivera" --question interviewer_rating --value 0.82 \
   --valid-from 2026-08-17 --evidence "$MAYA_NOTES" --confidence medium
 
-epiq --db /tmp/hiring.sqlite --actor interviewer:maya assert \
+epiq --actor interviewer:maya assert \
   --subject "Alex Rivera" --question recommended_role --value "Product Engineer" \
   --valid-from 2026-08-17 --evidence "$MAYA_NOTES" --confidence medium
 ```
@@ -80,8 +84,8 @@ have `cardinality: many`, Epiq retains both reviewers' evidence and values rathe
 them or choosing a winner.
 
 ```bash
-epiq --db /tmp/hiring.sqlite dossier "Alex Rivera"
-epiq --db /tmp/hiring.sqlite matrix --kind Candidate
+epiq dossier "Alex Rivera"
+epiq matrix --kind Candidate
 ```
 
 ## 5. Stage agent output for human review
@@ -89,12 +93,12 @@ epiq --db /tmp/hiring.sqlite matrix --kind Candidate
 An agent need not publish directly. It can propose a type-checked, evidence-backed claim:
 
 ```bash
-epiq --db /tmp/hiring.sqlite --actor agent:screening propose-claim \
+epiq --actor agent:screening propose-claim \
   --subject "Alex Rivera" --question interviewer_rating --value 0.84 \
   --valid-from 2026-08-17 --evidence "$MAYA_NOTES" \
   --rationale 'Extracted from the committee packet'
 
-epiq --db /tmp/hiring.sqlite claim-proposals
+epiq claim-proposals
 ```
 
 The proposal is absent from the current matrix until a reviewer runs `review-claims` with the
@@ -107,7 +111,7 @@ values for the single-valued `committee_recommendation` field indicate a contrad
 explicit review:
 
 ```bash
-epiq --db /tmp/hiring.sqlite contradictions
+epiq contradictions
 ```
 
 Modeling cardinality correctly is more important than forcing every domain into one-cell semantics.

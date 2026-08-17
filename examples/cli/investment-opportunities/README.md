@@ -9,10 +9,14 @@ All companies and assessments below are synthetic.
 ## 1. Model companies and investors as different kinds of entity
 
 ```bash
-epiq --db /tmp/investments.sqlite init --name "Investment pipeline tutorial"
-epiq --db /tmp/investments.sqlite entity Company "Aster Labs"
-epiq --db /tmp/investments.sqlite entity Investor "Northstar Ventures"
+epiq use /tmp/investments.sqlite
+epiq init --name "Investment pipeline tutorial"
+epiq entity Company "Aster Labs"
+epiq entity Investor "Northstar Ventures"
 ```
+
+`epiq use` selects the database for subsequent commands in this workspace. Run `epiq db` whenever
+you want to confirm the active project.
 
 Why not store the investor as plain text? Because a reference preserves identity. `Northstar`, an
 alias, and its durable entity ID can all resolve to the same investor, and the investor can later
@@ -21,19 +25,19 @@ have its own fields.
 ## 2. Define facts, judgments, and a relationship
 
 ```bash
-epiq --db /tmp/investments.sqlite question amount_raised --for Company \
+epiq question amount_raised --for Company \
   --type 'Quantity[USD]' \
   --definition '{"label":"Total disclosed funding","cardinality":"one","freshness_days":90}'
 
-epiq --db /tmp/investments.sqlite question lead_investor --for Company \
+epiq question lead_investor --for Company \
   --type 'Ref[Investor]' \
   --definition '{"label":"Lead investor","cardinality":"one"}'
 
-epiq --db /tmp/investments.sqlite question investment_probability --for Company \
+epiq question investment_probability --for Company \
   --type Probability \
   --definition '{"label":"Current probability of investing","cardinality":"one"}'
 
-epiq --db /tmp/investments.sqlite question key_risk --for Company \
+epiq question key_risk --for Company \
   --type String \
   --definition '{"label":"Key risk","cardinality":"many"}'
 ```
@@ -44,18 +48,18 @@ risks can both be supported; they should not be treated as contradictory cell va
 ## 3. Record a public fact
 
 ```bash
-FUNDING_EVIDENCE=$(epiq --db /tmp/investments.sqlite --actor agent:diligence evidence \
+FUNDING_EVIDENCE=$(epiq --actor agent:diligence evidence \
   --url 'https://example.test/aster/series-a' \
   --title 'Aster Labs announces Series A' \
   --retrieved-at 2026-08-17 \
   --excerpt 'Aster Labs has raised $8 million in a round led by Northstar Ventures.' \
   | jq -r .evidence_id)
 
-epiq --db /tmp/investments.sqlite --actor agent:diligence assert \
+epiq --actor agent:diligence assert \
   --subject "Aster Labs" --question amount_raised --value 8000000 \
   --valid-from 2026-06-10 --evidence "$FUNDING_EVIDENCE" --confidence high
 
-epiq --db /tmp/investments.sqlite --actor agent:diligence assert \
+epiq --actor agent:diligence assert \
   --subject "Aster Labs" --question lead_investor --value "Northstar Ventures" \
   --valid-from 2026-06-10 --evidence "$FUNDING_EVIDENCE" --confidence high
 ```
@@ -64,7 +68,7 @@ The reference value is entered by name but stored as the investor's stable entit
 dossier to see both the stored value and its human-readable decoration:
 
 ```bash
-epiq --db /tmp/investments.sqlite dossier "Aster Labs"
+epiq dossier "Aster Labs"
 ```
 
 ## 4. Record an internal judgment without inventing a URL
@@ -72,16 +76,16 @@ epiq --db /tmp/investments.sqlite dossier "Aster Labs"
 Evidence may be an interview, personal knowledge, a report, or model output:
 
 ```bash
-MEMO_EVIDENCE=$(epiq --db /tmp/investments.sqlite --actor partner:maya evidence \
+MEMO_EVIDENCE=$(epiq --actor partner:maya evidence \
   --type report --title 'Aster diligence memo, v1' --retrieved-at 2026-08-17 \
   --excerpt 'The team assigns a 0.65 probability of investing. Main risk: customer concentration.' \
   | jq -r .evidence_id)
 
-epiq --db /tmp/investments.sqlite --actor partner:maya assert \
+epiq --actor partner:maya assert \
   --subject "Aster Labs" --question investment_probability --value 0.65 \
   --valid-from 2026-08-17 --evidence "$MEMO_EVIDENCE" --confidence medium
 
-epiq --db /tmp/investments.sqlite --actor partner:maya assert \
+epiq --actor partner:maya assert \
   --subject "Aster Labs" --question key_risk --value 'Customer concentration' \
   --valid-from 2026-08-17 --evidence "$MEMO_EVIDENCE" --confidence medium
 ```
@@ -91,7 +95,7 @@ The evidence has a source type and durable internal locator, but no fake web add
 ## 5. Query the current projection
 
 ```bash
-epiq --db /tmp/investments.sqlite query --kind Company \
+epiq query --kind Company \
   --where 'investment_probability >= 0.60' --where 'amount_raised <= 10000000'
 ```
 
@@ -104,8 +108,8 @@ records when each version entered the database, while valid time records when it
 Use `dossier "Aster Labs"` to find the existing claim ID, then inspect the correction commands:
 
 ```bash
-epiq --db /tmp/investments.sqlite supersede --help
-epiq --db /tmp/investments.sqlite retract --help
+epiq supersede --help
+epiq retract --help
 ```
 
 This explicit correction step is important: a newer assertion may be corroboration, disagreement,

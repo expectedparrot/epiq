@@ -6,23 +6,25 @@ believe it.
 
 This tutorial uses synthetic companies and sources so it can be run safely offline.
 
-## 1. Create an empty project
+## 1. Select a database and create an empty project
 
-Pass `--db` explicitly while learning so it is always clear which file a command changes:
+Select the database once for this workspace. Later commands automatically use it:
 
 ```bash
-epiq --db /tmp/competitors.sqlite init --name "Competitor tutorial"
+epiq use /tmp/competitors.sqlite
+epiq init --name "Competitor tutorial"
 ```
 
-An Epiq project is one SQLite file. `init` creates its event ledger and materialized tables.
+`epiq use` writes the selection to `.epiq/config.json`; `epiq db` shows the current selection. An
+Epiq project is one SQLite file. `init` creates its event ledger and materialized tables.
 
 ## 2. Add rows
 
 Products are the things being compared, so they are entities of kind `Product`:
 
 ```bash
-epiq --db /tmp/competitors.sqlite entity Product "Acorn Interview"
-epiq --db /tmp/competitors.sqlite entity Product "Beacon Research"
+epiq entity Product "Acorn Interview"
+epiq entity Product "Beacon Research"
 ```
 
 The returned `entity_id` is durable. Later commands may use either that ID or the exact name.
@@ -32,11 +34,11 @@ The returned `entity_id` is durable. Later commands may use either that ID or th
 In Epiq, a column is a typed question about an entity kind:
 
 ```bash
-epiq --db /tmp/competitors.sqlite question api_access --for Product \
+epiq question api_access --for Product \
   --type 'Enum[none,limited,full]' \
   --definition '{"label":"API access","cardinality":"one","volatility":"medium"}'
 
-epiq --db /tmp/competitors.sqlite question starting_price --for Product \
+epiq question starting_price --for Product \
   --type 'Quantity[USD/month]' \
   --definition '{"label":"Starting monthly price","cardinality":"one","freshness_days":30}'
 ```
@@ -47,7 +49,7 @@ The type prevents an agent from writing `maybe` into `api_access` or `cheap` int
 At this point the matrix has two rows and two columns, but its cells are `Unasked`:
 
 ```bash
-epiq --db /tmp/competitors.sqlite matrix --kind Product
+epiq matrix --kind Product
 ```
 
 ## 4. Store a source passage
@@ -56,7 +58,7 @@ Epiq does not fetch this URL. A human or research agent has already read the pag
 specific passage it relied upon:
 
 ```bash
-PRICE_EVIDENCE=$(epiq --db /tmp/competitors.sqlite --actor agent:market-research evidence \
+PRICE_EVIDENCE=$(epiq --actor agent:market-research evidence \
   --url 'https://example.test/acorn/pricing' \
   --title 'Acorn Interview pricing' \
   --retrieved-at 2026-08-17 \
@@ -70,11 +72,11 @@ because one passage can support several claims, and several passages can support
 ## 5. Turn the passage into typed answers
 
 ```bash
-epiq --db /tmp/competitors.sqlite --actor agent:market-research assert \
+epiq --actor agent:market-research assert \
   --subject "Acorn Interview" --question starting_price --value 249 \
   --valid-from 2026-08-17 --evidence "$PRICE_EVIDENCE" --confidence high
 
-epiq --db /tmp/competitors.sqlite --actor agent:market-research assert \
+epiq --actor agent:market-research assert \
   --subject "Acorn Interview" --question api_access --value limited \
   --valid-from 2026-08-17 --evidence "$PRICE_EVIDENCE" --confidence high
 ```
@@ -85,8 +87,8 @@ it. `--actor` records who performed the interpretation.
 Now inspect both the spreadsheet-like view and the record behind one row:
 
 ```bash
-epiq --db /tmp/competitors.sqlite matrix --kind Product
-epiq --db /tmp/competitors.sqlite dossier "Acorn Interview"
+epiq matrix --kind Product
+epiq dossier "Acorn Interview"
 ```
 
 The matrix is convenient; the dossier teaches you what Epiq actually stored: the typed value,
@@ -95,7 +97,7 @@ confidence, observation date, evidence excerpt, source, and actor.
 ## 6. Ask a database question
 
 ```bash
-epiq --db /tmp/competitors.sqlite query --kind Product \
+epiq query --kind Product \
   --where 'starting_price <= 300' --where 'api_access != none'
 ```
 
@@ -107,15 +109,15 @@ A field such as `has_sso: Bool` often hides a category error: SSO might be stand
 enterprise-only, or unavailable. Epiq versions schema changes instead of rewriting history:
 
 ```bash
-epiq --db /tmp/competitors.sqlite question has_sso --for Product --type Bool \
+epiq question has_sso --for Product --type Bool \
   --definition '{"label":"Has SSO"}'
 
-epiq --db /tmp/competitors.sqlite evolve-question has_sso \
+epiq evolve-question has_sso \
   --relationship replaces \
   --reason "Boolean cannot distinguish how SSO is offered" \
   --replacement '{"name":"sso_availability","value_type":"Enum[standard,paid_addon,enterprise_only,unavailable,unknown]","definition":{"label":"SSO availability"}}'
 
-epiq --db /tmp/competitors.sqlite question-lineage has_sso
+epiq question-lineage has_sso
 ```
 
 Old Boolean claims remain auditable. They are not silently coerced into the new enum.
