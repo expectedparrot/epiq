@@ -668,6 +668,17 @@ export default function App() {
       ),
     [jobs],
   );
+  const activeSelection = useMemo(() => {
+    if (!activeGridCell || !matrix) return null;
+    const row = matrix.rows.find(
+      (candidate) => candidate.entity_id === activeGridCell.entityId,
+    );
+    const question = matrix.questions.find(
+      (candidate) => candidate.question_id === activeGridCell.questionId,
+    );
+    if (!row || !question) return null;
+    return { row, question, cell: row.cells[question.name] };
+  }, [activeGridCell, matrix]);
   const tableWidth =
     132 +
     (columnWidths.__entity__ ?? 220) +
@@ -902,34 +913,35 @@ export default function App() {
         </div>
         <div className="project-title">
           <button onClick={() => setShowProjects(true)}>
-            {overview?.project.name ?? "Untitled project"}⌄
+            <span>{overview?.project.name ?? "Untitled project"}</span>
+            <small>/ {kind}</small>
+            <i>⌄</i>
           </button>
         </div>
         <div className="header-actions">
           <button className="ghost" onClick={() => setShowActivity(true)}>
-            ✦ Activity{" "}
+            <span>✦ Activity</span>
             {jobs.filter(
               (job) => job.status === "queued" || job.status === "running",
-            ).length || ""}
+            ).length ? (
+              <strong className="action-count active">
+                {jobs.filter(
+                  (job) => job.status === "queued" || job.status === "running",
+                ).length}
+              </strong>
+            ) : null}
           </button>
           <button className="ghost" onClick={() => setShowReview(true)}>
-            ◈ Review
+            <span>◈ Review</span>
             {reviewItems.stale.length +
               reviewItems.contradictions.length +
               staleDerivations.length
-              ? ` ${
+              ? <strong className="action-count">{
                   reviewItems.stale.length +
                   reviewItems.contradictions.length +
                   staleDerivations.length
-                }`
+                }</strong>
               : ""}
-          </button>
-          <button className="ghost" onClick={() => setShowSchemaReview(true)}>
-            ⚠ Schema
-            {questionChallenges.length ? ` ${questionChallenges.length}` : ""}
-          </button>
-          <button className="ghost" onClick={() => void refresh()}>
-            ↻ Refresh
           </button>
           <details className="export-menu">
             <summary>↓ Export</summary>
@@ -964,9 +976,28 @@ export default function App() {
               </a>
             </div>
           </details>
-          <button className="ghost" onClick={() => void closeProject()}>
-            Close project
-          </button>
+          <details className="export-menu workspace-menu">
+            <summary aria-label="Workspace menu">•••</summary>
+            <div>
+              <b>Workspace</b>
+              <button onClick={() => setShowSchemaReview(true)}>
+                <span>Schema review</span>
+                <small>{questionChallenges.length || "No"} open challenge{questionChallenges.length === 1 ? "" : "s"}</small>
+              </button>
+              <button onClick={() => void refresh()}>
+                <span>Refresh workspace</span>
+                <small>Reload current data and diagnostics</small>
+              </button>
+              <button onClick={() => setShowProjects(true)}>
+                <span>Open another project</span>
+                <small>Browse local Epiq databases</small>
+              </button>
+              <button className="destructive-menu-action" onClick={() => void closeProject()}>
+                <span>Close project</span>
+                <small>Return to the project browser</small>
+              </button>
+            </div>
+          </details>
         </div>
       </header>
       <div className="workspace">
@@ -1012,27 +1043,31 @@ export default function App() {
               </p>
             </div>
             <div className="actions">
-              <button
-                onClick={toggleRows}
-                title="Toggle wrapped and fixed-height rows"
-              >
-                {wrapText ? "▤ Fixed rows" : "↵ Wrap text"}
-              </button>
               <button onClick={() => setDialog("question")}>
                 ＋ Add field
-              </button>
-              <button onClick={() => setDialog("suggestFields")}>
-                ✦ Suggest fields
-              </button>
-              <button
-                className="ai-populate-button"
-                onClick={() => setDialog("suggestEntities")}
-              >
-                ✦ Find rows with AI
               </button>
               <button className="primary" onClick={() => setDialog("entity")}>
                 ＋ Add {kind.toLowerCase()}
               </button>
+              <details className="export-menu table-action-menu">
+                <summary>Table actions ⌄</summary>
+                <div>
+                  <b>Research</b>
+                  <button onClick={() => setDialog("suggestEntities")}>
+                    <span>✦ Find rows with AI</span>
+                    <small>Describe entities for an agent to propose</small>
+                  </button>
+                  <button onClick={() => setDialog("suggestFields")}>
+                    <span>✦ Suggest fields</span>
+                    <small>Propose complementary research questions</small>
+                  </button>
+                  <b>View</b>
+                  <button onClick={toggleRows}>
+                    <span>{wrapText ? "Use fixed-height rows" : "Wrap long text"}</span>
+                    <small>Change this table's saved display density</small>
+                  </button>
+                </div>
+              </details>
             </div>
           </div>
           <div className="view-toolbar" aria-label="Table view controls">
@@ -1070,27 +1105,30 @@ export default function App() {
             <span className="keyboard-hint">
               Arrows move · Enter inspects · ⌘/Ctrl+C copies
             </span>
-            {clipboardNotice && (
-              <span className="clipboard-notice">✓ {clipboardNotice}</span>
-            )}
-            {jobNotice && (
-              <div className="job-notice">
-                <span>{jobNotice}</span>
-                <button
-                  onClick={() => {
-                    setShowActivity(true);
-                    setJobNotice("");
-                  }}
-                >
-                  View details
-                </button>
-              </div>
-            )}
           </div>
-          {error && (
-            <div className="error-banner">
-              {error}
-              <button onClick={() => setError("")}>×</button>
+          {activeSelection && (
+            <div className="selection-bar" aria-label="Current cell selection">
+              <span className={`selection-state state-${activeSelection.cell.state.toLowerCase()}`} />
+              <div>
+                <small>SELECTED CELL</small>
+                <b>{activeSelection.row.name}</b>
+                <i>·</i>
+                <span>{String(activeSelection.question.definition.label ?? activeSelection.question.name)}</span>
+              </div>
+              <code>{activeSelection.cell.state}</code>
+              <span className="selection-value">{cellDisplay(activeSelection.cell) || "No value"}</span>
+              <button
+                onClick={() =>
+                  setSelection({
+                    entityId: activeSelection.row.entity_id,
+                    entityName: activeSelection.row.name,
+                    question: activeSelection.question,
+                    cell: activeSelection.cell,
+                  })
+                }
+              >
+                Inspect
+              </button>
             </div>
           )}
           <div className="grid-wrap">
@@ -1308,13 +1346,14 @@ export default function App() {
                       <td
                         className="entity-name"
                         title="Double-click to inspect relationships and back-references"
-                        onDoubleClick={() =>
+                        onDoubleClick={() => {
+                          setSelection(null);
                           setEntitySelection({
                             entityId: row.entity_id,
                             entityName: row.name,
                             entityKind: kind,
                           })
-                        }
+                        }}
                       >
                         <div className="entity-inner">
                           <span>{row.name}</span>
@@ -1387,6 +1426,7 @@ export default function App() {
                               });
                             }}
                             onDoubleClick={() => {
+                              setEntitySelection(null);
                               setSelection({
                                 entityId: row.entity_id,
                                 entityName: row.name,
@@ -1507,6 +1547,22 @@ export default function App() {
                   )}
               </tbody>
             </table>
+          </div>
+          <div className="toast-region" aria-live="polite" aria-atomic="true">
+            {clipboardNotice && (
+              <div className="app-toast success"><span>✓</span><p>{clipboardNotice}</p></div>
+            )}
+            {jobNotice && (
+              <div className="app-toast research">
+                <span>✦</span><p>{jobNotice}</p>
+                <button onClick={() => { setShowActivity(true); setJobNotice(""); }}>View</button>
+              </div>
+            )}
+            {error && (
+              <div className="app-toast error" role="alert">
+                <span>!</span><p>{error}</p><button aria-label="Dismiss error" onClick={() => setError("")}>×</button>
+              </div>
+            )}
           </div>
         </main>
         {selection && (
@@ -4259,7 +4315,7 @@ function EntityRelationshipsDrawer({
   return (
     <aside className="drawer entity-relationships-drawer">
       <div className="drawer-head">
-        <div className="eyebrow">ROW INSPECTOR</div>
+        <div className="eyebrow inspector-eyebrow">INSPECTOR <span>ROW</span></div>
         <button className="close" onClick={onClose}>×</button>
         <h2>{selection.entityName}</h2>
         <p>{selection.entityKind} · relationship graph</p>
@@ -4363,7 +4419,7 @@ function CellDrawer({
   return (
     <aside className="drawer">
       <div className="drawer-head">
-        <div className="eyebrow">CELL INSPECTOR</div>
+        <div className="eyebrow inspector-eyebrow">INSPECTOR <span>CELL</span></div>
         <button className="close" onClick={onClose}>
           ×
         </button>
