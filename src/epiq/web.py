@@ -41,6 +41,12 @@ class ProjectOpen(BaseModel):
     project_id: str
 
 
+class RowQueryCreate(BaseModel):
+    predicates: list[dict[str, Any]] = Field(default_factory=list)
+    known_at: str | None = None
+    valid_at: str | None = None
+
+
 class EntityCreate(BaseModel):
     kind: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -462,6 +468,21 @@ def create_app(
             background=BackgroundTask(output.unlink, missing_ok=True),
         )
 
+    @app.get("/api/export/project.epiq")
+    def export_project_bundle() -> FileResponse:
+        project_store = store()
+        with NamedTemporaryFile(prefix="epiq-project-", suffix=".epiq", delete=False) as temporary:
+            output = Path(temporary.name)
+        project_store.export_bundle(output, overwrite=True)
+        project_name = str(project_store.overview()["project"].get("name", "epiq-project"))
+        filename = f"{re.sub(r'[^a-zA-Z0-9._-]+', '-', project_name).strip('-')}.epiq"
+        return FileResponse(
+            output,
+            filename=filename or "epiq-project.epiq",
+            media_type="application/zip",
+            background=BackgroundTask(output.unlink, missing_ok=True),
+        )
+
     @app.get("/api/matrix/{entity_kind}")
     def matrix(
         entity_kind: str,
@@ -470,6 +491,22 @@ def create_app(
         valid_at: str | None = None,
     ) -> dict[str, Any]:
         return store().matrix(entity_kind, questions, known_at, valid_at)
+
+    @app.post("/api/query/{entity_kind}")
+    def query_rows(entity_kind: str, body: RowQueryCreate) -> dict[str, Any]:
+        return store().query_rows(entity_kind, body.predicates, body.known_at, body.valid_at)
+
+    @app.get("/api/reports/dossier/{entity}")
+    def dossier(entity: str) -> dict[str, Any]:
+        return store().dossier(entity)
+
+    @app.get("/api/reports/timeline/{entity_kind}/{question}")
+    def timeline(entity_kind: str, question: str) -> dict[str, Any]:
+        return store().timeline(entity_kind, question)
+
+    @app.post("/api/reports/delta")
+    def delta_report(since_seq: int | None = None, actor: str = "human:web") -> dict[str, Any]:
+        return store().delta_report(actor, since_seq)
 
     @app.get("/api/export/{entity_kind}.xlsx")
     def export_xlsx(entity_kind: str) -> FileResponse:

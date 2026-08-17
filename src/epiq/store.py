@@ -10,6 +10,7 @@ import sqlite3
 import tempfile
 import unicodedata
 import uuid
+import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -644,6 +645,83 @@ class Store:
             temporary.unlink(missing_ok=True)
             raise
         return output
+
+    def export_bundle(self, destination: str | Path, overwrite: bool = False) -> Path:
+        """Export a portable database plus a checksummed manifest in a deterministic ZIP."""
+        output = Path(destination).expanduser().resolve()
+        if output.exists() and not overwrite:
+            raise EpiqError("bundle_exists", f"Bundle already exists: {output}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="epiq-bundle-") as directory:
+            database = Path(directory) / "project.sqlite"
+            self.backup(database)
+            database_bytes = database.read_bytes()
+            overview = self.overview()
+            manifest = {
+                "format": "epiq-project-bundle",
+                "version": 1,
+                "project": overview["project"],
+                "files": {
+                    "project.sqlite": {
+                        "sha256": hashlib.sha256(database_bytes).hexdigest(),
+                        "bytes": len(database_bytes),
+                    }
+                },
+            }
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            try:
+                with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr("manifest.json", json.dumps(manifest, indent=2) + "\n")
+                    archive.writestr("project.sqlite", database_bytes)
+                os.replace(temporary, output)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return output
+
+    @classmethod
+    def import_bundle(cls, bundle: str | Path, destination: str | Path) -> Store:
+        """Verify and install a portable bundle at a new database path."""
+        source = Path(bundle).expanduser().resolve()
+        output = Path(destination).expanduser().resolve()
+        if output.exists():
+            raise EpiqError("project_exists", f"Database already exists: {output}")
+        try:
+            with zipfile.ZipFile(source) as archive:
+                names = set(archive.namelist())
+                if names != {"manifest.json", "project.sqlite"}:
+                    raise EpiqError("invalid_bundle", "Bundle contains unexpected or missing files")
+                manifest = json.loads(archive.read("manifest.json"))
+                database_bytes = archive.read("project.sqlite")
+        except (zipfile.BadZipFile, KeyError, json.JSONDecodeError) as error:
+            raise EpiqError("invalid_bundle", f"Cannot read Epiq bundle: {error}") from error
+        if manifest.get("format") != "epiq-project-bundle" or manifest.get("version") != 1:
+            raise EpiqError("invalid_bundle", "Unsupported Epiq bundle format or version")
+        expected = manifest.get("files", {}).get("project.sqlite", {})
+        digest = hashlib.sha256(database_bytes).hexdigest()
+        if expected.get("sha256") != digest or expected.get("bytes") != len(database_bytes):
+            raise EpiqError(
+                "bundle_checksum_mismatch", "project.sqlite checksum does not match manifest"
+            )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            temporary.write_bytes(database_bytes)
+            with sqlite3.connect(temporary) as connection:
+                integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
+            if integrity != "ok":
+                raise EpiqError("bundle_integrity_error", integrity)
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return cls(output)
 
     def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
         """Search identities, schema, evidence, and claim values with stable result shapes."""
@@ -2430,6 +2508,178 @@ class Store:
             "valid_at": valid_at,
             "questions": projected_questions,
             "rows": rows,
+        }
+
+    def query_rows(
+        self,
+        entity_kind: str,
+        predicates: list[dict[str, Any]],
+        known_at: str | None = None,
+        valid_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Filter a projection with a small, structured, agent-safe predicate language."""
+        projection = self.matrix(entity_kind, known_at=known_at, valid_at=valid_at)
+        question_names = {str(item["name"]) for item in projection["questions"]}
+        allowed = {"eq", "ne", "gt", "gte", "lt", "lte", "contains", "in", "state"}
+        for index, predicate in enumerate(predicates):
+            question = str(predicate.get("question", ""))
+            operation = str(predicate.get("op", "eq"))
+            if question not in question_names:
+                raise EpiqError("question_not_found", f"Query predicate {index}: {question}")
+            if operation not in allowed:
+                raise EpiqError("invalid_query_operator", f"Query predicate {index}: {operation}")
+            if "value" not in predicate:
+                raise EpiqError("invalid_query_predicate", f"Query predicate {index} needs value")
+
+        def matches(row: dict[str, Any], predicate: dict[str, Any]) -> bool:
+            cell = row["cells"][str(predicate["question"])]
+            operation = str(predicate.get("op", "eq"))
+            expected = predicate["value"]
+            if operation == "state":
+                return cell["state"] == expected
+            actual = cell.get("value")
+            if actual is None and cell.get("values"):
+                actual = cell["values"]
+            try:
+                if operation == "eq":
+                    return actual == expected
+                if operation == "ne":
+                    return actual != expected
+                if operation == "gt":
+                    return actual > expected
+                if operation == "gte":
+                    return actual >= expected
+                if operation == "lt":
+                    return actual < expected
+                if operation == "lte":
+                    return actual <= expected
+                if operation == "contains":
+                    return expected in actual
+                if operation == "in":
+                    return actual in expected
+            except (TypeError, ValueError):
+                return False
+            return False
+
+        projection["rows"] = [
+            row
+            for row in projection["rows"]
+            if all(matches(row, predicate) for predicate in predicates)
+        ]
+        projection["query"] = {"predicates": predicates, "matched": len(projection["rows"])}
+        return projection
+
+    def dossier(self, entity: str) -> dict[str, Any]:
+        """Return a current profile plus all directly attributable history."""
+        with self.connect() as connection:
+            resolved = self._resolve_entity(connection, entity)
+            cluster = self._entity_cluster(connection, str(resolved["entity_id"]))
+        projection = self.matrix(str(resolved["kind"]))
+        row = next(
+            item for item in projection["rows"] if item["entity_id"] == resolved["entity_id"]
+        )
+        identifiers = set(cluster)
+        claim_ids = {
+            str(item["claim_id"])
+            for cell in row["cells"].values()
+            for item in cell.get("lineage", [])
+        }
+        events = [
+            event
+            for event in self.history()
+            if identifiers.intersection(self._strings(event["payload"]))
+            or claim_ids.intersection(self._strings(event["payload"]))
+        ]
+        return {
+            "entity_kind": str(resolved["kind"]),
+            "entity": row,
+            "questions": projection["questions"],
+            "events": events,
+        }
+
+    @staticmethod
+    def _strings(value: Any) -> set[str]:
+        if isinstance(value, str):
+            return {value}
+        if isinstance(value, dict):
+            return set().union(*(Store._strings(item) for item in value.values()), set())
+        if isinstance(value, list):
+            return set().union(*(Store._strings(item) for item in value), set())
+        return set()
+
+    def timeline(self, entity_kind: str, question: str) -> dict[str, Any]:
+        """Flatten one field across entities into valid-time chronological observations."""
+        projection = self.matrix(entity_kind, [question])
+        indexed: dict[str, dict[str, Any]] = {}
+        for row in projection["rows"]:
+            for lineage in row["cells"][question].get("lineage", []):
+                item = indexed.setdefault(
+                    str(lineage["claim_id"]),
+                    {
+                        "entity_id": row["entity_id"],
+                        "entity_name": row["name"],
+                        "claim_id": lineage["claim_id"],
+                        "value": lineage["value"],
+                        "as_of": lineage["as_of"],
+                        "confidence": lineage["confidence"],
+                        "sources": [],
+                    },
+                )
+                item["sources"].append({"evidence_id": lineage["evidence_id"], **lineage["source"]})
+        observations = list(indexed.values())
+        observations.sort(key=lambda item: (item["as_of"], item["entity_name"], item["claim_id"]))
+        return {"entity_kind": entity_kind, "question": question, "observations": observations}
+
+    def delta_report(self, actor: str, since_seq: int | None = None) -> dict[str, Any]:
+        """Return events since an explicit or prior-report baseline and record the new baseline."""
+        with self.transaction() as connection:
+            if since_seq is None:
+                prior = connection.execute(
+                    """SELECT payload_json FROM events
+                       WHERE event_type='report.generated' ORDER BY seq DESC LIMIT 1"""
+                ).fetchone()
+                since_seq = int(json.loads(prior["payload_json"])["through_seq"]) if prior else 0
+            if since_seq < 0:
+                raise EpiqError("invalid_baseline", "Delta baseline cannot be negative")
+            through_seq = int(
+                connection.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0]
+            )
+            rows = connection.execute(
+                """SELECT * FROM events WHERE seq>? AND seq<=? AND event_type<>'report.generated'
+                   ORDER BY seq""",
+                (since_seq, through_seq),
+            ).fetchall()
+            events = [
+                {
+                    "seq": int(row["seq"]),
+                    "event_id": str(row["event_id"]),
+                    "event_type": str(row["event_type"]),
+                    "recorded_at": str(row["recorded_at"]),
+                    "actor": str(row["actor"]),
+                    "payload": json.loads(str(row["payload_json"])),
+                }
+                for row in rows
+            ]
+            digest = hashlib.sha256(_json(events).encode()).hexdigest()
+            _, report_id, _ = self._event(
+                connection,
+                "report.generated",
+                actor,
+                {
+                    "report_type": "delta",
+                    "since_seq": since_seq,
+                    "through_seq": through_seq,
+                    "event_count": len(events),
+                    "content_sha256": digest,
+                },
+            )
+        return {
+            "report_id": report_id,
+            "since_seq": since_seq,
+            "through_seq": through_seq,
+            "event_count": len(events),
+            "content_sha256": digest,
+            "events": events,
         }
 
     @staticmethod

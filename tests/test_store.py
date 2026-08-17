@@ -1,4 +1,5 @@
 import sqlite3
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -70,9 +71,7 @@ def test_validity_end_expires_valid_time_without_retracting_claim(store: Store) 
     )
     claim = store.assert_claim(company, "ceo", "Ada", "2024-01-01", evidence, "test")
     learned_at = next(
-        event["recorded_at"]
-        for event in store.history()
-        if event["event_type"] == "claim.assert"
+        event["recorded_at"] for event in store.history() if event["event_type"] == "claim.assert"
     )
     store.end_claim_validity(claim, "2025-01-01", "Leadership changed", "reviewer")
     assert store.history()[-1]["event_type"] == "claim.validity_end"
@@ -109,6 +108,52 @@ def test_evidence_assessment_surfaces_quality_without_erasing_lineage(store: Sto
         "disputed",
         "accepted",
     ]
+
+
+def test_structured_query_dossier_timeline_and_delta_reports(store: Store) -> None:
+    acme = store.add_entity("Company", "Acme", {}, "test")
+    beta = store.add_entity("Company", "Beta", {}, "test")
+    store.add_question("funding", "Company", "Quantity[USD]", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/funding", "Funding", "2026-08-17", "Acme raised $12m.", "test"
+    )
+    claim = store.assert_claim(acme, "funding", 12_000_000, "2026-01-01", evidence, "test")
+    result = store.query_rows(
+        "Company", [{"question": "funding", "op": "gte", "value": 10_000_000}]
+    )
+    assert [row["entity_id"] for row in result["rows"]] == [acme]
+    assert beta not in {row["entity_id"] for row in result["rows"]}
+    dossier = store.dossier("Acme")
+    assert dossier["entity"]["cells"]["funding"]["value"] == 12_000_000
+    assert any(event["payload"].get("claim_id") == claim for event in dossier["events"])
+    timeline = store.timeline("Company", "funding")
+    assert timeline["observations"][0]["claim_id"] == claim
+    assert timeline["observations"][0]["sources"][0]["evidence_id"] == evidence
+
+    first_delta = store.delta_report("reporter")
+    assert first_delta["event_count"] > 0
+    second_delta = store.delta_report("reporter")
+    assert second_delta["event_count"] == 0
+    store.add_entity("Company", "Gamma", {}, "test")
+    third_delta = store.delta_report("reporter")
+    assert [event["event_type"] for event in third_delta["events"]] == ["entity.create"]
+
+
+def test_project_bundle_round_trip_and_checksum_rejection(store: Store, tmp_path: Path) -> None:
+    store.add_entity("Company", "Acme", {}, "test")
+    bundle = store.export_bundle(tmp_path / "project.epiq")
+    restored = Store.import_bundle(bundle, tmp_path / "restored.sqlite")
+    assert restored.overview() == store.overview()
+    assert restored.matrix("Company")["rows"][0]["name"] == "Acme"
+    assert restored.doctor()["ok"] is True
+
+    corrupt = tmp_path / "corrupt.epiq"
+    with zipfile.ZipFile(bundle) as source, zipfile.ZipFile(corrupt, "w") as target:
+        target.writestr("manifest.json", source.read("manifest.json"))
+        target.writestr("project.sqlite", source.read("project.sqlite") + b"corrupt")
+    with pytest.raises(EpiqError) as error:
+        Store.import_bundle(corrupt, tmp_path / "bad.sqlite")
+    assert error.value.code == "bundle_checksum_mismatch"
 
 
 def test_question_challenge_captures_category_error_and_resolution(store: Store) -> None:

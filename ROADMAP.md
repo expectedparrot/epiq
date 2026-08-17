@@ -28,6 +28,10 @@ tables.
   successor definitions, predecessor/successor lineage, and reversible old-field retirement.
 - Bitemporal fact endings (`claim.validity_end`) that preserve what the database believed before it
   learned a fact had ceased, plus append-only evidence quality assessments surfaced in lineage.
+- Structured, composable row predicates and deterministic entity dossier, cross-entity timeline,
+  and change-since-prior-report projections. Delta reports record their own hashed baselines.
+- Portable `.epiq` project bundles containing a transactionally consistent SQLite snapshot and a
+  versioned SHA-256 manifest, with checksum and SQLite integrity verification on import.
 - Durable agent jobs and proposals. Completed jobs survive restarts; interrupted jobs become explicit
   failures rather than remaining permanently “running.”
 - Consistent online SQLite backups and a `doctor` integrity command.
@@ -45,8 +49,7 @@ tables.
   cancellation, and bounded retention controls.
 - Add canonical URL normalization and stronger evidence idempotency across tracking URLs.
 - Add explicit idempotency keys to every write API and CLI command.
-- Add atomic project import/export containing the database, retained captures, and a manifest with
-  checksums.
+- Extend implemented project bundles when retained full-text captures are added.
 - Add structured application logging with secret redaction and request/job correlation IDs.
 - Add configurable API authentication and origin policy before any non-loopback deployment.
 
@@ -54,7 +57,7 @@ tables.
 
 - Search over entity names, question definitions, claim values, evidence titles, and excerpts using
   SQLite FTS5.
-- Deterministic contradiction reports, entity dossiers, timelines, and change-since-baseline reports.
+- Render the implemented dossier, timeline, contradiction, and delta data as polished report files.
 - Rich duplicate suggestions and interactive merge review on top of the implemented alias/merge
   primitives.
 - A schema evolution assistant UI that turns challenge proposals into the implemented evolution

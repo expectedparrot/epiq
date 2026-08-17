@@ -984,6 +984,11 @@ The principal endpoints are:
 | `POST` | `/api/field-suggestions/jobs` | Propose additional typed fields for review |
 | `GET` | `/api/export/{kind}.xlsx` | Download a provenance-aware Excel workbook |
 | `GET` | `/api/export/project.sqlite` | Download a consistent project backup |
+| `GET` | `/api/export/project.epiq` | Download a checksummed portable project bundle |
+| `POST` | `/api/query/{kind}` | Filter rows with structured predicates |
+| `GET` | `/api/reports/dossier/{entity}` | Read a sourced entity profile and history |
+| `GET` | `/api/reports/timeline/{kind}/{question}` | Read a chronological field view |
+| `POST` | `/api/reports/delta` | Record and read changes since a report baseline |
 | `GET` | `/api/history` | Read the append-only event history |
 
 ### What a cell edit means
@@ -992,6 +997,41 @@ The UI deliberately does not implement silent replacement. Adding an answer crea
 different active answer already exists in a single-valued field, the cell becomes `Contested` and
 both claims remain inspectable. Retracting a claim closes its transaction-time interval but leaves
 the original assertion and evidence in history.
+
+## Querying, reports, and portable projects
+
+`query` accepts repeatable JSON predicates. Predicates are combined with logical AND and support
+`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `in`, and `state`:
+
+```bash
+epiq query --kind Company \
+  --where '{"question":"funding","op":"gte","value":10000000}' \
+  --where '{"question":"status","op":"eq","value":"active"}'
+```
+
+The same valid-time and transaction-time controls as `matrix` are available through `--valid-at`
+and `--known-at`. Reports are deterministic JSON rather than prose invented by the CLI:
+
+```bash
+epiq dossier "Acme"
+epiq timeline --kind Company --question funding
+epiq delta                       # changes since the prior delta report
+epiq delta --since-seq 120       # explicit event baseline
+```
+
+Each delta records a `report.generated` event containing its through-sequence and content hash, so
+the next delta has a durable baseline.
+
+For transfer or archival, export a `.epiq` bundle rather than copying a live WAL database:
+
+```bash
+epiq export-bundle --output backups/market.epiq
+epiq --db restored/market.sqlite import-bundle backups/market.epiq
+```
+
+The bundle contains an online SQLite backup and a versioned manifest with byte length and SHA-256
+checksum. Import refuses unexpected files, checksum mismatches, corrupt SQLite, and existing
+destinations.
 
 ## Operational safety and agent handoff
 

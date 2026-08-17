@@ -88,6 +88,13 @@ def parser() -> argparse.ArgumentParser:
     backup.add_argument("--output", required=True)
     backup.add_argument("--force", action="store_true")
 
+    export_bundle = commands.add_parser("export-bundle", help="Export a checksummed project bundle")
+    export_bundle.add_argument("--output", required=True)
+    export_bundle.add_argument("--force", action="store_true")
+
+    import_bundle = commands.add_parser("import-bundle", help="Import a verified project bundle")
+    import_bundle.add_argument("bundle")
+
     schema = commands.add_parser("schema", help="Describe row types and typed research fields")
     schema.add_argument("--kind")
 
@@ -311,6 +318,22 @@ def parser() -> argparse.ArgumentParser:
     matrix.add_argument("--known-at")
     matrix.add_argument("--valid-at")
 
+    query = commands.add_parser("query", help="Filter rows with structured JSON predicates")
+    query.add_argument("--kind", required=True)
+    query.add_argument("--where", action="append", default=[], help="JSON predicate")
+    query.add_argument("--known-at")
+    query.add_argument("--valid-at")
+
+    dossier = commands.add_parser("dossier", help="Generate a sourced entity dossier")
+    dossier.add_argument("entity")
+
+    timeline = commands.add_parser("timeline", help="Generate a field timeline across a table")
+    timeline.add_argument("--kind", required=True)
+    timeline.add_argument("--question", required=True)
+
+    delta = commands.add_parser("delta", help="Report events since a baseline or prior delta")
+    delta.add_argument("--since-seq", type=int)
+
     excel = commands.add_parser("export-xlsx", help="Export a projection as an Excel workbook")
     excel.add_argument("--kind", required=True)
     excel.add_argument("--output", required=True)
@@ -374,6 +397,9 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "init":
         store.initialize(args.name)
         return {"ok": True, "database": str(database), "name": args.name}
+    if args.command == "import-bundle":
+        imported = Store.import_bundle(args.bundle, database)
+        return {"ok": True, "database": str(database), "project": imported.overview()["project"]}
     if not database.exists():
         raise EpiqError(
             "project_not_found",
@@ -385,6 +411,9 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "backup":
         output = store.backup(args.output, args.force)
         return {"ok": True, "database": str(database), "backup": str(output)}
+    if args.command == "export-bundle":
+        output = store.export_bundle(args.output, args.force)
+        return {"ok": True, "database": str(database), "bundle": str(output)}
     if args.command == "schema":
         overview = store.overview()
         kinds = [item["kind"] for item in overview["entity_kinds"]]
@@ -710,6 +739,15 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "matrix":
         questions = args.questions.split(",") if args.questions else None
         return store.matrix(args.kind, questions, args.known_at, args.valid_at)
+    if args.command == "query":
+        predicates = [_attributes(item) for item in args.where]
+        return store.query_rows(args.kind, predicates, args.known_at, args.valid_at)
+    if args.command == "dossier":
+        return store.dossier(args.entity)
+    if args.command == "timeline":
+        return store.timeline(args.kind, args.question)
+    if args.command == "delta":
+        return store.delta_report(args.actor, args.since_seq)
     if args.command == "export-xlsx":
         questions = args.questions.split(",") if args.questions else None
         matrix = store.matrix(args.kind, questions, args.known_at, args.valid_at)
