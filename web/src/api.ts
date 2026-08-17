@@ -112,6 +112,10 @@ export interface ResearchJob {
     | "suggest_fields";
   messages: Array<{ at: string; message: string }>;
   error?: string | null;
+  outcome?: "changed" | "no_change" | null;
+  written?: number;
+  no_result?: number;
+  rejected?: number;
   suggestions?: EntitySuggestion[];
   field_suggestions?: FieldSuggestion[];
 }

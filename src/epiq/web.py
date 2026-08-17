@@ -1338,6 +1338,7 @@ def create_app(
                 entity_id = str(finding["entity_id"])
                 if entity_id not in target_ids:
                     continue
+                result_message = f"Finished research for {targets_by_id[entity_id]['name']}"
                 if finding["status"] == "not_found" and body.mode in {
                     "fill_missing",
                     "retry_not_found",
@@ -1349,6 +1350,21 @@ def create_app(
                         str(finding.get("notes") or "No sufficient evidence found."),
                         "agent:codex",
                     )
+                    with app.state.research_lock:
+                        jobs[job_id]["no_result"] += 1
+                        jobs[job_id]["written"] += 1
+                    result_message = (
+                        f"No sufficient evidence found for {targets_by_id[entity_id]['name']}"
+                    )
+                elif finding["status"] == "not_found" and body.mode == "add_evidence":
+                    with app.state.research_lock:
+                        jobs[job_id]["no_result"] += 1
+                    result_message = (
+                        "No additional independent source found for "
+                        f"{targets_by_id[entity_id]['name']}"
+                    )
+                    if finding.get("notes"):
+                        result_message += f": {str(finding['notes']).strip()[:500]}"
                 elif finding["status"] == "answered":
                     source_type = str(finding.get("source_type") or "web")
                     source_url = finding.get("source_url") or f"urn:epiq:{source_type}"
@@ -1362,6 +1378,7 @@ def create_app(
                         if normalized_url in existing_urls:
                             with app.state.research_lock:
                                 jobs[job_id]["completed"] += 1
+                                jobs[job_id]["rejected"] += 1
                                 persist_job(job_id)
                             progress(
                                 f"Rejected duplicate source for {target['name']}: {source_url}"
@@ -1406,12 +1423,15 @@ def create_app(
                             else "unknown"
                         ),
                     )
+                    with app.state.research_lock:
+                        jobs[job_id]["written"] += 1
                 with app.state.research_lock:
                     jobs[job_id]["completed"] += 1
                     persist_job(job_id)
-                progress(f"Finished research for {targets_by_id[entity_id]['name']}")
+                progress(result_message)
             with app.state.research_lock:
                 jobs[job_id]["status"] = "completed"
+                jobs[job_id]["outcome"] = "changed" if jobs[job_id]["written"] else "no_change"
                 jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
                 persist_job(job_id)
         except Exception as error:
@@ -1442,6 +1462,10 @@ def create_app(
             "created_at": datetime.now(UTC).isoformat(),
             "error": None,
             "cancel_requested": False,
+            "written": 0,
+            "no_result": 0,
+            "rejected": 0,
+            "outcome": None,
             "messages": [{"at": datetime.now(UTC).isoformat(), "message": "Research job queued"}],
         }
         with app.state.research_lock:

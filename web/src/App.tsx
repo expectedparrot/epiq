@@ -1,4 +1,11 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ApiError,
   Cell,
@@ -130,6 +137,8 @@ export default function App() {
     questionId: string;
   } | null>(null);
   const [clipboardNotice, setClipboardNotice] = useState("");
+  const [jobNotice, setJobNotice] = useState("");
+  const jobsRef = useRef<ResearchJob[]>([]);
   const [staleDerivations, setStaleDerivations] = useState<StaleDerivation[]>([]);
   const layoutKey = `epiq-layout:${overview?.project.project_id ?? "project"}:${kind}`;
 
@@ -269,6 +278,27 @@ export default function App() {
       try {
         const next = await api<ResearchJob[]>("/api/research/jobs");
         if (!cancelled) {
+          const previous = new Map(
+            jobsRef.current.map((job) => [job.job_id, job.status]),
+          );
+          const justFinished = next.find(
+            (job) =>
+              ["queued", "running"].includes(previous.get(job.job_id) ?? "") &&
+              ["completed", "failed", "cancelled"].includes(job.status),
+          );
+          if (justFinished) {
+            const notice =
+              justFinished.status === "failed"
+                ? `Research failed: ${justFinished.error ?? "unknown error"}`
+                : justFinished.status === "cancelled"
+                  ? "Research cancelled"
+                  : justFinished.outcome === "no_change"
+                    ? "Research finished: no new independent evidence was found"
+                    : `Research finished${justFinished.written ? `: ${justFinished.written} answer${justFinished.written === 1 ? "" : "s"} updated` : ""}`;
+            setJobNotice(notice);
+            window.setTimeout(() => setJobNotice(""), 6000);
+          }
+          jobsRef.current = next;
           const hasActive = next.some(
             (job) => job.status === "queued" || job.status === "running",
           );
@@ -955,6 +985,7 @@ export default function App() {
             {clipboardNotice && (
               <span className="clipboard-notice">✓ {clipboardNotice}</span>
             )}
+            {jobNotice && <span className="job-notice">{jobNotice}</span>}
           </div>
           {error && (
             <div className="error-banner">
@@ -2888,6 +2919,18 @@ function ActivityPanel({
               ))}
             </ol>
             {job.error && <div className="form-error">{job.error}</div>}
+            {job.status === "completed" && job.outcome === "no_change" && (
+              <div className="job-result no-change">
+                No new independent evidence was added.
+                {job.no_result ? ` ${job.no_result} search returned no result.` : ""}
+                {job.rejected ? ` ${job.rejected} duplicate source was rejected.` : ""}
+              </div>
+            )}
+            {job.status === "completed" && job.outcome === "changed" && (
+              <div className="job-result changed">
+                Added evidence or answers to {job.written ?? 0} row{job.written === 1 ? "" : "s"}.
+              </div>
+            )}
             {(job.status === "queued" || job.status === "running") && (
               <button className="job-action" onClick={() => void onCancel(job.job_id)}>
                 Cancel

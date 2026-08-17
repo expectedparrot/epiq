@@ -241,7 +241,10 @@ Row type: {entity_kind}
 Question: {json.dumps(question, sort_keys=True)}
 Rows: {json.dumps(entities, sort_keys=True)}
 
-Task mode and user instructions are included in the question object. In add_evidence mode, find a
+Task mode and user instructions are included in the question object. Treat explicit user source
+instructions as binding: if the user names a site or database, search that source specifically. If
+it cannot be accessed or does not support the value, return not_found and explain that limitation
+instead of silently substituting an unrelated aggregator. In add_evidence mode, find a
 new independent source supporting the supplied existing_value; do not propose a different value.
 Each row supplies existing_evidence with every URL, title, and excerpt already attached. Do not
 return any existing URL, the same page under another URL variant, or merely another excerpt from an

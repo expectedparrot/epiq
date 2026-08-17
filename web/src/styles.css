@@ -253,6 +253,20 @@ button:hover {
   padding: 4px 8px;
   white-space: nowrap;
 }
+.job-notice {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 20;
+  max-width: 430px;
+  border: 1px solid #c9b475;
+  border-radius: 8px;
+  background: #fff8df;
+  box-shadow: 0 8px 28px #24302526;
+  padding: 11px 14px;
+  color: #66511c;
+  font-size: 11px;
+}
 .grid {
   border-collapse: separate;
   border-spacing: 0;
@@ -1498,6 +1512,21 @@ button:hover {
   padding: 5px 9px;
   color: #666c65;
   font-size: 9px;
+}
+.job-result {
+  margin-top: 10px;
+  border-radius: 6px;
+  padding: 8px 9px;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.job-result.no-change {
+  background: #fff5d9;
+  color: #755719;
+}
+.job-result.changed {
+  background: #e9f5ed;
+  color: #31654c;
 }
 .job-progress {
   height: 4px;

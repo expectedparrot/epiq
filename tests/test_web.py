@@ -851,6 +851,16 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
     ) -> list[dict]:
         if progress:
             progress("Fake search completed")
+        if _question.get("instructions") == "No Scholar access":
+            return [
+                {
+                    "entity_id": entity["entity_id"],
+                    "status": "not_found",
+                    "value": None,
+                    "notes": "Google Scholar could not be accessed.",
+                }
+                for entity in entities
+            ]
         return [
             {
                 "entity_id": entity["entity_id"],
@@ -904,6 +914,8 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
     assert launched.status_code == 202
     job = wait_for_job(client, launched.json()["job_id"])
     assert job["status"] == "completed"
+    assert job["outcome"] == "changed"
+    assert job["written"] == 1
     assert job["total"] == 1
     assert job["completed"] == 1
 
@@ -925,6 +937,7 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
     ).json()
     enriched_job = wait_for_job(client, enrichment["job_id"])
     assert enriched_job["status"] == "completed"
+    assert enriched_job["outcome"] == "changed"
     assert enriched_job["total"] == 1
     assert any(
         message["message"] == "Fake search completed" for message in enriched_job["messages"]
@@ -945,12 +958,32 @@ def test_background_research_job_fills_only_unasked_cells(tmp_path: Path) -> Non
         },
     ).json()
     duplicate_job = wait_for_job(client, duplicate["job_id"])
+    assert duplicate_job["outcome"] == "no_change"
+    assert duplicate_job["rejected"] == 1
     assert any(
         "Rejected duplicate source" in message["message"] for message in duplicate_job["messages"]
     )
     duplicate_rows = client.get("/api/matrix/Investor").json()["rows"]
     duplicate_cell = next(row for row in duplicate_rows if row["name"] == "Ada")["cells"]["has_mba"]
     assert len(duplicate_cell["lineage"]) == 2
+
+    no_source = client.post(
+        "/api/research/jobs",
+        json={
+            "entity_kind": "Investor",
+            "question": question,
+            "mode": "add_evidence",
+            "instructions": "No Scholar access",
+            "entity_ids": [first],
+        },
+    ).json()
+    no_source_job = wait_for_job(client, no_source["job_id"])
+    assert no_source_job["outcome"] == "no_change"
+    assert no_source_job["no_result"] == 1
+    assert any(
+        "Google Scholar could not be accessed" in message["message"]
+        for message in no_source_job["messages"]
+    )
 
     client.post(
         "/api/questions",
