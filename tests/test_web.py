@@ -422,6 +422,12 @@ def test_web_api_creates_tables_and_many_relationships(tmp_path: Path) -> None:
     assert [item["name"] for item in cell["references"]] == ["Grace", "Ada"]
     related = client.get(f"/api/related/{paper}").json()
     assert {item["to"]["name"] for item in related["edges"]} == {"Ada", "Grace"}
+    back_references = client.get(
+        f"/api/related/{authors[0]}", params={"direction": "incoming"}
+    ).json()
+    assert back_references["count"] == 1
+    assert back_references["edges"][0]["from"]["name"] == "Market Design"
+    assert back_references["edges"][0]["question"] == "authors"
 
 
 def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: Path) -> None:

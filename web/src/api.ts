@@ -151,6 +151,28 @@ export interface RelationshipSuggestion {
   status: "pending" | "accepted" | "dismissed";
 }
 
+export interface RelatedEntity {
+  entity_id: string;
+  name: string;
+  kind: string;
+}
+
+export interface RelationshipEdge {
+  direction: "incoming" | "outgoing";
+  depth: number;
+  question: string;
+  claim_ids: string[];
+  from: RelatedEntity;
+  to: RelatedEntity;
+}
+
+export interface RelationshipGraph {
+  entity: RelatedEntity;
+  direction: "incoming" | "outgoing" | "both";
+  depth: number;
+  edges: RelationshipEdge[];
+}
+
 export interface FieldSuggestion {
   suggestion_id: string;
   name: string;

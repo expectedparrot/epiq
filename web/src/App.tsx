@@ -17,6 +17,8 @@ import {
   QuestionChallenge,
   Question,
   RelationshipSuggestion,
+  RelationshipGraph,
+  RelatedEntity,
   ResearchJob,
   StaleDerivation,
   api,
@@ -31,6 +33,7 @@ type Selection = {
   cell: Cell;
 };
 type ProvisionalRelationship = RelationshipSuggestion & { jobId: string };
+type EntitySelection = { entityId: string; entityName: string; entityKind: string };
 type SortState = {
   key: string;
   direction: "asc" | "desc";
@@ -94,6 +97,7 @@ export default function App() {
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   const [kind, setKind] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [entitySelection, setEntitySelection] = useState<EntitySelection | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1283,9 +1287,20 @@ export default function App() {
                           index + 1
                         )}
                       </td>
-                      <td className="entity-name">
+                      <td
+                        className="entity-name"
+                        title="Double-click to inspect relationships and back-references"
+                        onDoubleClick={() =>
+                          setEntitySelection({
+                            entityId: row.entity_id,
+                            entityName: row.name,
+                            entityKind: kind,
+                          })
+                        }
+                      >
                         <div className="entity-inner">
                           <span>{row.name}</span>
+                          <small className="backref-affordance">↩ refs</small>
                         </div>
                       </td>
                       <td className="row-action-cell">
@@ -1520,6 +1535,17 @@ export default function App() {
               ]);
             }}
             onChanged={refresh}
+          />
+        )}
+        {entitySelection && (
+          <EntityRelationshipsDrawer
+            selection={entitySelection}
+            onClose={() => setEntitySelection(null)}
+            onNavigate={(entity) => {
+              setEntitySelection(null);
+              setKind(entity.kind);
+              setFilterText(entity.name);
+            }}
           />
         )}
         {showActivity && (
@@ -4153,6 +4179,110 @@ function SchemaReviewPanel({
             </div>
           </article>
         ))}
+      </div>
+    </aside>
+  );
+}
+
+function EntityRelationshipsDrawer({
+  selection,
+  onClose,
+  onNavigate,
+}: {
+  selection: EntitySelection;
+  onClose: () => void;
+  onNavigate: (entity: RelatedEntity) => void;
+}) {
+  const [graph, setGraph] = useState<RelationshipGraph | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setGraph(null);
+    setError("");
+    api<RelationshipGraph>(
+      `/api/related/${encodeURIComponent(selection.entityId)}?direction=both&depth=1`,
+    )
+      .then((result) => {
+        if (!cancelled) setGraph(result);
+      })
+      .catch((caught) => {
+        if (!cancelled)
+          setError(
+            caught instanceof Error ? caught.message : "Could not load references",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selection.entityId]);
+  const incoming = graph?.edges.filter((edge) => edge.direction === "incoming") ?? [];
+  const outgoing = graph?.edges.filter((edge) => edge.direction === "outgoing") ?? [];
+  const groups = incoming.reduce(
+    (result, edge) => {
+      const key = `${edge.from.kind}:${edge.question}`;
+      const group = result.get(key) ?? {
+        kind: edge.from.kind,
+        question: edge.question,
+        edges: [],
+      };
+      group.edges.push(edge);
+      result.set(key, group);
+      return result;
+    },
+    new Map<
+      string,
+      {
+        kind: string;
+        question: string;
+        edges: RelationshipGraph["edges"];
+      }
+    >(),
+  );
+  return (
+    <aside className="drawer entity-relationships-drawer">
+      <div className="drawer-head">
+        <div className="eyebrow">ROW INSPECTOR</div>
+        <button className="close" onClick={onClose}>×</button>
+        <h2>{selection.entityName}</h2>
+        <p>{selection.entityKind} · relationship graph</p>
+      </div>
+      <div className="drawer-body">
+        {error && <div className="form-error">{error}</div>}
+        {!graph && !error && <div className="center"><span className="spinner" />Loading references…</div>}
+        {graph && (
+          <>
+            <section className="back-reference-section">
+              <div className="proposal-heading">
+                <b>Back-references</b>
+                <small>{incoming.length} row{incoming.length === 1 ? "" : "s"} point here.</small>
+              </div>
+              {incoming.length === 0 && (
+                <div className="drawer-empty compact"><div>↩</div><p>No rows currently reference this row.</p></div>
+              )}
+              {[...groups.entries()].map(([key, group]) => (
+                <div className="back-reference-group" key={key}>
+                  <div><b>{group.kind}</b><code>via {group.question}</code></div>
+                  {group.edges.map((edge) => (
+                    <button key={`${edge.from.entity_id}:${edge.question}`} onClick={() => onNavigate(edge.from)}>
+                      <span>{edge.from.name}</span><small>Open in {edge.from.kind} →</small>
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </section>
+            <section className="outgoing-reference-section">
+              <div className="proposal-heading">
+                <b>Outgoing references</b>
+                <small>{outgoing.length} related row{outgoing.length === 1 ? "" : "s"}.</small>
+              </div>
+              {outgoing.map((edge) => (
+                <button className="outgoing-reference" key={`${edge.to.entity_id}:${edge.question}`} onClick={() => onNavigate(edge.to)}>
+                  <span><code>{edge.question}</code>{edge.to.name}</span><small>{edge.to.kind} →</small>
+                </button>
+              ))}
+            </section>
+          </>
+        )}
       </div>
     </aside>
   );
