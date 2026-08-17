@@ -113,13 +113,25 @@ export interface ResearchJob {
     | "suggest_fields";
   messages: Array<{ at: string; message: string }>;
   error?: string | null;
-  outcome?: "changed" | "no_change" | "proposals" | null;
+  outcome?: "changed" | "no_change" | "proposals" | "schema_proposal" | null;
   written?: number;
   no_result?: number;
   rejected?: number;
   suggestions?: EntitySuggestion[];
   field_suggestions?: FieldSuggestion[];
   relationship_suggestions?: RelationshipSuggestion[];
+  schema_adaptation?: SchemaAdaptation | null;
+}
+
+export interface SchemaAdaptation {
+  kind: "cardinality_mismatch";
+  question_id: string;
+  question_name: string;
+  label: string;
+  current_cardinality: "one";
+  proposed_cardinality: "many";
+  status: "pending" | "accepted";
+  successor_question_id?: string;
 }
 
 export interface RelationshipSuggestion {

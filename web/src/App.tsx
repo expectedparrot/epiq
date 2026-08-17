@@ -591,6 +591,20 @@ export default function App() {
       );
     }
   };
+  const acceptSchemaAdaptation = async (questionId: string) => {
+    try {
+      await post(`/api/research/schema-adaptations/${questionId}/accept`, {});
+      await loadOverview();
+      await loadMatrix();
+      setJobs(await api<ResearchJob[]>("/api/research/jobs"));
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not apply schema adaptation",
+      );
+    }
+  };
   const updateSuggestion = async (
     jobId: string,
     suggestionId: string,
@@ -1476,6 +1490,7 @@ export default function App() {
             onSuggestion={updateSuggestion}
             onAcceptFields={acceptFieldSuggestions}
             onAcceptRelationships={acceptRelationshipSuggestions}
+            onAcceptSchemaAdaptation={acceptSchemaAdaptation}
             onCancel={cancelResearch}
             onRetry={retryResearch}
           />
@@ -3031,6 +3046,7 @@ function ActivityPanel({
   onSuggestion,
   onAcceptFields,
   onAcceptRelationships,
+  onAcceptSchemaAdaptation,
   onCancel,
   onRetry,
 }: {
@@ -3046,9 +3062,31 @@ function ActivityPanel({
     jobId: string,
     suggestionIds: string[],
   ) => Promise<void>;
+  onAcceptSchemaAdaptation: (questionId: string) => Promise<void>;
   onCancel: (jobId: string) => Promise<void>;
   onRetry: (jobId: string) => Promise<void>;
 }) {
+  const schemaGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { label: string; jobs: number; findings: number }
+    >();
+    for (const job of jobs) {
+      const proposal = job.schema_adaptation;
+      if (!proposal || proposal.status !== "pending") continue;
+      const current = groups.get(proposal.question_id) ?? {
+        label: proposal.label,
+        jobs: 0,
+        findings: 0,
+      };
+      current.jobs += 1;
+      current.findings +=
+        job.relationship_suggestions?.filter((item) => item.status === "pending")
+          .length ?? 0;
+      groups.set(proposal.question_id, current);
+    }
+    return [...groups.entries()];
+  }, [jobs]);
   return (
     <aside className="activity-panel">
       <div className="drawer-head">
@@ -3060,6 +3098,16 @@ function ActivityPanel({
         <p>The spreadsheet remains stable while agents work.</p>
       </div>
       <div className="activity-list">
+        {schemaGroups.map(([questionId, group]) => (
+          <SchemaAdaptationReview
+            key={questionId}
+            questionId={questionId}
+            label={group.label}
+            jobs={group.jobs}
+            findings={group.findings}
+            onAccept={onAcceptSchemaAdaptation}
+          />
+        ))}
         {jobs.length === 0 && (
           <div className="drawer-empty">
             <div>✦</div>
@@ -3145,7 +3193,7 @@ function ActivityPanel({
             {job.field_suggestions && job.field_suggestions.length > 0 && (
               <FieldSuggestionReview job={job} onAccept={onAcceptFields} />
             )}
-            {job.relationship_suggestions &&
+            {!job.schema_adaptation && job.relationship_suggestions &&
               job.relationship_suggestions.length > 0 && (
                 <RelationshipSuggestionReview
                   job={job}
@@ -3156,6 +3204,53 @@ function ActivityPanel({
         ))}
       </div>
     </aside>
+  );
+}
+
+function SchemaAdaptationReview({
+  questionId,
+  label,
+  jobs,
+  findings,
+  onAccept,
+}: {
+  questionId: string;
+  label: string;
+  jobs: number;
+  findings: number;
+  onAccept: (questionId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <article className="activity-job schema-adaptation-review">
+      <div className="activity-job-head">
+        <span className="job-status completed">review</span>
+        <code>{questionId.replace(/^q_|_v\d+$/g, "")}</code>
+      </div>
+      <b>Agent findings do not fit the field schema</b>
+      <p>
+        {jobs} researched row{jobs === 1 ? "" : "s"} found multiple {label.toLowerCase()}.
+        Change this field from one related row to multiple related rows and add all {findings}
+        {" "}staged relationship{findings === 1 ? "" : "s"}?
+      </p>
+      <small>
+        Epiq will create a new field version and preserve every source and finding.
+      </small>
+      <button
+        className="primary add-relationship-proposals"
+        disabled={busy || findings === 0}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await onAccept(questionId);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Applying change set…" : `Approve change + ${findings} findings`}
+      </button>
+    </article>
   );
 }
 

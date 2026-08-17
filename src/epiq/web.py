@@ -102,6 +102,10 @@ class QuestionRevisionCreate(BaseModel):
     actor: str = "human:web"
 
 
+class SchemaAdaptationAcceptCreate(BaseModel):
+    actor: str = "human:web"
+
+
 class QuestionVisibilityCreate(BaseModel):
     reason: str = Field(min_length=1)
     actor: str = "human:web"
@@ -1339,9 +1343,7 @@ def create_app(
             value_type = str(question["value_type"])
             relationship_target = (
                 value_type[4:-1]
-                if value_type.startswith("Ref[")
-                and value_type.endswith("]")
-                and question["definition"].get("cardinality") == "many"
+                if value_type.startswith("Ref[") and value_type.endswith("]")
                 else None
             )
             if relationship_target:
@@ -1352,12 +1354,18 @@ def create_app(
                     for name in [row["name"], *row.get("aliases", [])]
                 }
                 proposals = []
+                cardinality_mismatch = False
                 for finding in findings:
                     entity_id = str(finding["entity_id"])
                     if entity_id not in target_ids or finding["status"] != "answered":
                         continue
                     values = finding["value"]
                     names = values if isinstance(values, list) else [values]
+                    if (
+                        question["definition"].get("cardinality", "one") == "one"
+                        and len(names) > 1
+                    ):
+                        cardinality_mismatch = True
                     for raw_name in names:
                         name = str(raw_name).strip()
                         if not name:
@@ -1388,10 +1396,26 @@ def create_app(
                         )
                 with app.state.research_lock:
                     jobs[job_id]["relationship_suggestions"] = proposals
+                    if cardinality_mismatch:
+                        jobs[job_id]["schema_adaptation"] = {
+                            "kind": "cardinality_mismatch",
+                            "question_id": question["question_id"],
+                            "question_name": question["name"],
+                            "label": question["definition"].get("label", question["name"]),
+                            "current_cardinality": "one",
+                            "proposed_cardinality": "many",
+                            "status": "pending",
+                        }
                     jobs[job_id]["total"] = len(proposals)
                     jobs[job_id]["completed"] = len(proposals)
                     jobs[job_id]["status"] = "completed"
-                    jobs[job_id]["outcome"] = "proposals" if proposals else "no_change"
+                    jobs[job_id]["outcome"] = (
+                        "schema_proposal"
+                        if cardinality_mismatch
+                        else "proposals"
+                        if proposals
+                        else "no_change"
+                    )
                     jobs[job_id]["no_result"] = 0 if proposals else len(targets)
                     jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
                     persist_job(job_id)
@@ -1541,6 +1565,7 @@ def create_app(
             "rejected": 0,
             "outcome": None,
             "relationship_suggestions": [],
+            "schema_adaptation": None,
             "messages": [{"at": datetime.now(UTC).isoformat(), "message": "Research job queued"}],
         }
         with app.state.research_lock:
@@ -1715,6 +1740,68 @@ def create_app(
                     suggestion["status"] = "accepted"
             persist_job(job_id)
         return {"count": len(accepted), "accepted": accepted}
+
+    @app.post("/api/research/schema-adaptations/{question_id}/accept", status_code=201)
+    def accept_schema_adaptation(
+        question_id: str, body: SchemaAdaptationAcceptCreate
+    ) -> dict[str, Any]:
+        with app.state.research_lock:
+            matching = [
+                (job_id, job)
+                for job_id, job in app.state.research_jobs.items()
+                if (job.get("schema_adaptation") or {}).get("question_id") == question_id
+                and (job.get("schema_adaptation") or {}).get("status") == "pending"
+            ]
+        if not matching:
+            raise EpiqError(
+                "schema_adaptation_not_found",
+                "No pending schema adaptation was found for this field",
+            )
+        project = store()
+        with project.connect() as connection:
+            question = project._resolve_question(connection, question_id)
+            definition = json.loads(str(question["definition_json"]))
+        definition["cardinality"] = "many"
+        successor = project.evolve_question(
+            question_id,
+            [
+                {
+                    "name": str(question["name"]),
+                    "value_type": str(question["value_type"]),
+                    "definition": definition,
+                }
+            ],
+            "refines",
+            "Bulk-approved agent finding: observed multiple related rows",
+            body.actor,
+        )[0]
+        accepted_count = 0
+        job_ids = []
+        for job_id, job in matching:
+            with app.state.research_lock:
+                suggestion_ids = []
+                for suggestion in job.get("relationship_suggestions", []):
+                    if suggestion["status"] == "pending":
+                        suggestion["question_id"] = successor
+                        suggestion_ids.append(str(suggestion["suggestion_id"]))
+                job["question_id"] = successor
+                job["schema_adaptation"]["status"] = "accepted"
+                job["schema_adaptation"]["successor_question_id"] = successor
+                persist_job(job_id)
+            if suggestion_ids:
+                result = accept_relationship_suggestions(
+                    job_id,
+                    AcceptRelationshipSuggestionsCreate(
+                        suggestion_ids=suggestion_ids, actor=body.actor
+                    ),
+                )
+                accepted_count += int(result["count"])
+            job_ids.append(job_id)
+        return {
+            "question_id": successor,
+            "jobs": job_ids,
+            "accepted_relationships": accepted_count,
+        }
 
     @app.post("/api/research/rows", status_code=202)
     def launch_row_research(body: RowResearchCreate) -> dict[str, Any]:

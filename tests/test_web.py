@@ -430,6 +430,66 @@ def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: 
     assert {item["name"] for item in cell["references"]} == {"Ada", "Katherine Johnson"}
 
 
+def test_relationship_cardinality_mismatches_are_bulk_approved(tmp_path: Path) -> None:
+    def researcher(_kind, _question, entities, progress=None):
+        name = entities[0]["name"]
+        authors = ["Ada", "Grace"] if name == "Paper One" else ["Grace", "Katherine"]
+        return [
+            {
+                "entity_id": entities[0]["entity_id"],
+                "status": "answered",
+                "value": authors,
+                "source_type": "web",
+                "source_url": f"https://example.test/{name.lower().replace(' ', '-')}",
+                "source_title": f"{name} title page",
+                "excerpt": f"{name} was written by {', '.join(authors)}.",
+                "confidence": "high",
+                "notes": "",
+            }
+        ]
+
+    client = TestClient(
+        create_app(tmp_path / "bulk-relationship.sqlite", tmp_path / "missing", researcher)
+    )
+    client.post("/api/project", json={"name": "Bulk relationship adaptation"})
+    papers = [
+        client.post("/api/entities", json={"kind": "Paper", "name": name}).json()[
+            "entity_id"
+        ]
+        for name in ["Paper One", "Paper Two"]
+    ]
+    question = client.post(
+        "/api/questions",
+        json={
+            "name": "authors",
+            "subject_kind": "Paper",
+            "value_type": "Ref[Author]",
+            "definition": {"label": "Authors", "cardinality": "one"},
+        },
+    ).json()["question_id"]
+
+    launched = client.post(
+        "/api/research/column",
+        json={"entity_kind": "Paper", "question": question, "scope": "column"},
+    ).json()
+    jobs = [wait_for_job(client, item["job_id"]) for item in launched["jobs"]]
+    assert {job["outcome"] for job in jobs} == {"schema_proposal"}
+    assert all(job["schema_adaptation"]["status"] == "pending" for job in jobs)
+
+    accepted = client.post(f"/api/research/schema-adaptations/{question}/accept", json={})
+    assert accepted.status_code == 201
+    result = accepted.json()
+    assert result["accepted_relationships"] == 4
+    matrix = client.get("/api/matrix/Paper").json()
+    assert matrix["questions"][0]["definition"]["cardinality"] == "many"
+    assert [
+        {item["name"] for item in row["cells"]["authors"]["references"]}
+        for row in matrix["rows"]
+    ] == [{"Ada", "Grace"}, {"Grace", "Katherine"}]
+    refreshed = client.get("/api/research/jobs").json()
+    assert all(job["schema_adaptation"]["status"] == "accepted" for job in refreshed)
+
+
 def test_agent_discovery_diagnostics_and_derivation_api(tmp_path: Path) -> None:
     database = tmp_path / "agent-api.sqlite"
     uninitialized = TestClient(create_app(database, tmp_path / "missing-frontend"))
