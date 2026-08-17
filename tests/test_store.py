@@ -679,6 +679,42 @@ def test_temporal_value_types_reject_malformed_values(
     assert error.value.code == "value_type_error"
 
 
+def test_url_value_type_accepts_only_absolute_http_urls(store: Store) -> None:
+    item = store.add_entity("Company", "Acorn", {}, "test")
+    store.add_question("website", "Company", "URL", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/source",
+        "Company profile",
+        "2026-08-17",
+        "Official website is https://acorn.example/about.",
+        "test",
+    )
+
+    store.assert_claim(
+        item,
+        "website",
+        "https://acorn.example/about?team=1",
+        "2026-08-17",
+        evidence,
+        "test",
+    )
+    assert store.matrix("Company")["rows"][0]["cells"]["website"]["value"] == (
+        "https://acorn.example/about?team=1"
+    )
+
+    for invalid in ["acorn.example", "/about", "javascript:alert(1)", 42]:
+        with pytest.raises(EpiqError) as error:
+            store.assert_claim(
+                item,
+                "website",
+                invalid,
+                "2026-08-17",
+                evidence,
+                "test",
+            )
+        assert error.value.code == "value_type_error"
+
+
 def test_claim_proposals_are_invisible_until_atomically_approved(store: Store) -> None:
     company = store.add_entity("Company", "Acme", {}, "test")
     store.add_question("employees", "Company", "Int", {}, "test")

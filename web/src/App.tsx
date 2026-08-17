@@ -62,7 +62,8 @@ const cellDisplay = (cell: Cell) => {
 };
 
 function parseValue(raw: string, type: string): unknown {
-  if (type === "String" || type.startsWith("Enum[")) return raw;
+  if (type === "String" || type === "URL" || type.startsWith("Enum["))
+    return raw;
   if (type === "Int") return Number.parseInt(raw, 10);
   if (type === "Float" || type === "Probability") return Number(raw);
   if (type === "Bool") return raw.toLowerCase() === "true";
@@ -1240,7 +1241,23 @@ export default function App() {
                                 row.entity_id,
                                 question.question_id,
                               ) && <span className="cell-spinner" />}
-                              {cellDisplay(cell)}
+                              {question.value_type === "URL" &&
+                              cell.state === "Answered" &&
+                              typeof cell.value === "string" ? (
+                                <a
+                                  className="cell-url"
+                                  href={cell.value}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title={cell.value}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onDoubleClick={(event) => event.stopPropagation()}
+                                >
+                                  {cell.value} ↗
+                                </a>
+                              ) : (
+                                cellDisplay(cell)
+                              )}
                             </div>
                             {cell.state !== "Unasked" && (
                               <span className="state-dot" title={cell.state} />
@@ -1925,6 +1942,7 @@ function QuestionDialog({
               onChange={(event) => setType(event.target.value)}
             >
               <option>String</option>
+              <option>URL</option>
               <option>Int</option>
               <option>Float</option>
               <option>Probability</option>
@@ -2116,6 +2134,7 @@ function ClaimDialog({
             </select>
           ) : (
             <input
+              type={selection.question.value_type === "URL" ? "url" : "text"}
               value={value}
               onChange={(event) => setValue(event.target.value)}
               placeholder={
@@ -3651,7 +3670,20 @@ function CellDrawer({
               </span>
               <code>{claim.token}</code>
             </div>
-            <div className="answer">{display(claim.value)}</div>
+            <div className="answer">
+              {question.value_type === "URL" && typeof claim.value === "string" ? (
+                <a
+                  className="answer-url"
+                  href={claim.value}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {claim.value} ↗
+                </a>
+              ) : (
+                display(claim.value)
+              )}
+            </div>
             {claim.as_of && (
               <div className="claim-as-of">
                 Claim observed as of {claim.as_of}

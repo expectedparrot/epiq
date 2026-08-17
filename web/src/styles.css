@@ -339,6 +339,23 @@ button:hover {
   padding-right: 40px;
   font-size: 13px;
 }
+.cell-url,
+.answer-url {
+  color: #176849;
+  text-decoration: underline;
+  text-decoration-color: #9bc4b1;
+  text-underline-offset: 2px;
+}
+.cell-url {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.answer-url {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
 .grid.wrap-text .data-cell.type-string .cell-value {
   white-space: normal;
   overflow-wrap: anywhere;

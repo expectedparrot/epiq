@@ -192,6 +192,8 @@ policy metadata. The current implementation recognizes:
 - `Probability`: a finite number constrained to the closed interval `[0,1]`.
 - `Bool`: validated as JSON `true` or `false`.
 - `String`: validated as plain text.
+- `URL`: an absolute `http://` or `https://` URL; the web application renders it as a safe,
+  clickable new-tab link.
 - `Date`: an ISO `YYYY-MM-DD` calendar date.
 - `DateTime`: a timezone-aware ISO timestamp, including timestamps ending in `Z`.
 - `Year`: an integer from 1 through 9999.

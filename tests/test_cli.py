@@ -912,6 +912,7 @@ def test_cli_operational_and_agent_orientation_commands(tmp_path: Path, capsys) 
     schema = invoke("schema", "--kind", "Company")
     assert schema["tables"][0]["questions"][0]["name"] == "employee_count"
     assert "Probability" in schema["value_types"]
+    assert "URL" in schema["value_types"]
     context = invoke("context", "--kind", "Company", "--budget", "100")
     assert context["project"]["name"] == "Market"
     gaps = invoke("gaps", "--kind", "Company")

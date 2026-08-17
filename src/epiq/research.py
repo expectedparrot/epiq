@@ -424,8 +424,9 @@ Selection instructions: {
         }
 
 Each suggestion must be a field that can be answered independently for every row. Use a unique
-snake_case name, a concise human-readable label, and one valid Epiq value_type: String, Int, Float,
-Probability, Bool, Json, Enum[a,b,c], Distribution[Float], or Distribution[Enum[a,b,c]]. Prefer
+snake_case name, a concise human-readable label, and one valid Epiq value_type: String, URL, Int,
+Float, Probability, Bool, Json, Enum[a,b,c], Distribution[Float], or
+Distribution[Enum[a,b,c]]. Prefer
 precise typed fields over broad biography-style prompts. In research_guidance, define ambiguous
 terms and state what evidence would count so a later research agent applies the field consistently.
 Suggestions are provisional and will be reviewed by a human before becoming columns. No web search

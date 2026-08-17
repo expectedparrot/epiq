@@ -1438,6 +1438,7 @@ class Store:
             "Probability",
             "Bool",
             "String",
+            "URL",
             "Json",
             "Date",
             "DateTime",
@@ -2866,6 +2867,15 @@ class Store:
             raise EpiqError("value_type_error", f"Expected Bool; received {value!r}")
         elif value_type == "String" and not isinstance(value, str):
             raise EpiqError("value_type_error", f"Expected String; received {value!r}")
+        elif value_type == "URL":
+            if not isinstance(value, str):
+                raise EpiqError("value_type_error", f"Expected URL; received {value!r}")
+            parsed = urlsplit(value)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise EpiqError(
+                    "value_type_error",
+                    f"Expected absolute HTTP(S) URL; received {value!r}",
+                )
         elif value_type == "Date":
             if not isinstance(value, str):
                 raise EpiqError("value_type_error", f"Expected ISO Date; received {value!r}")
@@ -2920,6 +2930,7 @@ class Store:
             "Float",
             "Bool",
             "String",
+            "URL",
             "Json",
             "Probability",
             "Date",
