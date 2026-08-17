@@ -33,10 +33,25 @@ type Selection = {
   cell: Cell;
 };
 type ProvisionalRelationship = RelationshipSuggestion & { jobId: string };
-type EntitySelection = { entityId: string; entityName: string; entityKind: string };
+type EntitySelection = {
+  entityId: string;
+  entityName: string;
+  entityKind: string;
+};
 type SortState = {
   key: string;
   direction: "asc" | "desc";
+};
+type SavedView = {
+  id: string;
+  name: string;
+  filterText: string;
+  statusFilter: string;
+  sort: SortState;
+  wrapText: boolean;
+  columnOrder: string[];
+  columnWidths: Record<string, number>;
+  hiddenColumns: string[];
 };
 type Dialog =
   | "entity"
@@ -97,7 +112,8 @@ export default function App() {
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   const [kind, setKind] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [entitySelection, setEntitySelection] = useState<EntitySelection | null>(null);
+  const [entitySelection, setEntitySelection] =
+    useState<EntitySelection | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -132,6 +148,9 @@ export default function App() {
   const [wrapText, setWrapText] = useState(true);
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
+  const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [activeViewId, setActiveViewId] = useState("");
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null);
   const [schemaChallengeQuestion, setSchemaChallengeQuestion] =
     useState<Question | null>(null);
@@ -154,8 +173,11 @@ export default function App() {
   const [clipboardNotice, setClipboardNotice] = useState("");
   const [jobNotice, setJobNotice] = useState("");
   const jobsRef = useRef<ResearchJob[]>([]);
-  const [staleDerivations, setStaleDerivations] = useState<StaleDerivation[]>([]);
+  const [staleDerivations, setStaleDerivations] = useState<StaleDerivation[]>(
+    [],
+  );
   const layoutKey = `epiq-layout:${overview?.project.project_id ?? "project"}:${kind}`;
+  const viewsKey = `epiq-views:${overview?.project.project_id ?? "project"}:${kind}`;
 
   const loadOverview = useCallback(async () => {
     try {
@@ -252,6 +274,9 @@ export default function App() {
       setWrapText(saved.wrapText ?? true);
       setColumnOrder(Array.isArray(saved.columnOrder) ? saved.columnOrder : []);
       setColumnWidths(saved.columnWidths ?? {});
+      setHiddenColumns(
+        Array.isArray(saved.hiddenColumns) ? saved.hiddenColumns : [],
+      );
       setSort(
         saved.sort?.key && ["asc", "desc"].includes(saved.sort.direction)
           ? saved.sort
@@ -266,10 +291,21 @@ export default function App() {
       setWrapText(true);
       setColumnOrder([]);
       setColumnWidths({});
+      setHiddenColumns([]);
       setSort({ key: "__entity__", direction: "asc" });
       setStatusFilter("all");
     }
   }, [kind, overview, layoutKey]);
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(viewsKey) ?? "[]");
+      setSavedViews(Array.isArray(stored) ? stored : []);
+      setActiveViewId("");
+    } catch {
+      setSavedViews([]);
+      setActiveViewId("");
+    }
+  }, [viewsKey]);
   useEffect(() => {
     if (!matrix) return;
     setSelection((current) => {
@@ -309,11 +345,11 @@ export default function App() {
                 : justFinished.status === "cancelled"
                   ? "Research cancelled"
                   : justFinished.outcome === "no_change"
-                    ? finalMessage ??
-                      "Research finished: no new independent evidence was found"
+                    ? (finalMessage ??
+                      "Research finished: no new independent evidence was found")
                     : justFinished.outcome === "proposals"
                       ? `Research prepared ${justFinished.relationship_suggestions?.length ?? 0} relationship proposals for review`
-                    : `Research finished${justFinished.written ? `: ${justFinished.written} answer${justFinished.written === 1 ? "" : "s"} updated` : ""}`;
+                      : `Research finished${justFinished.written ? `: ${justFinished.written} answer${justFinished.written === 1 ? "" : "s"} updated` : ""}`;
             setJobNotice(notice);
             window.setTimeout(() => setJobNotice(""), 12000);
           }
@@ -350,7 +386,9 @@ export default function App() {
     await loadReviewItems();
   };
   const inspectDiagnostic = (item: DiagnosticCell) => {
-    const row = matrix?.rows.find((candidate) => candidate.entity_id === item.entity_id);
+    const row = matrix?.rows.find(
+      (candidate) => candidate.entity_id === item.entity_id,
+    );
     const question = matrix?.questions.find(
       (candidate) => candidate.question_id === item.question_id,
     );
@@ -445,15 +483,22 @@ export default function App() {
       await post(`/api/research/jobs/${jobId}/cancel`, {});
       setJobs(await api<ResearchJob[]>("/api/research/jobs"));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not cancel research");
+      setError(
+        caught instanceof Error ? caught.message : "Could not cancel research",
+      );
     }
   };
   const retryResearch = async (jobId: string) => {
     try {
-      const job = await post<ResearchJob>(`/api/research/jobs/${jobId}/retry`, {});
+      const job = await post<ResearchJob>(
+        `/api/research/jobs/${jobId}/retry`,
+        {},
+      );
       setJobs((current) => [job, ...current]);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not retry research");
+      setError(
+        caught instanceof Error ? caught.message : "Could not retry research",
+      );
     }
   };
   const activeJobs = useMemo(
@@ -650,15 +695,17 @@ export default function App() {
   const displayedQuestions = useMemo(() => {
     const questions = matrix?.questions ?? [];
     const position = new Map(columnOrder.map((name, index) => [name, index]));
-    return [...questions].sort((left, right) => {
-      const leftPosition = position.get(left.name);
-      const rightPosition = position.get(right.name);
-      if (leftPosition === undefined && rightPosition === undefined) return 0;
-      if (leftPosition === undefined) return 1;
-      if (rightPosition === undefined) return -1;
-      return leftPosition - rightPosition;
-    });
-  }, [matrix, columnOrder]);
+    return [...questions]
+      .filter((question) => !hiddenColumns.includes(question.name))
+      .sort((left, right) => {
+        const leftPosition = position.get(left.name);
+        const rightPosition = position.get(right.name);
+        if (leftPosition === undefined && rightPosition === undefined) return 0;
+        if (leftPosition === undefined) return 1;
+        if (rightPosition === undefined) return -1;
+        return leftPosition - rightPosition;
+      });
+  }, [matrix, columnOrder, hiddenColumns]);
   const provisionalRelationships = useMemo(
     () =>
       jobs.flatMap((job) =>
@@ -742,6 +789,7 @@ export default function App() {
     nextWidths: Record<string, number>,
     nextSort: SortState = sort,
     nextStatusFilter: string = statusFilter,
+    nextHiddenColumns: string[] = hiddenColumns,
   ) => {
     localStorage.setItem(
       layoutKey,
@@ -751,8 +799,71 @@ export default function App() {
         columnWidths: nextWidths,
         sort: nextSort,
         statusFilter: nextStatusFilter,
+        hiddenColumns: nextHiddenColumns,
       }),
     );
+  };
+  const hideColumn = (name: string) => {
+    const next = [...new Set([...hiddenColumns, name])];
+    setHiddenColumns(next);
+    setActiveViewId("");
+    saveLayout(wrapText, columnOrder, columnWidths, sort, statusFilter, next);
+  };
+  const showColumn = (name: string) => {
+    const next = hiddenColumns.filter((item) => item !== name);
+    setHiddenColumns(next);
+    setActiveViewId("");
+    saveLayout(wrapText, columnOrder, columnWidths, sort, statusFilter, next);
+  };
+  const saveCurrentView = () => {
+    const name = window.prompt("Name this view");
+    if (!name?.trim()) return;
+    const view: SavedView = {
+      id: `view_${Date.now()}`,
+      name: name.trim(),
+      filterText,
+      statusFilter,
+      sort,
+      wrapText,
+      columnOrder,
+      columnWidths,
+      hiddenColumns,
+    };
+    const next = [...savedViews, view];
+    setSavedViews(next);
+    setActiveViewId(view.id);
+    localStorage.setItem(viewsKey, JSON.stringify(next));
+    setClipboardNotice(`Saved view “${view.name}”`);
+  };
+  const applyView = (id: string) => {
+    setActiveViewId(id);
+    if (!id) return;
+    const view = savedViews.find((item) => item.id === id);
+    if (!view) return;
+    setFilterText(view.filterText);
+    setStatusFilter(view.statusFilter);
+    setSort(view.sort);
+    setWrapText(view.wrapText);
+    setColumnOrder(view.columnOrder);
+    setColumnWidths(view.columnWidths);
+    setHiddenColumns(view.hiddenColumns ?? []);
+    saveLayout(
+      view.wrapText,
+      view.columnOrder,
+      view.columnWidths,
+      view.sort,
+      view.statusFilter,
+      view.hiddenColumns ?? [],
+    );
+  };
+  const deleteActiveView = () => {
+    if (!activeViewId) return;
+    const view = savedViews.find((item) => item.id === activeViewId);
+    if (!view || !window.confirm(`Delete saved view “${view.name}”?`)) return;
+    const next = savedViews.filter((item) => item.id !== activeViewId);
+    setSavedViews(next);
+    setActiveViewId("");
+    localStorage.setItem(viewsKey, JSON.stringify(next));
   };
   const toggleSort = (key: string) => {
     const next: SortState = {
@@ -760,15 +871,18 @@ export default function App() {
       direction: sort.key === key && sort.direction === "asc" ? "desc" : "asc",
     };
     setSort(next);
+    setActiveViewId("");
     saveLayout(wrapText, columnOrder, columnWidths, next);
   };
   const updateStatusFilter = (value: string) => {
     setStatusFilter(value);
+    setActiveViewId("");
     saveLayout(wrapText, columnOrder, columnWidths, sort, value);
   };
   const toggleRows = () => {
     const next = !wrapText;
     setWrapText(next);
+    setActiveViewId("");
     saveLayout(next, columnOrder, columnWidths);
   };
   const resizeColumn = (key: string, event: React.MouseEvent) => {
@@ -782,6 +896,7 @@ export default function App() {
         Math.max(120, startWidth + moveEvent.clientX - startX),
       );
       setColumnWidths((current) => ({ ...current, [key]: width }));
+      setActiveViewId("");
     };
     const stop = (upEvent: MouseEvent) => {
       const width = Math.min(
@@ -805,6 +920,7 @@ export default function App() {
     if (from < 0 || to < 0) return;
     names.splice(to, 0, names.splice(from, 1)[0]);
     setColumnOrder(names);
+    setActiveViewId("");
     saveLayout(wrapText, names, columnWidths);
     setDraggedColumn(null);
   };
@@ -925,23 +1041,28 @@ export default function App() {
               (job) => job.status === "queued" || job.status === "running",
             ).length ? (
               <strong className="action-count active">
-                {jobs.filter(
-                  (job) => job.status === "queued" || job.status === "running",
-                ).length}
+                {
+                  jobs.filter(
+                    (job) =>
+                      job.status === "queued" || job.status === "running",
+                  ).length
+                }
               </strong>
             ) : null}
           </button>
           <button className="ghost" onClick={() => setShowReview(true)}>
             <span>◈ Review</span>
             {reviewItems.stale.length +
-              reviewItems.contradictions.length +
-              staleDerivations.length
-              ? <strong className="action-count">{
-                  reviewItems.stale.length +
+            reviewItems.contradictions.length +
+            staleDerivations.length ? (
+              <strong className="action-count">
+                {reviewItems.stale.length +
                   reviewItems.contradictions.length +
-                  staleDerivations.length
-                }</strong>
-              : ""}
+                  staleDerivations.length}
+              </strong>
+            ) : (
+              ""
+            )}
           </button>
           <details className="export-menu">
             <summary>↓ Export</summary>
@@ -982,7 +1103,10 @@ export default function App() {
               <b>Workspace</b>
               <button onClick={() => setShowSchemaReview(true)}>
                 <span>Schema review</span>
-                <small>{questionChallenges.length || "No"} open challenge{questionChallenges.length === 1 ? "" : "s"}</small>
+                <small>
+                  {questionChallenges.length || "No"} open challenge
+                  {questionChallenges.length === 1 ? "" : "s"}
+                </small>
               </button>
               <button onClick={() => void refresh()}>
                 <span>Refresh workspace</span>
@@ -992,7 +1116,10 @@ export default function App() {
                 <span>Open another project</span>
                 <small>Browse local Epiq databases</small>
               </button>
-              <button className="destructive-menu-action" onClick={() => void closeProject()}>
+              <button
+                className="destructive-menu-action"
+                onClick={() => void closeProject()}
+              >
                 <span>Close project</span>
                 <small>Return to the project browser</small>
               </button>
@@ -1063,7 +1190,9 @@ export default function App() {
                   </button>
                   <b>View</b>
                   <button onClick={toggleRows}>
-                    <span>{wrapText ? "Use fixed-height rows" : "Wrap long text"}</span>
+                    <span>
+                      {wrapText ? "Use fixed-height rows" : "Wrap long text"}
+                    </span>
                     <small>Change this table's saved display density</small>
                   </button>
                 </div>
@@ -1071,12 +1200,28 @@ export default function App() {
             </div>
           </div>
           <div className="view-toolbar" aria-label="Table view controls">
+            <select
+              className="saved-view-select"
+              value={activeViewId}
+              onChange={(event) => applyView(event.target.value)}
+              aria-label="Saved view"
+            >
+              <option value="">Current view</option>
+              {savedViews.map((view) => (
+                <option key={view.id} value={view.id}>
+                  {view.name}
+                </option>
+              ))}
+            </select>
             <label className="table-search">
               <span>⌕</span>
               <input
                 type="search"
                 value={filterText}
-                onChange={(event) => setFilterText(event.target.value)}
+                onChange={(event) => {
+                  setFilterText(event.target.value);
+                  setActiveViewId("");
+                }}
                 placeholder={`Filter ${kind.toLowerCase()} rows or values…`}
                 aria-label="Filter rows"
               />
@@ -1091,6 +1236,44 @@ export default function App() {
               <option value="unanswered">Has unanswered fields</option>
               <option value="review">Needs review</option>
             </select>
+            <button className="view-action-button" onClick={saveCurrentView}>
+              Save view
+            </button>
+            {activeViewId && (
+              <button className="view-action-button" onClick={deleteActiveView}>
+                Delete view
+              </button>
+            )}
+            <details className="field-visibility-menu">
+              <summary>
+                Fields
+                {hiddenColumns.length
+                  ? ` · ${hiddenColumns.length} hidden`
+                  : ""}
+              </summary>
+              <div>
+                <b>Visible fields</b>
+                {(matrix?.questions ?? []).map((question) => {
+                  const hidden = hiddenColumns.includes(question.name);
+                  return (
+                    <label key={question.question_id}>
+                      <input
+                        type="checkbox"
+                        checked={!hidden}
+                        onChange={() =>
+                          hidden
+                            ? showColumn(question.name)
+                            : hideColumn(question.name)
+                        }
+                      />
+                      <span>
+                        {String(question.definition.label ?? question.name)}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </details>
             {(filterText || statusFilter !== "all") && (
               <button
                 className="clear-view-button"
@@ -1108,15 +1291,24 @@ export default function App() {
           </div>
           {activeSelection && (
             <div className="selection-bar" aria-label="Current cell selection">
-              <span className={`selection-state state-${activeSelection.cell.state.toLowerCase()}`} />
+              <span
+                className={`selection-state state-${activeSelection.cell.state.toLowerCase()}`}
+              />
               <div>
                 <small>SELECTED CELL</small>
                 <b>{activeSelection.row.name}</b>
                 <i>·</i>
-                <span>{String(activeSelection.question.definition.label ?? activeSelection.question.name)}</span>
+                <span>
+                  {String(
+                    activeSelection.question.definition.label ??
+                      activeSelection.question.name,
+                  )}
+                </span>
               </div>
               <code>{activeSelection.cell.state}</code>
-              <span className="selection-value">{cellDisplay(activeSelection.cell) || "No value"}</span>
+              <span className="selection-value">
+                {cellDisplay(activeSelection.cell) || "No value"}
+              </span>
               <button
                 onClick={() =>
                   setSelection({
@@ -1281,46 +1473,54 @@ export default function App() {
                               ? `✦ ${job.completed}/${job.total || "…"}`
                               : "✦ Research"}
                           </button>
-                          <button
-                            className="policy-button edit-field-button"
-                            title="Edit and apply a new field version"
-                            onClick={() => {
-                              setEditQuestion(question);
-                              setDialog("editQuestion");
-                            }}
-                          >
-                            ✎
-                          </button>
-                          <button
-                            className="policy-button"
-                            title="Set field time policy"
-                            onClick={() => {
-                              setResearchQuestion(question);
-                              setDialog("policy");
-                            }}
-                          >
-                            ◷
-                          </button>
-                          <button
-                            className="policy-button schema-button"
-                            title="Challenge this field's schema"
-                            onClick={() => {
-                              setSchemaChallengeQuestion(question);
-                              setDialog("schemaChallenge");
-                            }}
-                          >
-                            {question.schema_state === "challenged" ? "⚠" : "?"}
-                          </button>
-                          <button
-                            className="policy-button retire-field-button"
-                            title="Remove this field from the table"
-                            onClick={() => {
-                              setRetireQuestion(question);
-                              setDialog("retireQuestion");
-                            }}
-                          >
-                            ×
-                          </button>
+                          <details className="column-menu">
+                            <summary title="Field actions">•••</summary>
+                            <div>
+                              <button onClick={() => toggleSort(question.name)}>
+                                Sort{" "}
+                                {sort.key === question.name &&
+                                sort.direction === "asc"
+                                  ? "descending"
+                                  : "ascending"}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setEditQuestion(question);
+                                  setDialog("editQuestion");
+                                }}
+                              >
+                                Edit field
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setResearchQuestion(question);
+                                  setDialog("policy");
+                                }}
+                              >
+                                Time policy
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSchemaChallengeQuestion(question);
+                                  setDialog("schemaChallenge");
+                                }}
+                              >
+                                Challenge schema
+                              </button>
+                              <button onClick={() => hideColumn(question.name)}>
+                                Hide field
+                              </button>
+                              <button
+                                className="destructive-menu-action"
+                                onClick={() => {
+                                  setRetireQuestion(question);
+                                  setDialog("retireQuestion");
+                                }}
+                              >
+                                Retire field
+                              </button>
+                            </div>
+                          </details>
                         </div>
                       </th>
                     );
@@ -1352,7 +1552,7 @@ export default function App() {
                             entityId: row.entity_id,
                             entityName: row.name,
                             entityKind: kind,
-                          })
+                          });
                         }}
                       >
                         <div className="entity-inner">
@@ -1450,7 +1650,9 @@ export default function App() {
                                   rel="noopener noreferrer"
                                   title={cell.value}
                                   onClick={(event) => event.stopPropagation()}
-                                  onDoubleClick={(event) => event.stopPropagation()}
+                                  onDoubleClick={(event) =>
+                                    event.stopPropagation()
+                                  }
                                 >
                                   {cell.value} ↗
                                 </a>
@@ -1532,7 +1734,9 @@ export default function App() {
                         <div className="empty-table-state">
                           <div className="empty-table-icon">⌕</div>
                           <h2>No rows match this view</h2>
-                          <p>Try a different search or clear the status filter.</p>
+                          <p>
+                            Try a different search or clear the status filter.
+                          </p>
                           <button
                             onClick={() => {
                               setFilterText("");
@@ -1550,17 +1754,32 @@ export default function App() {
           </div>
           <div className="toast-region" aria-live="polite" aria-atomic="true">
             {clipboardNotice && (
-              <div className="app-toast success"><span>✓</span><p>{clipboardNotice}</p></div>
+              <div className="app-toast success">
+                <span>✓</span>
+                <p>{clipboardNotice}</p>
+              </div>
             )}
             {jobNotice && (
               <div className="app-toast research">
-                <span>✦</span><p>{jobNotice}</p>
-                <button onClick={() => { setShowActivity(true); setJobNotice(""); }}>View</button>
+                <span>✦</span>
+                <p>{jobNotice}</p>
+                <button
+                  onClick={() => {
+                    setShowActivity(true);
+                    setJobNotice("");
+                  }}
+                >
+                  View
+                </button>
               </div>
             )}
             {error && (
               <div className="app-toast error" role="alert">
-                <span>!</span><p>{error}</p><button aria-label="Dismiss error" onClick={() => setError("")}>×</button>
+                <span>!</span>
+                <p>{error}</p>
+                <button aria-label="Dismiss error" onClick={() => setError("")}>
+                  ×
+                </button>
               </div>
             )}
           </div>
@@ -2060,7 +2279,9 @@ function EntityKindDialog({
       await post("/api/entity-kinds", { kind: kind.trim() });
       await onSaved(kind.trim());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not add table");
+      setError(
+        caught instanceof Error ? caught.message : "Could not add table",
+      );
     }
   };
   return (
@@ -2085,7 +2306,9 @@ function EntityKindDialog({
         </label>
         {error && <div className="form-error">{error}</div>}
         <div className="modal-actions">
-          <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+          <button type="button" className="ghost" onClick={onClose}>
+            Cancel
+          </button>
           <button className="primary">Add table</button>
         </div>
       </form>
@@ -2356,7 +2579,7 @@ function QuestionDialog({
                 value={formulaOperation}
                 onChange={(event) => setFormulaOperation(event.target.value)}
               >
-                {['sum', 'avg', 'min', 'max', 'count'].map((operation) => (
+                {["sum", "avg", "min", "max", "count"].map((operation) => (
                   <option key={operation}>{operation}</option>
                 ))}
               </select>
@@ -2490,7 +2713,9 @@ function EditQuestionDialog({
         ),
       );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not review changes");
+      setError(
+        caught instanceof Error ? caught.message : "Could not review changes",
+      );
     } finally {
       setBusy(false);
     }
@@ -2503,7 +2728,9 @@ function EditQuestionDialog({
       onClose();
       await onSaved();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not apply changes");
+      setError(
+        caught instanceof Error ? caught.message : "Could not apply changes",
+      );
     } finally {
       setBusy(false);
     }
@@ -2514,22 +2741,35 @@ function EditQuestionDialog({
       subtitle="Changes create a new field version. Existing evidence and answers remain in history."
       onClose={onClose}
     >
-      <form onSubmit={(event) => void review(event)} onChange={() => setPreview(null)}>
+      <form
+        onSubmit={(event) => void review(event)}
+        onChange={() => setPreview(null)}
+      >
         <div className="schema-version-note">
-          <span>Stable field key</span><code>{question.name}</code>
+          <span>Stable field key</span>
+          <code>{question.name}</code>
         </div>
         <div className="form-grid">
           <label>
             Display label
-            <input value={label} onChange={(event) => setLabel(event.target.value)} required />
+            <input
+              value={label}
+              onChange={(event) => setLabel(event.target.value)}
+              required
+            />
           </label>
           <label>
             Value type
-            <select value={type} onChange={(event) => setType(event.target.value)}>
+            <select
+              value={type}
+              onChange={(event) => setType(event.target.value)}
+            >
               {!isEnum && !standardTypes.includes(question.value_type) && (
                 <option>{question.value_type}</option>
               )}
-              {standardTypes.map((item) => <option key={item}>{item}</option>)}
+              {standardTypes.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
               <option value="Enum">Enum · fixed choices</option>
             </select>
           </label>
@@ -2537,20 +2777,30 @@ function EditQuestionDialog({
         {type === "Enum" && (
           <label>
             Allowed choices
-            <input value={enumChoices} onChange={(event) => setEnumChoices(event.target.value)} required />
+            <input
+              value={enumChoices}
+              onChange={(event) => setEnumChoices(event.target.value)}
+              required
+            />
           </label>
         )}
         <div className="form-grid">
           <label>
             Cardinality
-            <select value={cardinality} onChange={(event) => setCardinality(event.target.value)}>
+            <select
+              value={cardinality}
+              onChange={(event) => setCardinality(event.target.value)}
+            >
               <option value="one">One current answer</option>
               <option value="many">Multiple current answers</option>
             </select>
           </label>
           <label>
             Volatility
-            <select value={volatility} onChange={(event) => setVolatility(event.target.value)}>
+            <select
+              value={volatility}
+              onChange={(event) => setVolatility(event.target.value)}
+            >
               <option value="stable">Stable</option>
               <option value="slow">Slow-changing</option>
               <option value="dynamic">Dynamic</option>
@@ -2559,21 +2809,41 @@ function EditQuestionDialog({
         </div>
         <label>
           Consider stale after <span>Days; blank means no expiry</span>
-          <input type="number" min="1" value={freshnessDays} onChange={(event) => setFreshnessDays(event.target.value)} />
+          <input
+            type="number"
+            min="1"
+            value={freshnessDays}
+            onChange={(event) => setFreshnessDays(event.target.value)}
+          />
         </label>
         <label>
           Instructions for researchers <span>Optional</span>
-          <textarea value={guidance} onChange={(event) => setGuidance(event.target.value)} />
+          <textarea
+            value={guidance}
+            onChange={(event) => setGuidance(event.target.value)}
+          />
         </label>
         <label>
           Why are you changing the schema?
-          <textarea value={reason} onChange={(event) => setReason(event.target.value)} required />
+          <textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            required
+          />
         </label>
         {preview && (
-          <div className={`revision-preview ${preview.can_apply ? "compatible" : "incompatible"}`}>
-            <b>{preview.can_apply ? "✓ Ready to apply" : "⚠ Existing values need attention"}</b>
+          <div
+            className={`revision-preview ${preview.can_apply ? "compatible" : "incompatible"}`}
+          >
+            <b>
+              {preview.can_apply
+                ? "✓ Ready to apply"
+                : "⚠ Existing values need attention"}
+            </b>
             <p>
-              Checked {preview.checked_values} current value{preview.checked_values === 1 ? "" : "s"}; {preview.compatible_values} match {valueType}.
+              Checked {preview.checked_values} current value
+              {preview.checked_values === 1 ? "" : "s"};{" "}
+              {preview.compatible_values} match {valueType}.
             </p>
             {preview.incompatible_values.map((item) => (
               <div key={`${item.entity_id}:${JSON.stringify(item.value)}`}>
@@ -2586,13 +2856,20 @@ function EditQuestionDialog({
         )}
         {error && <div className="form-error">{error}</div>}
         <div className="modal-actions">
-          <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+          <button type="button" className="ghost" onClick={onClose}>
+            Cancel
+          </button>
           {!preview ? (
             <button className="primary" disabled={busy || !reason.trim()}>
               {busy ? "Checking…" : "Review changes →"}
             </button>
           ) : (
-            <button type="button" className="primary" disabled={busy || !preview.can_apply} onClick={() => void apply()}>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !preview.can_apply}
+              onClick={() => void apply()}
+            >
               {busy ? "Applying…" : "Apply new version"}
             </button>
           )}
@@ -2612,7 +2889,8 @@ function ClaimDialog({
   onSaved: () => Promise<void>;
 }) {
   const [value, setValue] = useState("");
-  const relationshipTarget = selection.question.value_type.match(/^Ref\[(.+)\]$/)?.[1];
+  const relationshipTarget =
+    selection.question.value_type.match(/^Ref\[(.+)\]$/)?.[1];
   const [relatedRows, setRelatedRows] = useState<Matrix["rows"]>([]);
   const [sourceType, setSourceType] = useState("web");
   const [url, setUrl] = useState("");
@@ -3102,7 +3380,11 @@ function ReviewPanel({
   onRecalculate: (item: StaleDerivation) => Promise<void>;
 }) {
   const [tab, setTab] = useState<"contradictions" | "stale" | "calculations">(
-    contradictions.length ? "contradictions" : stale.length ? "stale" : "calculations",
+    contradictions.length
+      ? "contradictions"
+      : stale.length
+        ? "stale"
+        : "calculations",
   );
   const [busy, setBusy] = useState("");
   const tabs = [
@@ -3115,9 +3397,13 @@ function ReviewPanel({
     <aside className="activity-panel review-panel">
       <div className="drawer-head">
         <div className="eyebrow">REVIEW QUEUE</div>
-        <button className="close" onClick={onClose}>×</button>
+        <button className="close" onClick={onClose}>
+          ×
+        </button>
         <h2>Needs attention</h2>
-        <p>Inspect disagreements and information that may no longer be current.</p>
+        <p>
+          Inspect disagreements and information that may no longer be current.
+        </p>
       </div>
       <div className="review-tabs">
         {tabs.map(([key, label, count]) => (
@@ -3126,53 +3412,75 @@ function ReviewPanel({
             className={tab === key ? "active" : ""}
             onClick={() => setTab(key)}
           >
-            {label}<span>{count}</span>
+            {label}
+            <span>{count}</span>
           </button>
         ))}
       </div>
       <div className="activity-list review-list">
-        {tab !== "calculations" && items.map((item) => (
-          <article className="review-card" key={`${tab}:${item.entity_id}:${item.question_id}`}>
-            <div className="review-card-head">
-              <span className={`review-kind ${tab}`}>{tab === "stale" ? "STALE" : "CONTESTED"}</span>
-              {item.temporal?.as_of && <small>as of {item.temporal.as_of}</small>}
-            </div>
-            <h3>{item.entity_name}</h3>
-            <p>{item.question.replaceAll("_", " ")}</p>
-            {item.values.length > 0 && (
-              <div className="review-values">
-                {item.values.map((value, index) => <code key={index}>{display(value)}</code>)}
-              </div>
-            )}
-            <button className="primary" onClick={() => onInspect(item)}>
-              Inspect and resolve
-            </button>
-          </article>
-        ))}
-        {tab === "calculations" && staleDerivations.map((item) => (
-          <article className="review-card" key={item.claim_id}>
-            <div className="review-card-head">
-              <span className="review-kind calculations">STALE ƒ</span>
-              <code>{item.claim_id}</code>
-            </div>
-            <h3>{item.subject}</h3>
-            <p>{item.question.replaceAll("_", " ")}</p>
-            <small>{item.reasons.length} changed dependenc{item.reasons.length === 1 ? "y" : "ies"}</small>
-            <button
-              className="primary"
-              disabled={busy === item.claim_id}
-              onClick={async () => {
-                setBusy(item.claim_id);
-                try { await onRecalculate(item); } finally { setBusy(""); }
-              }}
+        {tab !== "calculations" &&
+          items.map((item) => (
+            <article
+              className="review-card"
+              key={`${tab}:${item.entity_id}:${item.question_id}`}
             >
-              {busy === item.claim_id ? "Calculating…" : "Recalculate field"}
-            </button>
-          </article>
-        ))}
+              <div className="review-card-head">
+                <span className={`review-kind ${tab}`}>
+                  {tab === "stale" ? "STALE" : "CONTESTED"}
+                </span>
+                {item.temporal?.as_of && (
+                  <small>as of {item.temporal.as_of}</small>
+                )}
+              </div>
+              <h3>{item.entity_name}</h3>
+              <p>{item.question.replaceAll("_", " ")}</p>
+              {item.values.length > 0 && (
+                <div className="review-values">
+                  {item.values.map((value, index) => (
+                    <code key={index}>{display(value)}</code>
+                  ))}
+                </div>
+              )}
+              <button className="primary" onClick={() => onInspect(item)}>
+                Inspect and resolve
+              </button>
+            </article>
+          ))}
+        {tab === "calculations" &&
+          staleDerivations.map((item) => (
+            <article className="review-card" key={item.claim_id}>
+              <div className="review-card-head">
+                <span className="review-kind calculations">STALE ƒ</span>
+                <code>{item.claim_id}</code>
+              </div>
+              <h3>{item.subject}</h3>
+              <p>{item.question.replaceAll("_", " ")}</p>
+              <small>
+                {item.reasons.length} changed dependenc
+                {item.reasons.length === 1 ? "y" : "ies"}
+              </small>
+              <button
+                className="primary"
+                disabled={busy === item.claim_id}
+                onClick={async () => {
+                  setBusy(item.claim_id);
+                  try {
+                    await onRecalculate(item);
+                  } finally {
+                    setBusy("");
+                  }
+                }}
+              >
+                {busy === item.claim_id ? "Calculating…" : "Recalculate field"}
+              </button>
+            </article>
+          ))}
         {((tab !== "calculations" && items.length === 0) ||
           (tab === "calculations" && staleDerivations.length === 0)) && (
-          <div className="drawer-empty review-empty"><div>✓</div><p>Nothing in this queue.</p></div>
+          <div className="drawer-empty review-empty">
+            <div>✓</div>
+            <p>Nothing in this queue.</p>
+          </div>
         )}
       </div>
     </aside>
@@ -3216,7 +3524,10 @@ function ActivityPanel({
         <p>The spreadsheet remains stable while agents work.</p>
       </div>
       <div className="activity-list">
-        <SchemaAdaptationReviews jobs={jobs} onAccept={onAcceptSchemaAdaptation} />
+        <SchemaAdaptationReviews
+          jobs={jobs}
+          onAccept={onAcceptSchemaAdaptation}
+        />
         {jobs.length === 0 && (
           <div className="drawer-empty">
             <div>✦</div>
@@ -3283,16 +3594,23 @@ function ActivityPanel({
             )}
             {job.status === "completed" && job.outcome === "changed" && (
               <div className="job-result changed">
-                Added evidence or answers to {job.written ?? 0} row{job.written === 1 ? "" : "s"}.
+                Added evidence or answers to {job.written ?? 0} row
+                {job.written === 1 ? "" : "s"}.
               </div>
             )}
             {(job.status === "queued" || job.status === "running") && (
-              <button className="job-action" onClick={() => void onCancel(job.job_id)}>
+              <button
+                className="job-action"
+                onClick={() => void onCancel(job.job_id)}
+              >
                 Cancel
               </button>
             )}
             {(job.status === "failed" || job.status === "cancelled") && (
-              <button className="job-action" onClick={() => void onRetry(job.job_id)}>
+              <button
+                className="job-action"
+                onClick={() => void onRetry(job.job_id)}
+              >
                 Retry
               </button>
             )}
@@ -3302,7 +3620,8 @@ function ActivityPanel({
             {job.field_suggestions && job.field_suggestions.length > 0 && (
               <FieldSuggestionReview job={job} onAccept={onAcceptFields} />
             )}
-            {!job.schema_adaptation && job.relationship_suggestions &&
+            {!job.schema_adaptation &&
+              job.relationship_suggestions &&
               job.relationship_suggestions.length > 0 && (
                 <RelationshipSuggestionReview
                   job={job}
@@ -3324,7 +3643,8 @@ function RelationshipSuggestionReview({
   onAccept: (jobId: string, suggestionIds: string[]) => Promise<void>;
 }) {
   const pending =
-    job.relationship_suggestions?.filter((item) => item.status === "pending") ?? [];
+    job.relationship_suggestions?.filter((item) => item.status === "pending") ??
+    [];
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -3414,7 +3734,8 @@ function EntitySuggestionReview({
     action: "accept" | "dismiss",
   ) => Promise<void>;
 }) {
-  const pending = job.suggestions?.filter((item) => item.status === "pending") ?? [];
+  const pending =
+    job.suggestions?.filter((item) => item.status === "pending") ?? [];
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -3478,7 +3799,11 @@ function EntitySuggestionReview({
                 className="dismiss-suggestion"
                 onClick={(event) => {
                   event.preventDefault();
-                  void onUpdate(job.job_id, suggestion.suggestion_id, "dismiss");
+                  void onUpdate(
+                    job.job_id,
+                    suggestion.suggestion_id,
+                    "dismiss",
+                  );
                 }}
               >
                 Dismiss
@@ -4282,15 +4607,19 @@ function EntityRelationshipsDrawer({
       .catch((caught) => {
         if (!cancelled)
           setError(
-            caught instanceof Error ? caught.message : "Could not load references",
+            caught instanceof Error
+              ? caught.message
+              : "Could not load references",
           );
       });
     return () => {
       cancelled = true;
     };
   }, [selection.entityId]);
-  const incoming = graph?.edges.filter((edge) => edge.direction === "incoming") ?? [];
-  const outgoing = graph?.edges.filter((edge) => edge.direction === "outgoing") ?? [];
+  const incoming =
+    graph?.edges.filter((edge) => edge.direction === "incoming") ?? [];
+  const outgoing =
+    graph?.edges.filter((edge) => edge.direction === "outgoing") ?? [];
   const groups = incoming.reduce(
     (result, edge) => {
       const key = `${edge.from.kind}:${edge.question}`;
@@ -4315,30 +4644,52 @@ function EntityRelationshipsDrawer({
   return (
     <aside className="drawer entity-relationships-drawer">
       <div className="drawer-head">
-        <div className="eyebrow inspector-eyebrow">INSPECTOR <span>ROW</span></div>
-        <button className="close" onClick={onClose}>×</button>
+        <div className="eyebrow inspector-eyebrow">
+          INSPECTOR <span>ROW</span>
+        </div>
+        <button className="close" onClick={onClose}>
+          ×
+        </button>
         <h2>{selection.entityName}</h2>
         <p>{selection.entityKind} · relationship graph</p>
       </div>
       <div className="drawer-body">
         {error && <div className="form-error">{error}</div>}
-        {!graph && !error && <div className="center"><span className="spinner" />Loading references…</div>}
+        {!graph && !error && (
+          <div className="center">
+            <span className="spinner" />
+            Loading references…
+          </div>
+        )}
         {graph && (
           <>
             <section className="back-reference-section">
               <div className="proposal-heading">
                 <b>Back-references</b>
-                <small>{incoming.length} row{incoming.length === 1 ? "" : "s"} point here.</small>
+                <small>
+                  {incoming.length} row{incoming.length === 1 ? "" : "s"} point
+                  here.
+                </small>
               </div>
               {incoming.length === 0 && (
-                <div className="drawer-empty compact"><div>↩</div><p>No rows currently reference this row.</p></div>
+                <div className="drawer-empty compact">
+                  <div>↩</div>
+                  <p>No rows currently reference this row.</p>
+                </div>
               )}
               {[...groups.entries()].map(([key, group]) => (
                 <div className="back-reference-group" key={key}>
-                  <div><b>{group.kind}</b><code>via {group.question}</code></div>
+                  <div>
+                    <b>{group.kind}</b>
+                    <code>via {group.question}</code>
+                  </div>
                   {group.edges.map((edge) => (
-                    <button key={`${edge.from.entity_id}:${edge.question}`} onClick={() => onNavigate(edge.from)}>
-                      <span>{edge.from.name}</span><small>Open in {edge.from.kind} →</small>
+                    <button
+                      key={`${edge.from.entity_id}:${edge.question}`}
+                      onClick={() => onNavigate(edge.from)}
+                    >
+                      <span>{edge.from.name}</span>
+                      <small>Open in {edge.from.kind} →</small>
                     </button>
                   ))}
                 </div>
@@ -4347,11 +4698,22 @@ function EntityRelationshipsDrawer({
             <section className="outgoing-reference-section">
               <div className="proposal-heading">
                 <b>Outgoing references</b>
-                <small>{outgoing.length} related row{outgoing.length === 1 ? "" : "s"}.</small>
+                <small>
+                  {outgoing.length} related row
+                  {outgoing.length === 1 ? "" : "s"}.
+                </small>
               </div>
               {outgoing.map((edge) => (
-                <button className="outgoing-reference" key={`${edge.to.entity_id}:${edge.question}`} onClick={() => onNavigate(edge.to)}>
-                  <span><code>{edge.question}</code>{edge.to.name}</span><small>{edge.to.kind} →</small>
+                <button
+                  className="outgoing-reference"
+                  key={`${edge.to.entity_id}:${edge.question}`}
+                  onClick={() => onNavigate(edge.to)}
+                >
+                  <span>
+                    <code>{edge.question}</code>
+                    {edge.to.name}
+                  </span>
+                  <small>{edge.to.kind} →</small>
                 </button>
               ))}
             </section>
@@ -4392,9 +4754,7 @@ function CellDrawer({
   onSchemaChallenge: () => void;
   onChallengeResearch: () => void;
   onChallenge: (claimId: string) => void;
-  onAcceptProvisional: (
-    suggestion: ProvisionalRelationship,
-  ) => Promise<void>;
+  onAcceptProvisional: (suggestion: ProvisionalRelationship) => Promise<void>;
   onChanged: () => Promise<void>;
 }) {
   const { cell, entityName, question } = selection;
@@ -4419,7 +4779,9 @@ function CellDrawer({
   return (
     <aside className="drawer">
       <div className="drawer-head">
-        <div className="eyebrow inspector-eyebrow">INSPECTOR <span>CELL</span></div>
+        <div className="eyebrow inspector-eyebrow">
+          INSPECTOR <span>CELL</span>
+        </div>
         <button className="close" onClick={onClose}>
           ×
         </button>
@@ -4481,7 +4843,9 @@ function CellDrawer({
           <section className="provisional-relationships">
             <div className="proposal-heading">
               <b>Provisional related rows</b>
-              <small>Agent findings—not part of the database until approved.</small>
+              <small>
+                Agent findings—not part of the database until approved.
+              </small>
             </div>
             {provisionalRelationships.map((suggestion) => (
               <article
@@ -4551,7 +4915,8 @@ function CellDrawer({
               <code>{claim.token}</code>
             </div>
             <div className="answer">
-              {question.value_type === "URL" && typeof claim.value === "string" ? (
+              {question.value_type === "URL" &&
+              typeof claim.value === "string" ? (
                 <a
                   className="answer-url"
                   href={claim.value}
@@ -4563,7 +4928,8 @@ function CellDrawer({
               ) : question.value_type.startsWith("Ref[") &&
                 typeof claim.value === "string" ? (
                 <span className="relationship-value">
-                  ↗ {cell.references?.find(
+                  ↗{" "}
+                  {cell.references?.find(
                     (reference) => reference.entity_id === claim.value,
                   )?.name ?? claim.value}
                 </span>
