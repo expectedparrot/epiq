@@ -24,7 +24,8 @@ uv run epiq --db /tmp/epiq-ownership.sqlite --format table related \
 | 1 | parent_company | Acorn Devices | Beacon Holdings |
 | 2 | parent_company | Beacon Holdings | Cobalt Group |
 
-Materialize the nearest related owner's risk on Acorn, retaining Cobalt's claim and evidence:
+Materialize the nearest related owner's risk on Acorn, retaining Cobalt's risk claim plus both
+ownership claims and their evidence as typed dependencies:
 
 ```bash
 uv run epiq --db /tmp/epiq-ownership.sqlite propagate \
@@ -35,11 +36,19 @@ uv run epiq --db /tmp/epiq-ownership.sqlite propagate \
 The repeated `record` is idempotent because the fixture already contains the same source and claims.
 Propagation refuses to choose when multiple source claims are equally near.
 
+```bash
+uv run epiq --db /tmp/epiq-ownership.sqlite stale-derivations --kind Company
+```
+
+This initially returns zero. A newer Cobalt risk claim, or a retracted/superseded ownership edge,
+makes Acorn's derived claim stale without erasing the historical calculation.
+
 <!-- epiq-example -->
 ```bash
 examples/cli/corporate-ownership-risk/build.sh "$EPIQ_EXAMPLE_DB"
 epiq --db "$EPIQ_EXAMPLE_DB" propagate --subject "Acorn Devices" \
   --via parent_company --direction outgoing --depth 5 --question risk_level \
   --to-question inherited_risk --valid-from 2026-08-17
+epiq --db "$EPIQ_EXAMPLE_DB" --select count stale-derivations --kind Company
 epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Company
 ```

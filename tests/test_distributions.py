@@ -170,6 +170,10 @@ def test_weighted_distribution_preserves_weights_and_lineage(weather: tuple[Stor
         "operation": "weighted_empirical",
         "parameters": {"weights": [0.25, 0.75]},
         "input_claim_ids": claims,
+        "dependencies": [
+            {"claim_id": claims[0], "role": "operand"},
+            {"claim_id": claims[1], "role": "operand"},
+        ],
     }
     assert cell["lineage"][0]["claim_id"] == derived
 

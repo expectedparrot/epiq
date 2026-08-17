@@ -216,6 +216,32 @@ def test_cli_propagates_claim_through_relationship_path(tmp_path: Path, capsys) 
     ]
     assert cell["value"] == "high"
     assert cell["lineage"][0]["derivation"]["operation"] == "copy"
+    dependencies = cell["lineage"][0]["derivation"]["dependencies"]
+    assert [item["role"] for item in dependencies].count("path") == 2
+
+    _, update_evidence = store.add_evidence(
+        "urn:test:risk-update", "Risk update", "2026-08-18", "Risk is medium", "test"
+    )
+    store.assert_claim("Cobalt", "risk", "medium", "2026-08-18", update_evidence, "test")
+    main(["--db", str(database), "stale-derivations"])
+    stale = json.loads(capsys.readouterr().out)
+    assert stale["count"] == 1
+    assert stale["stale_derivations"][0]["reasons"] == [
+        {
+            "dependency_claim_id": dependencies[0]["claim_id"],
+            "reason": "newer_claim_available",
+            "role": "operand",
+        }
+    ]
+
+    store.add_entity("Company", "Delta", {}, "test")
+    store.assert_claim("Beacon", "parent", "Delta", "2026-08-18", evidence, "test")
+    main(["--db", str(database), "stale-derivations"])
+    stale = json.loads(capsys.readouterr().out)
+    assert any(
+        reason["role"] == "path" and reason["reason"] == "newer_claim_available"
+        for reason in stale["stale_derivations"][0]["reasons"]
+    )
 
 
 def test_cli_crud_matrix_history_and_retraction(tmp_path: Path, capsys) -> None:

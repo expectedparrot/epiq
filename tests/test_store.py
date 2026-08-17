@@ -449,7 +449,7 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "12"
+    assert store.overview()["project"]["schema_version"] == "13"
 
 
 def test_compound_entity_identity_is_idempotent(store: Store) -> None:
@@ -476,9 +476,7 @@ def test_general_derivation_persists_formula_inputs_and_evidence(store: Store) -
         _, evidence = store.add_evidence(
             f"https://example.test/{index}", "Forecast", "2026-08-17", str(value), "test"
         )
-        inputs.append(
-            store.assert_claim(event, "forecast", value, "2026-08-17", evidence, "test")
-        )
+        inputs.append(store.assert_claim(event, "forecast", value, "2026-08-17", evidence, "test"))
     derived = store.derive_claim(
         event,
         "ensemble",
@@ -495,6 +493,10 @@ def test_general_derivation_persists_formula_inputs_and_evidence(store: Store) -
         "operation": "weighted_avg",
         "parameters": {"weights": [1, 3]},
         "input_claim_ids": inputs,
+        "dependencies": [
+            {"claim_id": inputs[0], "role": "operand"},
+            {"claim_id": inputs[1], "role": "operand"},
+        ],
     }
     assert derived == cell["lineage"][0]["claim_id"]
 
@@ -512,11 +514,15 @@ def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) 
             "version": 12,
             "description": "entity roles, compound identities, and structured source locators",
         },
+        {
+            "version": 13,
+            "description": "typed derivation dependencies and stale-derived-claim detection",
+        },
     ]
     backup = tmp_path / "before-v10.sqlite"
     result = store.migrate(backup)
     assert result["before"]["current_version"] == 9
-    assert result["after"]["current_version"] == 12
+    assert result["after"]["current_version"] == 13
     assert result["after"]["pending"] == []
     with sqlite3.connect(backup) as connection:
         assert (

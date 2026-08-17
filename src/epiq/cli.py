@@ -646,6 +646,10 @@ def parser() -> argparse.ArgumentParser:
     propagate.add_argument("--depth", type=int, default=1)
     propagate.add_argument("--valid-from", required=True)
     propagate.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
+    stale_derivations = commands.add_parser(
+        "stale-derivations", help="Find derived claims whose dependencies changed"
+    )
+    stale_derivations.add_argument("--kind")
     return root
 
 
@@ -1308,6 +1312,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             args.confidence,
         )
         return {"ok": True, "claim_id": claim_id, "source_entity": source}
+    if args.command == "stale-derivations":
+        return store.stale_derivations(args.kind)
     raise AssertionError(args.command)
 
 

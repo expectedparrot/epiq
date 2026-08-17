@@ -34,7 +34,7 @@ QUESTION_CHALLENGE_PROBLEMS = {
     "other",
 }
 
-LATEST_SCHEMA_VERSION = 12
+LATEST_SCHEMA_VERSION = 13
 MIGRATION_DESCRIPTIONS = {
     2: "multi-evidence claims and derivation lineage",
     3: "source publication time and claim temporal basis",
@@ -47,6 +47,7 @@ MIGRATION_DESCRIPTIONS = {
     10: "claim validity endings and evidence assessments",
     11: "first-class evidence source types",
     12: "entity roles, compound identities, and structured source locators",
+    13: "typed derivation dependencies and stale-derived-claim detection",
 }
 
 SCHEMA = """
@@ -223,6 +224,19 @@ CREATE TABLE IF NOT EXISTS claim_inputs (
     UNIQUE(claim_id, ordinal),
     CHECK(claim_id <> input_claim_id)
 );
+
+CREATE TABLE IF NOT EXISTS derivation_dependencies (
+    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+    dependency_claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+    role TEXT NOT NULL CHECK(role IN ('operand', 'parameter', 'path')),
+    ordinal INTEGER NOT NULL,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    PRIMARY KEY(claim_id, role, dependency_claim_id),
+    UNIQUE(claim_id, role, ordinal),
+    CHECK(claim_id <> dependency_claim_id)
+);
+CREATE INDEX IF NOT EXISTS idx_derivation_dependency_claim
+ON derivation_dependencies(dependency_claim_id);
 
 CREATE TABLE IF NOT EXISTS claim_proposals (
     proposal_id TEXT PRIMARY KEY,
@@ -615,6 +629,23 @@ class Store:
                 ON entities(kind, identity_hash) WHERE identity_hash IS NOT NULL;
                 UPDATE meta SET value='12'
                 WHERE key='schema_version' AND CAST(value AS INTEGER)<12;
+                CREATE TABLE IF NOT EXISTS derivation_dependencies (
+                    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+                    dependency_claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+                    role TEXT NOT NULL CHECK(role IN ('operand', 'parameter', 'path')),
+                    ordinal INTEGER NOT NULL,
+                    created_seq INTEGER NOT NULL REFERENCES events(seq),
+                    PRIMARY KEY(claim_id, role, dependency_claim_id),
+                    UNIQUE(claim_id, role, ordinal),
+                    CHECK(claim_id <> dependency_claim_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_derivation_dependency_claim
+                ON derivation_dependencies(dependency_claim_id);
+                INSERT OR IGNORE INTO derivation_dependencies
+                    (claim_id,dependency_claim_id,role,ordinal,created_seq)
+                SELECT claim_id,input_claim_id,'operand',ordinal,created_seq FROM claim_inputs;
+                UPDATE meta SET value='13'
+                WHERE key='schema_version' AND CAST(value AS INTEGER)<13;
                 """
             )
             connection.commit()
@@ -2378,6 +2409,13 @@ class Store:
                     for ordinal, input_claim_id in enumerate(inputs)
                 ],
             )
+            connection.executemany(
+                "INSERT OR IGNORE INTO derivation_dependencies VALUES(?,?,?,?,?)",
+                [
+                    (claim_id, input_claim_id, "operand", ordinal, seq)
+                    for ordinal, input_claim_id in enumerate(inputs)
+                ],
+            )
             return claim_id
 
     def derive_claim(
@@ -2391,6 +2429,7 @@ class Store:
         parameters: dict[str, Any] | None = None,
         confidence: str = "medium",
         parameter_claim_ids: list[str] | None = None,
+        path_claim_ids: list[str] | None = None,
     ) -> str:
         """Compute and persist a typed claim with complete input-claim lineage."""
         allowed = {"sum", "avg", "min", "max", "count", "weighted_avg", "linear", "copy"}
@@ -2401,6 +2440,7 @@ class Store:
             raise EpiqError("input_claims_required", "At least one input claim is required")
         params = dict(parameters or {})
         parameter_inputs = list(dict.fromkeys(parameter_claim_ids or []))
+        path_inputs = list(dict.fromkeys(path_claim_ids or []))
         with self.transaction() as connection:
             values: list[Any] = []
             evidence_ids: list[str] = []
@@ -2430,6 +2470,20 @@ class Store:
                         "claim_not_found", f"Active parameter claim not found: {claim_id}"
                     )
                 parameter_values.append(json.loads(str(claim["value_json"])))
+                evidence_ids.extend(
+                    str(row["evidence_id"])
+                    for row in connection.execute(
+                        "SELECT evidence_id FROM claim_evidence WHERE claim_id=? ORDER BY ordinal",
+                        (claim_id,),
+                    )
+                )
+            for claim_id in path_inputs:
+                claim = connection.execute(
+                    "SELECT * FROM claims WHERE claim_id=? AND status='asserted' AND tx_to IS NULL",
+                    (claim_id,),
+                ).fetchone()
+                if not claim:
+                    raise EpiqError("claim_not_found", f"Active path claim not found: {claim_id}")
                 evidence_ids.extend(
                     str(row["evidence_id"])
                     for row in connection.execute(
@@ -2509,10 +2563,13 @@ class Store:
                     "operation": operation,
                     "input_claim_ids": inputs,
                     "parameter_claim_ids": parameter_inputs,
+                    "path_claim_ids": path_inputs,
                 },
             )
             if parameter_inputs:
                 params["parameter_claim_ids"] = parameter_inputs
+            if path_inputs:
+                params["path_claim_ids"] = path_inputs
             connection.execute(
                 "INSERT OR IGNORE INTO derivations VALUES(?,?,?,?)",
                 (claim_id, operation, _json(params), seq),
@@ -2520,6 +2577,21 @@ class Store:
             connection.executemany(
                 "INSERT OR IGNORE INTO claim_inputs VALUES(?,?,?,?)",
                 [(claim_id, input_id, ordinal, seq) for ordinal, input_id in enumerate(inputs)],
+            )
+            dependencies = [
+                (claim_id, input_id, "operand", ordinal, seq)
+                for ordinal, input_id in enumerate(inputs)
+            ]
+            dependencies.extend(
+                (claim_id, input_id, "parameter", ordinal, seq)
+                for ordinal, input_id in enumerate(parameter_inputs)
+            )
+            dependencies.extend(
+                (claim_id, input_id, "path", ordinal, seq)
+                for ordinal, input_id in enumerate(path_inputs)
+            )
+            connection.executemany(
+                "INSERT OR IGNORE INTO derivation_dependencies VALUES(?,?,?,?,?)", dependencies
             )
             return claim_id
 
@@ -2604,7 +2676,7 @@ class Store:
     ) -> tuple[str, str]:
         """Materialize a claim found through a relationship path."""
         traversal = self.related(subject, via, direction, depth)
-        candidates: list[tuple[int, str, str]] = []
+        candidates: list[tuple[int, str, str, list[str]]] = []
         for edge in traversal["edges"]:
             endpoint = edge["to"] if edge["direction"] == "outgoing" else edge["from"]
             try:
@@ -2613,7 +2685,15 @@ class Store:
                 if exc.code == "claim_not_found":
                     continue
                 raise
-            candidates.extend((int(edge["depth"]), str(endpoint["name"]), item) for item in claims)
+            candidates.extend(
+                (
+                    int(edge["depth"]),
+                    str(endpoint["name"]),
+                    item,
+                    list(edge["path_claim_ids"]),
+                )
+                for item in claims
+            )
         if not candidates:
             raise EpiqError("claim_not_found", "No related entity has an active source claim")
         nearest_depth = min(item[0] for item in candidates)
@@ -2622,7 +2702,7 @@ class Store:
             raise EpiqError(
                 "ambiguous_propagation", "Multiple equally near source claims were found"
             )
-        _, source_name, input_id = nearest[0]
+        _, source_name, input_id, path_claim_ids = nearest[0]
         claim_id = self.derive_claim(
             subject,
             target_question,
@@ -2637,6 +2717,7 @@ class Store:
                 "source_entity": source_name,
             },
             confidence,
+            path_claim_ids=path_claim_ids,
         )
         return claim_id, source_name
 
@@ -2654,6 +2735,97 @@ class Store:
         if not rows:
             raise EpiqError("claim_not_found", f"No active claim for {subject} / {question}")
         return [str(row["claim_id"]) for row in rows]
+
+    def stale_derivations(self, kind: str | None = None) -> dict[str, Any]:
+        """Report active derived claims whose typed dependencies are no longer current."""
+        with self.connect() as connection:
+            derived = connection.execute(
+                """SELECT c.claim_id,c.subject_id,c.question_id,c.created_seq,
+                          e.name,q.name question,e.kind
+                   FROM claims c JOIN derivations d ON d.claim_id=c.claim_id
+                   JOIN entities e ON e.entity_id=c.subject_id
+                   JOIN questions q ON q.question_id=c.question_id
+                   WHERE c.status='asserted' AND c.tx_to IS NULL
+                   AND (? IS NULL OR e.kind=?) ORDER BY c.created_seq""",
+                (kind, kind),
+            ).fetchall()
+            items: list[dict[str, Any]] = []
+            stale_ids: set[str] = set()
+            pending = list(derived)
+            while pending:
+                progressed = False
+                deferred: list[sqlite3.Row] = []
+                for claim in pending:
+                    dependencies = connection.execute(
+                        """SELECT dd.role,dd.dependency_claim_id,c.status,c.tx_to,c.subject_id,
+                                  c.question_id,c.created_seq
+                           FROM derivation_dependencies dd
+                           JOIN claims c ON c.claim_id=dd.dependency_claim_id
+                           WHERE dd.claim_id=? ORDER BY dd.role,dd.ordinal""",
+                        (claim["claim_id"],),
+                    ).fetchall()
+                    unresolved_derived = [
+                        row
+                        for row in dependencies
+                        if connection.execute(
+                            "SELECT 1 FROM derivations WHERE claim_id=?",
+                            (row["dependency_claim_id"],),
+                        ).fetchone()
+                        and str(row["dependency_claim_id"]) not in stale_ids
+                        and any(
+                            str(other["claim_id"]) == str(row["dependency_claim_id"])
+                            for other in pending
+                            if str(other["claim_id"]) != str(claim["claim_id"])
+                        )
+                    ]
+                    if unresolved_derived:
+                        deferred.append(claim)
+                        continue
+                    reasons: list[dict[str, Any]] = []
+                    for dependency in dependencies:
+                        dependency_id = str(dependency["dependency_claim_id"])
+                        reason = None
+                        if dependency_id in stale_ids:
+                            reason = "dependency_stale"
+                        elif dependency["status"] != "asserted" or dependency["tx_to"] is not None:
+                            reason = "dependency_inactive"
+                        else:
+                            newer = connection.execute(
+                                """SELECT claim_id FROM claims WHERE subject_id=? AND question_id=?
+                                   AND status='asserted' AND tx_to IS NULL AND created_seq>?
+                                   ORDER BY created_seq DESC LIMIT 1""",
+                                (
+                                    dependency["subject_id"],
+                                    dependency["question_id"],
+                                    dependency["created_seq"],
+                                ),
+                            ).fetchone()
+                            if newer:
+                                reason = "newer_claim_available"
+                        if reason:
+                            reasons.append(
+                                {
+                                    "dependency_claim_id": dependency_id,
+                                    "role": str(dependency["role"]),
+                                    "reason": reason,
+                                }
+                            )
+                    if reasons:
+                        stale_ids.add(str(claim["claim_id"]))
+                        items.append(
+                            {
+                                "claim_id": str(claim["claim_id"]),
+                                "subject": str(claim["name"]),
+                                "kind": str(claim["kind"]),
+                                "question": str(claim["question"]),
+                                "reasons": reasons,
+                            }
+                        )
+                    progressed = True
+                if not deferred or not progressed:
+                    break
+                pending = deferred
+        return {"count": len(items), "stale_derivations": items}
 
     @staticmethod
     def _check_value_type(value_type: str, value: Any) -> None:
@@ -3532,6 +3704,13 @@ class Store:
                         graph_edges.append(
                             {
                                 "question": question,
+                                "claim_ids": list(
+                                    dict.fromkeys(
+                                        str(item["claim_id"])
+                                        for item in cell.get("lineage", [])
+                                        if item.get("value") == reference["entity_id"]
+                                    )
+                                ),
                                 "from": {
                                     "entity_id": row["entity_id"],
                                     "name": row["name"],
@@ -3541,11 +3720,11 @@ class Store:
                             }
                         )
         edges: list[dict[str, Any]] = []
-        frontier = {target_id}
+        frontier = {target_id: []}
         visited_entities = {target_id}
         visited_edges: set[tuple[str, str, str, str]] = set()
         for level in range(1, depth + 1):
-            next_frontier: set[str] = set()
+            next_frontier: dict[str, list[str]] = {}
             for edge in graph_edges:
                 candidates: list[tuple[str, str]] = []
                 if direction in {"outgoing", "both"} and edge["from"]["entity_id"] in frontier:
@@ -3562,9 +3741,22 @@ class Store:
                     if key in visited_edges:
                         continue
                     visited_edges.add(key)
-                    edges.append({"direction": edge_direction, "depth": level, **edge})
+                    current_id = (
+                        str(edge["from"]["entity_id"])
+                        if edge_direction == "outgoing"
+                        else str(edge["to"]["entity_id"])
+                    )
+                    path_claim_ids = [*frontier[current_id], *edge["claim_ids"]]
+                    edges.append(
+                        {
+                            "direction": edge_direction,
+                            "depth": level,
+                            "path_claim_ids": path_claim_ids,
+                            **edge,
+                        }
+                    )
                     if next_id not in visited_entities:
-                        next_frontier.add(next_id)
+                        next_frontier[next_id] = path_claim_ids
                         visited_entities.add(next_id)
             frontier = next_frontier
             if not frontier:
@@ -3753,6 +3945,17 @@ class Store:
                     (claim["claim_id"], cutoff),
                 )
             ]
+            dependencies = [
+                {
+                    "claim_id": str(row["dependency_claim_id"]),
+                    "role": str(row["role"]),
+                }
+                for row in connection.execute(
+                    """SELECT dependency_claim_id,role FROM derivation_dependencies
+                       WHERE claim_id=? ORDER BY role,ordinal""",
+                    (claim["claim_id"],),
+                )
+            ]
             for evidence_row in evidence_rows:
                 assessment = connection.execute(
                     """SELECT a.status,a.reason FROM evidence_assessments a
@@ -3795,6 +3998,7 @@ class Store:
                         "operation": derivation["operation"],
                         "parameters": json.loads(derivation["parameters_json"]),
                         "input_claim_ids": input_claim_ids,
+                        "dependencies": dependencies,
                     }
                 lineage.append(item)
         volatility = definition.get("volatility", "stable")

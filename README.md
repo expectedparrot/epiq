@@ -1205,6 +1205,17 @@ epiq propagate --subject Acorn --via parent_company --direction outgoing --depth
   --question risk_level --to-question inherited_risk --valid-from 2026-08-17
 ```
 
+Every derived claim has typed `operand`, `parameter`, and `path` dependencies. Check whether an
+input has been retracted, superseded, or followed by a newer active claim:
+
+```bash
+epiq stale-derivations
+epiq stale-derivations --kind Company
+```
+
+Staleness is reported rather than silently recomputed: the original derivation remains an auditable
+historical assertion, while an agent or human can inspect the change and rematerialize it.
+
 For scripts, suppress successful output, select one JSON path, or request collected IDs:
 
 ```bash

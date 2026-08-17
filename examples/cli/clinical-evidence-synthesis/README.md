@@ -29,9 +29,10 @@ uv run epiq --db /tmp/epiq-clinical.sqlite --actor agent:review derive \
 Output value: `0.4`. The dossier contains both input claim IDs, both evidence records, their Study
 entity links, and locators `page 14/table 2` and `page 9/table 3`.
 
-The weights are claims, not copied constants. Their claim IDs and evidence remain in the derivation
-lineage. A real meta-analysis would additionally need first-class uncertainty and statistical model
-types.
+The weights are claims, not copied constants. They appear as `parameter` dependencies and their
+evidence remains in the derivation lineage. `epiq stale-derivations` will flag the pooled estimate
+after either an effect or sample-size claim is replaced. A real meta-analysis would additionally
+need first-class uncertainty and statistical model types.
 
 <!-- epiq-example -->
 ```bash
