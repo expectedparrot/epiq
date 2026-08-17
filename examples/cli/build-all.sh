@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$output_dir"
 
-for example in hiring-committee investment-opportunities competitor-features public-figure-writing forecasting-tournament saas-pricing literature-review supply-chain-risk; do
+for example in hiring-committee investment-opportunities competitor-features public-figure-writing forecasting-tournament saas-pricing literature-review supply-chain-risk clinical-evidence-synthesis procurement-normalization corporate-ownership-risk; do
   "$script_dir/$example/build.sh" "$output_dir/$example.sqlite"
 done
 

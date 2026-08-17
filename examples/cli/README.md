@@ -21,6 +21,9 @@ Then use the stress tests to find the edges of the current product:
 6. [SaaS pricing](saas-pricing/README.md) — multidimensional facts and join entities.
 7. [Literature review](literature-review/README.md) — findings, citations, and claims about claims.
 8. [Supply-chain risk](supply-chain-risk/README.md) — recursive relationships and risk propagation.
+9. [Clinical evidence synthesis](clinical-evidence-synthesis/README.md) — source-linked citations and weighted derived claims.
+10. [Procurement normalization](procurement-normalization/README.md) — compound quote identities and landed-cost lineage.
+11. [Corporate ownership risk](corporate-ownership-risk/README.md) — multi-row evidence and recursive ownership paths.
 
 Every tutorial has two ways to run it:
 

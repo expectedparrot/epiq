@@ -1,0 +1,5 @@
+[
+{"op":"evidence.add","ref":"registry","url":"https://example.test/registry/group","title":"Corporate registry extract","retrieved_at":"2026-08-17","locator":{"filing":"2026-1842","section":"Ownership"},"excerpt":"Acorn Devices is owned by Beacon Holdings. Beacon Holdings is owned by Cobalt Group."},
+{"op":"evidence.add","ref":"risk","url":"https://example.test/risk/cobalt","title":"Cobalt risk bulletin","retrieved_at":"2026-08-17","excerpt":"Cobalt Group is currently classified high risk."},
+{"op":"claim.assert","subject":"Acorn Devices","question":"parent_company","value":"Beacon Holdings","valid_from":"2026-08-17","evidence_refs":["registry"]},{"op":"claim.assert","subject":"Beacon Holdings","question":"parent_company","value":"Cobalt Group","valid_from":"2026-08-17","evidence_refs":["registry"]},{"op":"claim.assert","subject":"Cobalt Group","question":"risk_level","value":"high","valid_from":"2026-08-17","evidence_refs":["risk"]}
+]
