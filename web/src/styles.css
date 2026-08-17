@@ -535,6 +535,63 @@ button:hover {
   margin-left: auto;
   color: var(--muted);
 }
+.edit-field-button {
+  color: #356b57 !important;
+}
+.schema-version-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f5f6f1;
+  padding: 9px 11px;
+}
+.schema-version-note span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.schema-version-note code {
+  color: #356b57;
+  font: 10px DM Mono;
+}
+.revision-preview {
+  margin-top: 14px;
+  border: 1px solid;
+  border-radius: 8px;
+  padding: 12px;
+}
+.revision-preview.compatible {
+  border-color: #9bc7ae;
+  background: #eff8f2;
+  color: #286047;
+}
+.revision-preview.incompatible {
+  border-color: #ddb46e;
+  background: #fff7e7;
+  color: #76551d;
+}
+.revision-preview > p {
+  margin: 5px 0 0;
+  font-size: 10px;
+}
+.revision-preview > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.7fr) minmax(80px, 1fr);
+  gap: 3px 9px;
+  margin-top: 9px;
+  border-top: 1px solid #d9c89f;
+  padding-top: 8px;
+}
+.revision-preview > div code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.revision-preview > div small {
+  grid-column: 1 / -1;
+}
 .state-contested {
   background: #fff9ee;
 }

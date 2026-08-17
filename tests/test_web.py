@@ -263,6 +263,56 @@ def test_health_doctor_and_online_backup_endpoints(tmp_path: Path) -> None:
     assert Store(restored).overview()["project"]["name"] == "Operational test"
 
 
+def test_schema_revisions_preview_compatibility_and_preserve_answers(tmp_path: Path) -> None:
+    database = tmp_path / "schema-revision.sqlite"
+    project = Store(database)
+    project.initialize("Schema revision")
+    company = project.add_entity("Company", "Acorn", {}, "test")
+    question = project.add_question("employees", "Company", "Int", {"label": "Employees"}, "test")
+    _, evidence = project.add_evidence(
+        "https://example.test/acorn",
+        "Acorn",
+        "2026-08-17",
+        "Acorn employs 42 people.",
+        "test",
+    )
+    project.assert_claim(company, question, 42, "2026-08-17", evidence, "test")
+    client = TestClient(create_app(database, tmp_path / "missing-frontend"))
+
+    body = {
+        "value_type": "Float",
+        "definition": {"label": "Employee estimate", "cardinality": "one"},
+        "reason": "Represent estimates with decimals",
+    }
+    preview = client.post(f"/api/questions/{question}/revision-preview", json=body)
+    assert preview.status_code == 200
+    assert preview.json()["can_apply"] is True
+    assert preview.json()["checked_values"] == 1
+
+    revised = client.post(f"/api/questions/{question}/revise", json=body)
+    assert revised.status_code == 201
+    matrix = client.get("/api/matrix/Company").json()
+    assert matrix["questions"][0]["value_type"] == "Float"
+    assert matrix["questions"][0]["definition"]["label"] == "Employee estimate"
+    assert matrix["rows"][0]["cells"]["employees"]["value"] == 42
+
+    incompatible = {
+        **body,
+        "value_type": "URL",
+        "reason": "Incorrect attempted conversion",
+    }
+    rejected_preview = client.post(
+        f"/api/questions/{revised.json()['question_id']}/revision-preview",
+        json=incompatible,
+    ).json()
+    assert rejected_preview["can_apply"] is False
+    rejected = client.post(
+        f"/api/questions/{revised.json()['question_id']}/revise", json=incompatible
+    )
+    assert rejected.status_code == 400
+    assert rejected.json()["error"]["code"] == "incompatible_schema_revision"
+
+
 def test_agent_discovery_diagnostics_and_derivation_api(tmp_path: Path) -> None:
     database = tmp_path / "agent-api.sqlite"
     uninitialized = TestClient(create_app(database, tmp_path / "missing-frontend"))

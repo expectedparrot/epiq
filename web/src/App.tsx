@@ -37,6 +37,7 @@ type Dialog =
   | "policy"
   | "challenge"
   | "schemaChallenge"
+  | "editQuestion"
   | "retireQuestion"
   | "researchChallenge"
   | null;
@@ -113,6 +114,7 @@ export default function App() {
   const [schemaChallengeQuestion, setSchemaChallengeQuestion] =
     useState<Question | null>(null);
   const [retireQuestion, setRetireQuestion] = useState<Question | null>(null);
+  const [editQuestion, setEditQuestion] = useState<Question | null>(null);
   const [questionChallenges, setQuestionChallenges] = useState<
     QuestionChallenge[]
   >([]);
@@ -1111,6 +1113,16 @@ export default function App() {
                               : "✦ Research"}
                           </button>
                           <button
+                            className="policy-button edit-field-button"
+                            title="Edit and apply a new field version"
+                            onClick={() => {
+                              setEditQuestion(question);
+                              setDialog("editQuestion");
+                            }}
+                          >
+                            ✎
+                          </button>
+                          <button
                             className="policy-button"
                             title="Set field time policy"
                             onClick={() => {
@@ -1425,6 +1437,16 @@ export default function App() {
           kind={kind}
           questions={matrix?.questions ?? []}
           onClose={() => setDialog(null)}
+          onSaved={refresh}
+        />
+      )}
+      {dialog === "editQuestion" && editQuestion && (
+        <EditQuestionDialog
+          question={editQuestion}
+          onClose={() => {
+            setDialog(null);
+            setEditQuestion(null);
+          }}
           onSaved={refresh}
         />
       )}
@@ -2039,6 +2061,210 @@ function QuestionDialog({
             Cancel
           </button>
           <button className="primary">Add field</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+type RevisionPreview = {
+  checked_values: number;
+  compatible_values: number;
+  incompatible_values: Array<{
+    entity_id: string;
+    entity_name: string;
+    value: unknown;
+    error: string;
+  }>;
+  can_apply: boolean;
+};
+
+function EditQuestionDialog({
+  question,
+  onClose,
+  onSaved,
+}: {
+  question: Question;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const isEnum = question.value_type.startsWith("Enum[");
+  const [label, setLabel] = useState(
+    String(question.definition.label ?? question.name),
+  );
+  const [type, setType] = useState(isEnum ? "Enum" : question.value_type);
+  const [enumChoices, setEnumChoices] = useState(
+    isEnum ? question.value_type.slice(5, -1) : "",
+  );
+  const [cardinality, setCardinality] = useState(
+    String(question.definition.cardinality ?? "one"),
+  );
+  const [volatility, setVolatility] = useState(
+    String(question.definition.volatility ?? "stable"),
+  );
+  const [freshnessDays, setFreshnessDays] = useState(
+    question.definition.freshness_days == null
+      ? ""
+      : String(question.definition.freshness_days),
+  );
+  const [guidance, setGuidance] = useState(
+    String(question.definition.research_guidance ?? ""),
+  );
+  const [reason, setReason] = useState("");
+  const [preview, setPreview] = useState<RevisionPreview | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const standardTypes = [
+    "String",
+    "URL",
+    "Int",
+    "Float",
+    "Probability",
+    "Bool",
+    "Date",
+    "DateTime",
+    "Year",
+    "Json",
+    "Distribution[Float]",
+  ];
+  const valueType =
+    type === "Enum"
+      ? `Enum[${[
+          ...new Set(
+            enumChoices
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean),
+          ),
+        ].join(",")}]`
+      : type;
+  const definition = {
+    ...question.definition,
+    label: label.trim() || question.name,
+    cardinality,
+    volatility,
+    freshness_days: freshnessDays ? Number(freshnessDays) : null,
+    research_guidance: guidance.trim(),
+  };
+  const body = { value_type: valueType, definition, reason };
+  const review = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      setPreview(
+        await post<RevisionPreview>(
+          `/api/questions/${question.question_id}/revision-preview`,
+          body,
+        ),
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not review changes");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const apply = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/api/questions/${question.question_id}/revise`, body);
+      onClose();
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not apply changes");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={`Edit ${String(question.definition.label ?? question.name)}`}
+      subtitle="Changes create a new field version. Existing evidence and answers remain in history."
+      onClose={onClose}
+    >
+      <form onSubmit={(event) => void review(event)} onChange={() => setPreview(null)}>
+        <div className="schema-version-note">
+          <span>Stable field key</span><code>{question.name}</code>
+        </div>
+        <div className="form-grid">
+          <label>
+            Display label
+            <input value={label} onChange={(event) => setLabel(event.target.value)} required />
+          </label>
+          <label>
+            Value type
+            <select value={type} onChange={(event) => setType(event.target.value)}>
+              {!isEnum && !standardTypes.includes(question.value_type) && (
+                <option>{question.value_type}</option>
+              )}
+              {standardTypes.map((item) => <option key={item}>{item}</option>)}
+              <option value="Enum">Enum · fixed choices</option>
+            </select>
+          </label>
+        </div>
+        {type === "Enum" && (
+          <label>
+            Allowed choices
+            <input value={enumChoices} onChange={(event) => setEnumChoices(event.target.value)} required />
+          </label>
+        )}
+        <div className="form-grid">
+          <label>
+            Cardinality
+            <select value={cardinality} onChange={(event) => setCardinality(event.target.value)}>
+              <option value="one">One current answer</option>
+              <option value="many">Multiple current answers</option>
+            </select>
+          </label>
+          <label>
+            Volatility
+            <select value={volatility} onChange={(event) => setVolatility(event.target.value)}>
+              <option value="stable">Stable</option>
+              <option value="slow">Slow-changing</option>
+              <option value="dynamic">Dynamic</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Consider stale after <span>Days; blank means no expiry</span>
+          <input type="number" min="1" value={freshnessDays} onChange={(event) => setFreshnessDays(event.target.value)} />
+        </label>
+        <label>
+          Instructions for researchers <span>Optional</span>
+          <textarea value={guidance} onChange={(event) => setGuidance(event.target.value)} />
+        </label>
+        <label>
+          Why are you changing the schema?
+          <textarea value={reason} onChange={(event) => setReason(event.target.value)} required />
+        </label>
+        {preview && (
+          <div className={`revision-preview ${preview.can_apply ? "compatible" : "incompatible"}`}>
+            <b>{preview.can_apply ? "✓ Ready to apply" : "⚠ Existing values need attention"}</b>
+            <p>
+              Checked {preview.checked_values} current value{preview.checked_values === 1 ? "" : "s"}; {preview.compatible_values} match {valueType}.
+            </p>
+            {preview.incompatible_values.map((item) => (
+              <div key={`${item.entity_id}:${JSON.stringify(item.value)}`}>
+                <strong>{item.entity_name}</strong>
+                <code>{display(item.value)}</code>
+                <small>{item.error}</small>
+              </div>
+            ))}
+          </div>
+        )}
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+          {!preview ? (
+            <button className="primary" disabled={busy || !reason.trim()}>
+              {busy ? "Checking…" : "Review changes →"}
+            </button>
+          ) : (
+            <button type="button" className="primary" disabled={busy || !preview.can_apply} onClick={() => void apply()}>
+              {busy ? "Applying…" : "Apply new version"}
+            </button>
+          )}
         </div>
       </form>
     </Modal>

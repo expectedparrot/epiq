@@ -1032,6 +1032,8 @@ The application currently supports:
 - challenging incorrect answers, failed searches, and category/schema mistakes while preserving
   human guidance for subsequent agent runs;
 - reversibly removing fields without deleting their historical claims or evidence;
+- editing field labels, types, cardinality, time policy, and agent guidance through a compatibility
+  preview before applying an immutable new schema version;
 - launching cell, row, column, and whole-table research with incremental progress indicators;
 - cancelling queued or running research without accepting late results, and retrying failed jobs;
 - finding independent supporting evidence without returning sources already attached to a claim;
@@ -1102,6 +1104,8 @@ The principal endpoints are:
 | `POST` | `/api/entities` | Add a row |
 | `POST` | `/api/apply` | Atomically converge a declarative project document |
 | `POST` | `/api/entities/{id}/aliases` | Add an alternate stable identity |
+| `POST` | `/api/questions/{id}/revision-preview` | Check a proposed field version against current values |
+| `POST` | `/api/questions/{id}/revise` | Apply a compatible field revision with schema lineage |
 | `POST` | `/api/entities/{id}/merge` | Merge a duplicate into a surviving row |
 | `POST` | `/api/entities/{id}/retire` | Retire a row without erasing it |
 | `POST` | `/api/entities/{id}/restore` | Restore a retired row |

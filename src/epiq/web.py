@@ -95,6 +95,13 @@ class QuestionPolicyCreate(BaseModel):
     actor: str = "human:web"
 
 
+class QuestionRevisionCreate(BaseModel):
+    value_type: str = Field(min_length=1)
+    definition: dict[str, Any]
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
 class QuestionVisibilityCreate(BaseModel):
     reason: str = Field(min_length=1)
     actor: str = "human:web"
@@ -864,6 +871,68 @@ def create_app(
             body.actor,
         )
         return {"question_id": next_id}
+
+    def preview_question_revision(question_id: str, body: QuestionRevisionCreate) -> dict[str, Any]:
+        project = store()
+        project._check_type_declaration(body.value_type)
+        with project.connect() as connection:
+            question = project._resolve_question(connection, question_id)
+        projection = project.matrix(str(question["subject_kind"]))
+        incompatible = []
+        checked = 0
+        for row in projection["rows"]:
+            cell = row["cells"][str(question["name"])]
+            for value in cell.get("values", []):
+                checked += 1
+                try:
+                    project._check_value_type(body.value_type, value)
+                except EpiqError as error:
+                    incompatible.append(
+                        {
+                            "entity_id": row["entity_id"],
+                            "entity_name": row["name"],
+                            "value": value,
+                            "error": error.message,
+                        }
+                    )
+        return {
+            "question_id": str(question["question_id"]),
+            "name": str(question["name"]),
+            "current_value_type": str(question["value_type"]),
+            "proposed_value_type": body.value_type,
+            "checked_values": checked,
+            "compatible_values": checked - len(incompatible),
+            "incompatible_values": incompatible,
+            "can_apply": not incompatible,
+        }
+
+    @app.post("/api/questions/{question_id}/revision-preview")
+    def question_revision_preview(question_id: str, body: QuestionRevisionCreate) -> dict[str, Any]:
+        return preview_question_revision(question_id, body)
+
+    @app.post("/api/questions/{question_id}/revise", status_code=201)
+    def revise_question(question_id: str, body: QuestionRevisionCreate) -> dict[str, Any]:
+        preview = preview_question_revision(question_id, body)
+        if not preview["can_apply"]:
+            raise EpiqError(
+                "incompatible_schema_revision",
+                f"{len(preview['incompatible_values'])} current value(s) do not match "
+                f"{body.value_type}; retract or supersede them before applying this revision",
+            )
+        successor = store().evolve_question(
+            question_id,
+            [
+                {
+                    "name": preview["name"],
+                    "value_type": body.value_type,
+                    "definition": body.definition,
+                }
+            ],
+            "refines",
+            body.reason,
+            body.actor,
+        )[0]
+        return {"question_id": successor, "preview": preview}
 
     @app.post("/api/questions/{question_id}/retire")
     def retire_question(question_id: str, body: QuestionVisibilityCreate) -> dict[str, str]:
