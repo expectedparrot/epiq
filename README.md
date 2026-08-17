@@ -736,19 +736,45 @@ The generic explorer discovers questions from the database and displays:
 - evidence excerpts and source links;
 - confidence and claim-token lineage.
 
-Create a native Excel workbook:
+Create a multi-sheet Excel audit workbook:
 
 ```bash
-epiq export-xlsx --kind Town --output reports/towns.xlsx
+epiq export --format xlsx --kind Town --output-path reports/towns.xlsx
 ```
 
-The workbook contains three sheets:
+The workbook contains five sheets:
 
-- `Data`: a conventional entity-by-question table.
+- `Table`: a conventional entity-by-question table.
 - `Evidence`: one row per active claim lineage, including URLs and excerpts.
-- `Unknowns`: `Unasked`, `NotFound`, and contested cells.
+- `Research Gaps`: `Unasked`, `NotFound`, and contested cells.
+- `Field Schema`: field keys, labels, types, cardinality, and definitions.
+- `Event Log`: the append-only audit history with actors, timestamps, and payloads.
 
-Both exporters are projections. The SQLite database remains the source of truth.
+Export the same current table as a native EDSL Git-backed package:
+
+```bash
+epiq export --format scenario-list --kind Town \
+  --output-path reports/towns.scenario_list.ep
+
+epiq export --format agent-list --kind Town \
+  --output-path reports/towns.agent_list.ep
+```
+
+These files are produced by EDSL's own `obj.git.save("file.ep")` implementation and can be loaded
+with `ScenarioList.load(...)` or `AgentList.load(...)`. Each object retains the stable Epiq entity
+ID; relationship values are exported as readable related-row names. Scenario records include
+`entity_name`, while AgentList rows use the Epiq row name as the EDSL agent name.
+
+Download or script a transactionally consistent copy of the complete SQLite source of truth:
+
+```bash
+epiq export --format sqlite --output-path backups/towns.sqlite
+```
+
+The older `export-xlsx`, `export-edsl`, and `backup` commands remain available. The unified
+`epiq export` form is recommended for agents because the format and output path are explicit.
+
+Excel and EDSL exports are projections. The SQLite database remains the source of truth.
 
 ## Tutorial: preserve multiple forecasts as a distribution
 
@@ -1191,6 +1217,8 @@ The principal endpoints are:
 | `POST` | `/api/entity-suggestions/jobs` | Propose additional rows for human review |
 | `POST` | `/api/field-suggestions/jobs` | Propose additional typed fields for review |
 | `GET` | `/api/export/{kind}.xlsx` | Download a provenance-aware Excel workbook |
+| `GET` | `/api/export/{kind}.scenario-list.ep` | Download an EDSL ScenarioList package |
+| `GET` | `/api/export/{kind}.agent-list.ep` | Download an EDSL AgentList package |
 | `GET` | `/api/export/project.sqlite` | Download a consistent project backup |
 | `GET` | `/api/export/project.epiq` | Download a checksummed portable project bundle |
 | `POST` | `/api/query/{kind}` | Filter rows with structured predicates |

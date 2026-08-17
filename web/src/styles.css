@@ -1516,6 +1516,68 @@ button:hover {
   display: flex;
   gap: 7px;
 }
+.export-menu {
+  position: relative;
+}
+.export-menu summary {
+  align-items: center;
+  border: 1px solid #cbc9c0;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 600;
+  height: 100%;
+  list-style: none;
+  padding: 0 13px;
+}
+.export-menu summary::-webkit-details-marker {
+  display: none;
+}
+.export-menu[open] summary {
+  background: #f1f7f3;
+  border-color: #8cb7a4;
+}
+.export-menu > div {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 40px #17251d29;
+  display: grid;
+  min-width: 290px;
+  padding: 8px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+}
+.export-menu > div > b {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  padding: 9px 10px 5px;
+  text-transform: uppercase;
+}
+.export-menu a {
+  border-radius: 7px;
+  color: var(--ink);
+  display: grid;
+  gap: 2px;
+  padding: 9px 10px;
+  text-decoration: none;
+}
+.export-menu a:hover {
+  background: #f1f7f3;
+}
+.export-menu a span {
+  font-size: 12px;
+  font-weight: 650;
+}
+.export-menu a small {
+  color: var(--muted);
+  font-size: 10px;
+}
 .activity-panel {
   position: fixed;
   right: 0;

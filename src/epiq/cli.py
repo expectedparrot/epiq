@@ -15,6 +15,7 @@ from typing import Any
 from . import __version__
 from .demo import load_patriots
 from .dsl import describe, parse
+from .edsl_export import write_edsl
 from .errors import EpiqError
 from .html import write_html
 from .importers import import_cham_corpus
@@ -925,10 +926,34 @@ def parser() -> argparse.ArgumentParser:
 
     excel = commands.add_parser("export-xlsx", help="Export a projection as an Excel workbook")
     excel.add_argument("--kind", required=True)
-    excel.add_argument("--output", required=True)
+    excel.add_argument("--output", "--output-path", dest="output", required=True)
     excel.add_argument("--questions", help="Comma-separated question names")
     excel.add_argument("--known-at")
     excel.add_argument("--valid-at")
+
+    edsl = commands.add_parser(
+        "export-edsl", help="Export a projection as an EDSL ScenarioList or AgentList .ep file"
+    )
+    edsl.add_argument("--kind", required=True)
+    edsl.add_argument("--type", choices=["scenario-list", "agent-list"], required=True)
+    edsl.add_argument("--output", "--output-path", dest="output", required=True)
+    edsl.add_argument("--questions", help="Comma-separated question names")
+    edsl.add_argument("--known-at")
+    edsl.add_argument("--valid-at")
+
+    export = commands.add_parser(
+        "export", help="Export a table or project in a selected portable format"
+    )
+    export.add_argument(
+        "--format",
+        choices=["xlsx", "scenario-list", "agent-list", "sqlite"],
+        required=True,
+    )
+    export.add_argument("--output-path", required=True)
+    export.add_argument("--kind", help="Required except for sqlite")
+    export.add_argument("--questions", help="Comma-separated question names")
+    export.add_argument("--known-at")
+    export.add_argument("--valid-at")
 
     html = commands.add_parser("export-html", help="Export an interactive HTML explorer")
     html.add_argument("--output", required=True)
@@ -1556,10 +1581,51 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "export-xlsx":
         questions = args.questions.split(",") if args.questions else None
         matrix = store.matrix(args.kind, questions, args.known_at, args.valid_at)
-        output = write_xlsx(matrix, args.output)
+        output = write_xlsx(matrix, args.output, store.history())
         return {
             "ok": True,
             "output": str(output),
+            "entity_kind": args.kind,
+            "entities": len(matrix["rows"]),
+            "questions": len(matrix["questions"]),
+        }
+    if args.command == "export-edsl":
+        questions = args.questions.split(",") if args.questions else None
+        matrix = store.matrix(args.kind, questions, args.known_at, args.valid_at)
+        output = write_edsl(matrix, args.output, args.type)
+        return {
+            "ok": True,
+            "output": str(output),
+            "object_type": args.type,
+            "entity_kind": args.kind,
+            "entities": len(matrix["rows"]),
+            "questions": len(matrix["questions"]),
+        }
+    if args.command == "export":
+        if args.format == "sqlite":
+            output = store.backup(args.output_path)
+            return {
+                "ok": True,
+                "output": str(output),
+                "format": "sqlite",
+                "database": str(database),
+            }
+        if not args.kind:
+            raise EpiqError(
+                "entity_kind_required",
+                f"--kind is required for {args.format} exports",
+                "Pass the table row type, for example --kind Company.",
+            )
+        questions = args.questions.split(",") if args.questions else None
+        matrix = store.matrix(args.kind, questions, args.known_at, args.valid_at)
+        if args.format == "xlsx":
+            output = write_xlsx(matrix, args.output_path, store.history())
+        else:
+            output = write_edsl(matrix, args.output_path, args.format)
+        return {
+            "ok": True,
+            "output": str(output),
+            "format": args.format,
             "entity_kind": args.kind,
             "entities": len(matrix["rows"]),
             "questions": len(matrix["questions"]),

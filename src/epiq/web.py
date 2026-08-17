@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from .cli import capabilities
+from .edsl_export import write_edsl
 from .errors import EpiqError
 from .research import (
     EntitySuggestionRunner,
@@ -817,12 +818,30 @@ def create_app(
         matrix_data = store().matrix(entity_kind)
         with NamedTemporaryFile(prefix="epiq-", suffix=".xlsx", delete=False) as temporary:
             output = Path(temporary.name)
-        write_xlsx(matrix_data, output)
+        write_xlsx(matrix_data, output, store().history())
         safe_kind = re.sub(r"[^A-Za-z0-9_-]+", "-", entity_kind).strip("-") or "table"
         return FileResponse(
             output,
             filename=f"{safe_kind}.xlsx",
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            background=BackgroundTask(output.unlink, missing_ok=True),
+        )
+
+    @app.get("/api/export/{entity_kind}.{object_type}.ep")
+    def export_edsl(entity_kind: str, object_type: str) -> FileResponse:
+        if object_type not in {"scenario-list", "agent-list"}:
+            raise EpiqError(
+                "invalid_edsl_type",
+                "EDSL export type must be scenario-list or agent-list",
+            )
+        with NamedTemporaryFile(prefix="epiq-edsl-", suffix=".ep", delete=False) as temporary:
+            output = Path(temporary.name)
+        write_edsl(store().matrix(entity_kind), output, object_type)
+        safe_kind = re.sub(r"[^A-Za-z0-9_-]+", "-", entity_kind).strip("-") or "table"
+        return FileResponse(
+            output,
+            filename=f"{safe_kind}.{object_type}.ep",
+            media_type="application/zip",
             background=BackgroundTask(output.unlink, missing_ok=True),
         )
 

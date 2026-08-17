@@ -931,21 +931,39 @@ export default function App() {
           <button className="ghost" onClick={() => void refresh()}>
             ↻ Refresh
           </button>
-          <a
-            className="button-link"
-            href={`/api/export/${encodeURIComponent(kind)}.xlsx`}
-            download
-          >
-            ↓ Excel
-          </a>
-          <a
-            className="button-link"
-            href="/api/export/project.sqlite"
-            download
-            title="Download a transactionally consistent project backup"
-          >
-            ↓ Backup
-          </a>
+          <details className="export-menu">
+            <summary>↓ Export</summary>
+            <div>
+              <b>Current {kind} table</b>
+              <a href={`/api/export/${encodeURIComponent(kind)}.xlsx`} download>
+                <span>Excel audit workbook</span>
+                <small>Table, evidence, gaps, schema, and event log</small>
+              </a>
+              <a
+                href={`/api/export/${encodeURIComponent(kind)}.scenario-list.ep`}
+                download
+              >
+                <span>EDSL ScenarioList</span>
+                <small>Native Git-backed .ep package</small>
+              </a>
+              <a
+                href={`/api/export/${encodeURIComponent(kind)}.agent-list.ep`}
+                download
+              >
+                <span>EDSL AgentList</span>
+                <small>Rows become named agents with typed traits</small>
+              </a>
+              <b>Whole project</b>
+              <a href="/api/export/project.sqlite" download>
+                <span>SQLite database</span>
+                <small>Transactionally consistent native database</small>
+              </a>
+              <a href="/api/export/project.epiq" download>
+                <span>Epiq project bundle</span>
+                <small>Portable checksummed archive</small>
+              </a>
+            </div>
+          </details>
           <button className="ghost" onClick={() => void closeProject()}>
             Close project
           </button>

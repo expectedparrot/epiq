@@ -1,3 +1,4 @@
+import importlib.util
 from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
@@ -799,6 +800,15 @@ def test_project_lifecycle_and_excel_download(tmp_path: Path) -> None:
     assert workbook.status_code == 200
     assert workbook.content.startswith(b"PK")
     assert "Company.xlsx" in workbook.headers["content-disposition"]
+    if importlib.util.find_spec("edsl") is not None:
+        scenarios = client.get("/api/export/Company.scenario-list.ep")
+        assert scenarios.status_code == 200
+        assert scenarios.content.startswith(b"PK")
+        assert "Company.scenario-list.ep" in scenarios.headers["content-disposition"]
+        agents = client.get("/api/export/Company.agent-list.ep")
+        assert agents.status_code == 200
+        assert agents.content.startswith(b"PK")
+        assert "Company.agent-list.ep" in agents.headers["content-disposition"]
     assert client.post("/api/projects/close", json={}).json() == {"closed": True}
     inactive = client.get("/api/project")
     assert inactive.status_code == 400

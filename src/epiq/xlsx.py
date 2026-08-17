@@ -62,8 +62,10 @@ def _worksheet(rows: list[list[Any]], widths: list[int]) -> str:
     )
 
 
-def projection_rows(matrix: dict[str, Any]) -> dict[str, list[list[Any]]]:
-    """Turn one projected matrix into Excel-friendly tables."""
+def projection_rows(
+    matrix: dict[str, Any], events: list[dict[str, Any]] | None = None
+) -> dict[str, list[list[Any]]]:
+    """Turn one projection and its audit history into Excel-friendly tables."""
     questions = matrix["questions"]
     data = [[matrix["entity_kind"], *[q["definition"].get("label", q["name"]) for q in questions]]]
     evidence = [
@@ -125,12 +127,43 @@ def projection_rows(matrix: dict[str, Any]) -> dict[str, list[list[Any]]]:
                     ]
                 )
         data.append([entity["name"], *values])
-    return {"Data": data, "Evidence": evidence, "Unknowns": unknowns}
+    schema = [["Field key", "Label", "Value type", "Cardinality", "Definition"]]
+    for question in questions:
+        schema.append(
+            [
+                question["name"],
+                question["definition"].get("label", question["name"]),
+                question["value_type"],
+                question["definition"].get("cardinality", "one"),
+                question["definition"],
+            ]
+        )
+    event_log = [["Sequence", "Event ID", "Recorded at", "Actor", "Event type", "Payload"]]
+    for event in events or []:
+        event_log.append(
+            [
+                event.get("seq"),
+                event.get("event_id"),
+                event.get("recorded_at"),
+                event.get("actor"),
+                event.get("event_type"),
+                event.get("payload"),
+            ]
+        )
+    return {
+        "Table": data,
+        "Evidence": evidence,
+        "Research Gaps": unknowns,
+        "Field Schema": schema,
+        "Event Log": event_log,
+    }
 
 
-def write_xlsx(matrix: dict[str, Any], output: str | Path) -> Path:
-    """Write a standards-compliant XLSX workbook using only the standard library."""
-    tables = projection_rows(matrix)
+def write_xlsx(
+    matrix: dict[str, Any], output: str | Path, events: list[dict[str, Any]] | None = None
+) -> Path:
+    """Write a multi-sheet audit workbook using only the standard library."""
+    tables = projection_rows(matrix, events)
     sheets = list(tables)
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,9 +230,11 @@ def write_xlsx(matrix: dict[str, Any], output: str | Path) -> Path:
             "</styleSheet>",
         )
         widths = {
-            "Data": [22] + [24] * (len(tables["Data"][0]) - 1),
+            "Table": [22] + [24] * (len(tables["Table"][0]) - 1),
             "Evidence": [22, 24, 14, 28, 12, 22, 22, 32, 48, 80, 28, 22, 60],
-            "Unknowns": [22, 24, 14, 48, 80],
+            "Research Gaps": [22, 24, 14, 48, 80],
+            "Field Schema": [24, 32, 22, 16, 80],
+            "Event Log": [12, 24, 24, 24, 28, 100],
         }
         for index, name in enumerate(sheets, 1):
             archive.writestr(
