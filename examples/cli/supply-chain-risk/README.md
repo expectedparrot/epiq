@@ -7,10 +7,10 @@ mixed relationship types, derived claims, and dependency-aware staleness.
 ## 1. Build the sourced graph
 
 ```bash
-uv run examples/cli/supply-chain-risk/build.sh /tmp/epiq-supply-chain.sqlite
-uv run epiq use /tmp/epiq-supply-chain.sqlite
-uv run epiq --format table matrix --kind Product
-uv run epiq --format table matrix --kind Component
+examples/cli/supply-chain-risk/build.sh /tmp/epiq-supply-chain.sqlite
+epiq use /tmp/epiq-supply-chain.sqlite
+epiq --format table matrix --kind Product
+epiq --format table matrix --kind Component
 ```
 
 The fixture records these evidence-backed edges:
@@ -27,7 +27,7 @@ That distinction matters when one edge or the supplier rating changes.
 ## 2. Inspect the path without changing data
 
 ```bash
-uv run epiq --format table related \
+epiq --format table related \
   "Acorn Sensor" --direction outgoing --depth 3
 ```
 
@@ -43,11 +43,11 @@ fields. Use `--via supplier`, for example, when a traversal must follow only one
 ## 3. Turn the graph query into a durable claim
 
 ```bash
-uv run epiq --actor agent:risk propagate \
+epiq --actor agent:risk propagate \
   --subject "Acorn Sensor" --direction outgoing --depth 3 \
   --question risk_level --to-question supply_chain_risk --valid-from 2026-08-17
 
-uv run epiq --format table matrix --kind Product
+epiq --format table matrix --kind Product
 ```
 
 The Product row now shows `supply_chain_risk = high`. This is not an unexplained copied cell. Its
@@ -57,7 +57,7 @@ claims connecting product, board, chip, and supplier. Evidence from all four cla
 ## 4. Ask whether the calculation is still current
 
 ```bash
-uv run epiq stale-derivations --kind Product
+epiq stale-derivations --kind Product
 ```
 
 The initial result is `count: 0`. If a newer risk rating is asserted or any path edge is superseded,

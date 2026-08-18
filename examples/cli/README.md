@@ -93,7 +93,7 @@ types, questions, values, confidence, and provenance needed for a research sessi
 From the repository root:
 
 ```bash
-uv run examples/cli/build-all.sh /tmp/epiq-cli-examples
+examples/cli/build-all.sh /tmp/epiq-cli-examples
 ```
 
 The builders are convergent and rerunnable. `apply` skips unchanged entities and questions, while
@@ -102,7 +102,7 @@ evidence and claim idempotency prevent duplicates. They never replace an existin
 The code fences marked `<!-- epiq-example -->` are exercised in CI:
 
 ```bash
-uv run python scripts/check_markdown_examples.py
+python scripts/check_markdown_examples.py
 ```
 
 All companies, candidates, assessments, and investment recommendations in these examples are

@@ -8,9 +8,9 @@ dimensions.
 ## 1. Build and inspect the July catalog
 
 ```bash
-uv run examples/cli/saas-pricing/build.sh /tmp/epiq-saas-pricing.sqlite
-uv run epiq use /tmp/epiq-saas-pricing.sqlite
-uv run epiq --format table matrix --kind PriceQuote
+examples/cli/saas-pricing/build.sh /tmp/epiq-saas-pricing.sqlite
+epiq use /tmp/epiq-saas-pricing.sqlite
+epiq --format table matrix --kind PriceQuote
 ```
 
 The fixture initially contains only prices effective July 1:
@@ -21,7 +21,7 @@ The fixture initially contains only prices effective July 1:
 | Acorn Pro EU annual 2026-07 | Acorn Cloud | Acorn Pro | EU | annual | $1,140 | 2026-07-01 |
 
 ```bash
-uv run epiq query --kind PriceQuote \
+epiq query --kind PriceQuote \
   --where 'region=US' --where 'billing_period=monthly'
 ```
 
@@ -33,11 +33,11 @@ In August, both prices change. Since `effective_date` is part of the fact's iden
 supersede the July cells. Create two new rows instead:
 
 ```bash
-uv run epiq entity PriceQuote \
+epiq entity PriceQuote \
   "Acorn Pro US monthly 2026-08" --role relation \
   --identity '{"product":"Acorn Cloud","plan":"Acorn Pro","region":"US","billing_period":"monthly","effective_date":"2026-08-01"}'
 
-uv run epiq entity PriceQuote \
+epiq entity PriceQuote \
   "Acorn Pro EU annual 2026-08" --role relation \
   --identity '{"product":"Acorn Cloud","plan":"Acorn Pro","region":"EU","billing_period":"annual","effective_date":"2026-08-01"}'
 ```
@@ -50,7 +50,7 @@ even if a later import supplies a different display name for the same dimensiona
 One August pricing page supports the dimensional cells and prices on both new rows:
 
 ```bash
-uv run epiq --actor agent:pricing record \
+epiq --actor agent:pricing record \
   --source-type web --url "https://example.test/acorn/pricing/2026-08" \
   --source-title "Acorn regional pricing, August 2026" --retrieved-at 2026-08-17 \
   --excerpt 'Effective August 1, Acorn Pro costs $120 monthly in the US and $1,200 annually in the EU.' \
@@ -73,7 +73,7 @@ The evidence and all twelve claims commit atomically. Now the update is visible 
 previous state:
 
 ```bash
-uv run epiq --format table matrix --kind PriceQuote
+epiq --format table matrix --kind PriceQuote
 ```
 
 | Price quote | Region | Period | Price | Effective |
@@ -84,7 +84,7 @@ uv run epiq --format table matrix --kind PriceQuote
 | Acorn Pro EU annual 2026-08 | EU | annual | $1,200 | 2026-08-01 |
 
 ```bash
-uv run epiq query --kind PriceQuote \
+epiq query --kind PriceQuote \
   --where 'effective_date=2026-08-01'
 ```
 
@@ -96,7 +96,7 @@ multidimensional fact—not competing claims in one cell.
 Normalize the August EU annual quote to a monthly equivalent as a persisted calculation:
 
 ```bash
-uv run epiq derive \
+epiq derive \
   --subject "Acorn Pro EU annual 2026-08" --question monthly_equivalent_usd \
   --operation linear --parameters '{"scale":0.08333333333333333}' \
   --input-cell "Acorn Pro EU annual 2026-08" price_usd --valid-from 2026-08-01
@@ -109,7 +109,7 @@ normalized value.
 ## 5. Notice what a naive aggregation means
 
 ```bash
-uv run epiq --format table aggregate \
+epiq --format table aggregate \
   --kind PriceQuote --question price_usd --op avg --group-by region
 ```
 

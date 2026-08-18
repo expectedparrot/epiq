@@ -6,9 +6,9 @@ schema. `materialize` then applies those formulas to every startup whose inputs 
 Build the base facts and inspect them before calculating anything:
 
 ```bash
-uv run examples/cli/startup-unit-economics/build.sh /tmp/epiq-startup-unit-economics.sqlite
-uv run epiq use /tmp/epiq-startup-unit-economics.sqlite
-uv run epiq --format table matrix --kind Startup
+examples/cli/startup-unit-economics/build.sh /tmp/epiq-startup-unit-economics.sqlite
+epiq use /tmp/epiq-startup-unit-economics.sqlite
+epiq --format table matrix --kind Startup
 ```
 
 The three formula fields are equivalent to spreadsheet formulas, but store stable field names:
@@ -22,10 +22,10 @@ The three formula fields are equivalent to spreadsheet formulas, but store stabl
 Materialize every ready formula:
 
 ```bash
-uv run epiq materialize \
+epiq materialize \
   --kind Startup --valid-from 2026-08-18
 
-uv run epiq --format table matrix \
+epiq --format table matrix \
   --kind Startup --questions monthly_recurring_revenue,customers,employees,founded_year,revenue_per_customer,annualized_revenue_per_employee,company_age
 ```
 
@@ -44,7 +44,7 @@ dependencies. If Acorn later reports revised MRR, the historical calculation rem
 flagged as stale:
 
 ```bash
-uv run epiq stale-derivations --kind Startup
+epiq stale-derivations --kind Startup
 ```
 
 Re-run `materialize` after reviewing the changed dependency to create current derived claims.

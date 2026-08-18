@@ -301,11 +301,11 @@ itself remains deterministic and does not browse or call a model.
 The packaged builder creates three products and five populated fields:
 
 ```bash
-uv run examples/cli/competitor-features/build.sh /tmp/epiq-competitors.sqlite
-uv run epiq use /tmp/epiq-competitors.sqlite
-uv run epiq matrix --kind Product
-uv run epiq stale --kind Product
-uv run epiq export-xlsx --kind Product \
+examples/cli/competitor-features/build.sh /tmp/epiq-competitors.sqlite
+epiq use /tmp/epiq-competitors.sqlite
+epiq matrix --kind Product
+epiq stale --kind Product
+epiq export-xlsx --kind Product \
   --output /tmp/epiq-competitors.xlsx
 ```
 

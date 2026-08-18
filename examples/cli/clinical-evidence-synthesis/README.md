@@ -4,9 +4,9 @@ This synthetic example is about data mechanics, not medical guidance. Each paper
 observation with a compound identity; its evidence links to the Study entity and an exact table.
 
 ```bash
-uv run examples/cli/clinical-evidence-synthesis/build.sh /tmp/epiq-clinical.sqlite
-uv run epiq use /tmp/epiq-clinical.sqlite
-uv run epiq --format table matrix --kind Finding
+examples/cli/clinical-evidence-synthesis/build.sh /tmp/epiq-clinical.sqlite
+epiq use /tmp/epiq-clinical.sqlite
+epiq --format table matrix --kind Finding
 ```
 
 | Finding | Study | Effect size | Sample size |
@@ -17,7 +17,7 @@ uv run epiq --format table matrix --kind Finding
 Persist a sample-size-weighted estimate:
 
 ```bash
-uv run epiq --actor agent:review derive \
+epiq --actor agent:review derive \
   --subject "Sleep intervention review" --question pooled_effect \
   --operation weighted_avg \
   --valid-from 2026-08-17 \
@@ -31,8 +31,8 @@ Output value: `0.4`. The dossier contains both input claim IDs, both evidence re
 entity links, and locators `page 14/table 2` and `page 9/table 3`.
 
 ```bash
-uv run epiq dossier "Sleep intervention review"
-uv run epiq stale-derivations --kind Review
+epiq dossier "Sleep intervention review"
+epiq stale-derivations --kind Review
 ```
 
 The weights are claims, not copied constants. They appear as `parameter` dependencies and their

@@ -10,13 +10,13 @@ The target field carries this declarative definition:
 ```
 
 ```bash
-uv run examples/cli/procurement-normalization/build.sh /tmp/epiq-procurement.sqlite
-uv run epiq use /tmp/epiq-procurement.sqlite
+examples/cli/procurement-normalization/build.sh /tmp/epiq-procurement.sqlite
+epiq use /tmp/epiq-procurement.sqlite
 
-uv run epiq materialize \
+epiq materialize \
   --kind Quote --valid-from 2026-08-01
 
-uv run epiq --format table matrix --kind Quote
+epiq --format table matrix --kind Quote
 ```
 
 | Quote | Supplier | Unit price | Shipping | Landed cost |
@@ -32,7 +32,7 @@ to every ready Quote row and reports incomplete rows as `skipped`. Running it af
 quotes materializes them without rewriting the formula.
 
 ```bash
-uv run epiq stale-derivations --kind Quote
+epiq stale-derivations --kind Quote
 ```
 
 The result is initially zero. Replacing either component price marks only the affected quote's

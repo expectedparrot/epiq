@@ -183,10 +183,10 @@ be rival assessments. Both transaction time and valid time remain in history.
 The full example contains three companies, multiple risks, and public and private evidence:
 
 ```bash
-uv run examples/cli/investment-opportunities/build.sh /tmp/epiq-investments.sqlite
-uv run epiq use /tmp/epiq-investments.sqlite
-uv run epiq matrix --kind Company
-uv run epiq timeline --kind Company \
+examples/cli/investment-opportunities/build.sh /tmp/epiq-investments.sqlite
+epiq use /tmp/epiq-investments.sqlite
+epiq matrix --kind Company
+epiq timeline --kind Company \
   --question amount_raised
 ```
 

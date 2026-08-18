@@ -201,11 +201,11 @@ and challenge history without changing or expanding the `Person` record.
 The packaged fixture performs the same writes in a reproducible form:
 
 ```bash
-uv run examples/cli/public-figure-writing/build.sh /tmp/epiq-public-writing.sqlite
-uv run epiq use /tmp/epiq-public-writing.sqlite
-uv run epiq --format table matrix --kind Person
-uv run epiq --format table matrix --kind Work
-uv run epiq related "Paul Graham" \
+examples/cli/public-figure-writing/build.sh /tmp/epiq-public-writing.sqlite
+epiq use /tmp/epiq-public-writing.sqlite
+epiq --format table matrix --kind Person
+epiq --format table matrix --kind Work
+epiq related "Paul Graham" \
   --via author --direction incoming
 ```
 

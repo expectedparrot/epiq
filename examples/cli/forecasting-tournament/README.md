@@ -5,9 +5,9 @@ historical observations. Each submission is an `observation` row with a compound
 forecaster, and issue time, making repeated ingestion idempotent without relying on its display name.
 
 ```bash
-uv run examples/cli/forecasting-tournament/build.sh /tmp/epiq-forecasting.sqlite
-uv run epiq use /tmp/epiq-forecasting.sqlite
-uv run epiq --format table matrix --kind Forecast
+examples/cli/forecasting-tournament/build.sh /tmp/epiq-forecasting.sqlite
+epiq use /tmp/epiq-forecasting.sqlite
+epiq --format table matrix --kind Forecast
 ```
 
 | Forecast | Forecaster | Event | Probability | Issued at |
@@ -17,14 +17,14 @@ uv run epiq --format table matrix --kind Forecast
 | Bob forecast 2026-08-17 | Bob | Rain in Boston on August 20 | 0.40 | 2026-08-17 10:00 ET |
 
 ```bash
-uv run epiq query --kind Forecast --where 'forecaster=Alice'
-uv run epiq --format table timeline --kind Forecast --question probability
+epiq query --kind Forecast --where 'forecaster=Alice'
+epiq --format table timeline --kind Forecast --question probability
 ```
 
 The query reports `matched: 2`; the timeline orders 0.30, 0.40, then 0.55 by valid time.
 
 ```bash
-uv run epiq --format table aggregate \
+epiq --format table aggregate \
   --kind Forecast --question probability --op avg --group-by forecaster
 ```
 
@@ -36,21 +36,21 @@ uv run epiq --format table aggregate \
 Unlike `aggregate`, `derive` writes a new claim and preserves its formula and input claims:
 
 ```bash
-uv run epiq --actor agent:ensemble derive \
+epiq --actor agent:ensemble derive \
   --subject "Rain in Boston on August 20" --question ensemble_probability \
   --operation avg --valid-from 2026-08-18 \
   --input-cell "Alice forecast 2026-08-17" probability \
   --input-cell "Alice forecast 2026-08-18" probability \
   --input-cell "Bob forecast 2026-08-17" probability
 
-uv run epiq dossier "Rain in Boston on August 20"
+epiq dossier "Rain in Boston on August 20"
 ```
 
 The resulting probability is approximately `0.4167`. Its dossier lineage records operation `avg`,
 all three input claim IDs, and all three underlying evidence records.
 
 ```bash
-uv run epiq stale-derivations --kind ForecastEvent
+epiq stale-derivations --kind ForecastEvent
 ```
 
 This initially reports zero. Revising, retracting, or superseding one of the three input probability

@@ -274,10 +274,10 @@ says there should be one committee outcome.
 ## Finished fixture
 
 ```bash
-uv run examples/cli/hiring-committee/build.sh /tmp/epiq-hiring.sqlite
-uv run epiq use /tmp/epiq-hiring.sqlite
-uv run epiq dossier "Alex Rivera"
-uv run epiq query --kind Candidate \
+examples/cli/hiring-committee/build.sh /tmp/epiq-hiring.sqlite
+epiq use /tmp/epiq-hiring.sqlite
+epiq dossier "Alex Rivera"
+epiq query --kind Candidate \
   --where 'committee_recommendation=hire'
 ```
 

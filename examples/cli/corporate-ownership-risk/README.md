@@ -4,10 +4,10 @@ One registry filing supports ownership claims about two companies. `--cell` writ
 and recursive traversal follows the ownership chain.
 
 ```bash
-uv run examples/cli/corporate-ownership-risk/build.sh /tmp/epiq-ownership.sqlite
-uv run epiq use /tmp/epiq-ownership.sqlite
+examples/cli/corporate-ownership-risk/build.sh /tmp/epiq-ownership.sqlite
+epiq use /tmp/epiq-ownership.sqlite
 
-uv run epiq --actor agent:registry record \
+epiq --actor agent:registry record \
   --source-type web --url "https://example.test/registry/group" \
   --source-title "Corporate registry extract" --retrieved-at 2026-08-17 \
   --locator '{"filing":"2026-1842","section":"Ownership"}' \
@@ -16,7 +16,7 @@ uv run epiq --actor agent:registry record \
   --cell "Acorn Devices" parent_company "Beacon Holdings" \
   --cell "Beacon Holdings" parent_company "Cobalt Group"
 
-uv run epiq --format table related \
+epiq --format table related \
   "Acorn Devices" --via parent_company --direction outgoing --depth 5
 ```
 
@@ -29,18 +29,18 @@ Materialize the nearest related owner's risk on Acorn, retaining Cobalt's risk c
 ownership claims and their evidence as typed dependencies:
 
 ```bash
-uv run epiq propagate \
+epiq propagate \
   --subject "Acorn Devices" --via parent_company --direction outgoing --depth 5 \
   --question risk_level --to-question inherited_risk --valid-from 2026-08-17
 
-uv run epiq --format table matrix --kind Company
+epiq --format table matrix --kind Company
 ```
 
 The repeated `record` is idempotent because the fixture already contains the same source and claims.
 Propagation refuses to choose when multiple source claims are equally near.
 
 ```bash
-uv run epiq stale-derivations --kind Company
+epiq stale-derivations --kind Company
 ```
 
 This initially returns zero. A newer Cobalt risk claim, or a retracted/superseded ownership edge,

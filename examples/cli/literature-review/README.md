@@ -19,12 +19,119 @@ Paper  <── paper ──  Finding
 
 The example is synthetic and teaches data mechanics rather than making claims about remote work.
 
-## 1. Build the review and inspect its findings
+## 1. Create the project and its rows
 
 ```bash
-uv run examples/cli/literature-review/build.sh /tmp/epiq-literature.sqlite
-uv run epiq use /tmp/epiq-literature.sqlite
-uv run epiq --format table matrix --kind Finding
+epiq use /tmp/epiq-literature.sqlite
+epiq init --name "Remote work literature review"
+
+epiq entity Paper "Remote Work Study A"
+epiq entity Paper "Remote Work Study B"
+
+epiq entity Finding "Study A productivity primary" --role observation \
+  --identity '{"paper":"Remote Work Study A","outcome":"productivity","analysis":"primary"}'
+epiq entity Finding "Study A retention primary" --role observation \
+  --identity '{"paper":"Remote Work Study A","outcome":"retention","analysis":"primary"}'
+epiq entity Finding "Study A manager subgroup" --role observation \
+  --identity '{"paper":"Remote Work Study A","outcome":"productivity","analysis":"manager_subgroup"}'
+epiq entity Finding "Study B productivity primary" --role observation \
+  --identity '{"paper":"Remote Work Study B","outcome":"productivity","analysis":"primary"}'
+```
+
+`Paper` and `Finding` are separate tables. The four `Finding` entities are rows, and `--role
+observation` says each row represents a reported result rather than a durable real-world object.
+
+## 2. Define the finding columns
+
+```bash
+epiq question paper --for Finding --type 'Ref[Paper]' \
+  --definition '{"label":"Paper"}'
+epiq question outcome --for Finding --type 'Enum[productivity,retention]' \
+  --definition '{"label":"Outcome"}'
+epiq question analysis --for Finding --type 'Enum[primary,manager_subgroup]' \
+  --definition '{"label":"Analysis"}'
+epiq question effect_size --for Finding --type Float \
+  --definition '{"label":"Standardized effect"}'
+epiq question sample_size --for Finding --type Int \
+  --definition '{"label":"Sample size"}'
+epiq question ci_lower --for Finding --type Float \
+  --definition '{"label":"95% CI lower"}'
+epiq question ci_upper --for Finding --type Float \
+  --definition '{"label":"95% CI upper"}'
+```
+
+At this point `epiq matrix --kind Finding` shows four rows whose cells are all `Unasked`. The schema
+describes what can be learned; it does not pretend the research has already happened.
+
+## 3. Record each result with its exact location
+
+One bounded passage supports all the cells for the first finding:
+
+```bash
+epiq --actor agent:review record \
+  --subject "Study A productivity primary" \
+  --source-type web --url "https://example.test/papers/remote-work-a" \
+  --source-title "Remote Work Study A" --retrieved-at 2026-08-17 \
+  --source-entity "Remote Work Study A" \
+  --locator '{"page":12,"table":"2","outcome":"productivity"}' \
+  --excerpt 'The primary productivity analysis reports an effect of 0.18 (95% CI 0.08 to 0.28; N=420).' \
+  --valid-from 2025-01-01 \
+  --answer paper "Remote Work Study A" \
+  --answer outcome productivity --answer analysis primary \
+  --answer effect_size 0.18 --answer sample_size 420 \
+  --answer ci_lower 0.08 --answer ci_upper 0.28
+```
+
+Record the other three findings the same way, changing the locator and values for each passage:
+
+```bash
+epiq --actor agent:review record \
+  --subject "Study A retention primary" \
+  --source-type web --url "https://example.test/papers/remote-work-a" \
+  --source-title "Remote Work Study A" --retrieved-at 2026-08-17 \
+  --source-entity "Remote Work Study A" \
+  --locator '{"page":16,"table":"4","outcome":"retention"}' \
+  --excerpt 'The primary retention analysis reports an effect of 0.07 (95% CI -0.02 to 0.16; N=420).' \
+  --valid-from 2025-01-01 \
+  --answer paper "Remote Work Study A" \
+  --answer outcome retention --answer analysis primary \
+  --answer effect_size 0.07 --answer sample_size 420 \
+  --answer ci_lower -0.02 --answer ci_upper 0.16
+
+epiq --actor agent:review record \
+  --subject "Study A manager subgroup" \
+  --source-type web --url "https://example.test/papers/remote-work-a" \
+  --source-title "Remote Work Study A" --retrieved-at 2026-08-17 \
+  --source-entity "Remote Work Study A" \
+  --locator '{"page":14,"table":"3","outcome":"productivity","subgroup":"managers"}' \
+  --excerpt 'For managers, the productivity effect is -0.03 (95% CI -0.18 to 0.12; N=90).' \
+  --valid-from 2025-01-01 \
+  --answer paper "Remote Work Study A" \
+  --answer outcome productivity --answer analysis manager_subgroup \
+  --answer effect_size -0.03 --answer sample_size 90 \
+  --answer ci_lower -0.18 --answer ci_upper 0.12
+
+epiq --actor agent:review record \
+  --subject "Study B productivity primary" \
+  --source-type web --url "https://example.test/papers/remote-work-b" \
+  --source-title "Remote Work Study B" --retrieved-at 2026-08-17 \
+  --source-entity "Remote Work Study B" \
+  --locator '{"page":9,"table":"2","outcome":"productivity"}' \
+  --excerpt 'The primary productivity analysis reports an effect of -0.05 (95% CI -0.12 to 0.02; N=610).' \
+  --valid-from 2025-06-01 \
+  --answer paper "Remote Work Study B" \
+  --answer outcome productivity --answer analysis primary \
+  --answer effect_size -0.05 --answer sample_size 610 \
+  --answer ci_lower -0.12 --answer ci_upper 0.02
+```
+
+Each `record` call writes one evidence passage and seven typed claims atomically. A malformed value
+rolls back the whole record instead of leaving a partially populated finding.
+
+Now inspect the table you built:
+
+```bash
+epiq --format table matrix --kind Finding
 ```
 
 | Finding | Paper | Outcome | Analysis | Effect | N | 95% CI |
@@ -37,17 +144,17 @@ uv run epiq --format table matrix --kind Finding
 The first three rows come from one paper. They show why “What did Study A find?” does not have one
 scalar answer: the answer depends on which outcome, analysis, and population you mean.
 
-## 2. Give every result a stable compound identity
+## 4. Understand the compound identity
 
 Each `Finding` is an `observation` whose identity is `(paper, outcome, analysis)`:
 
 ```bash
-uv run epiq entity Finding "Study A productivity primary" --role observation \
+epiq entity Finding "Study A productivity primary" --role observation \
   --identity '{"paper":"Remote Work Study A","outcome":"productivity","analysis":"primary"}'
 ```
 
-The fixture already contains this row, so the command resolves to its existing ID. Re-running an
-agent import cannot create a duplicate merely because it phrases the display name differently.
+The row already exists, so repeating the command resolves to its existing ID. Re-running an agent
+import cannot create a duplicate merely because it phrases the display name differently.
 
 The identity also prevents two distinct Study A results from being conflated:
 
@@ -55,10 +162,10 @@ The identity also prevents two distinct Study A results from being conflated:
 - primary retention; and
 - productivity for the manager subgroup.
 
-## 3. Traverse from a paper to its independently sourced findings
+## 5. Traverse from a paper to its independently sourced findings
 
 ```bash
-uv run epiq --format table related "Remote Work Study A" \
+epiq --format table related "Remote Work Study A" \
   --via paper --direction incoming
 ```
 
@@ -66,7 +173,7 @@ The result has three incoming edges—one from each Study A finding. The paper r
 for authorship and bibliographic metadata, while its findings remain separately inspectable.
 
 ```bash
-uv run epiq dossier "Study A manager subgroup"
+epiq dossier "Study A manager subgroup"
 ```
 
 The dossier shows the exact supporting passage and structured locator:
@@ -82,12 +189,12 @@ The dossier shows the exact supporting passage and structured locator:
 
 That locator belongs to this finding's evidence—not vaguely to the paper as a whole.
 
-## 4. Select comparable findings
+## 6. Select comparable findings
 
 To compare the primary productivity results across papers, filter on both the outcome and analysis:
 
 ```bash
-uv run epiq query --kind Finding \
+epiq query --kind Finding \
   --where 'outcome=productivity' --where 'analysis=primary'
 ```
 
@@ -95,17 +202,17 @@ Output: `matched: 2`, returning effects `0.18` and `-0.05`. Filtering only on pr
 also return the manager subgroup and mix estimands that may not be comparable:
 
 ```bash
-uv run epiq query --kind Finding --where 'outcome=productivity'
+epiq query --kind Finding --where 'outcome=productivity'
 ```
 
 That broader query reports `matched: 3`.
 
-## 5. Aggregate carefully
+## 7. Aggregate carefully
 
 Suppose we group effect sizes by analysis type:
 
 ```bash
-uv run epiq --format table aggregate --kind Finding \
+epiq --format table aggregate --kind Finding \
   --question effect_size --op avg --group-by analysis
 ```
 
@@ -139,15 +246,3 @@ standard errors, an explicit model, compatibility rules, and heterogeneity diagn
 - There is no first-class meta-analysis model, replication relationship, or claim-about-claim.
 - Evidence-quality rubrics remain project-defined fields or assessments rather than reusable
   schemas.
-
-<!-- epiq-example -->
-```bash
-examples/cli/literature-review/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --quiet use "$EPIQ_EXAMPLE_DB"
-epiq --select count related "Remote Work Study A" --via paper --direction incoming
-epiq --select query.matched query --kind Finding \
-  --where 'outcome=productivity' --where 'analysis=primary'
-epiq --select query.matched query --kind Finding --where 'outcome=productivity'
-epiq --select groups aggregate --kind Finding --question effect_size --op avg \
-  --group-by analysis
-```

@@ -9,10 +9,10 @@ This tutorial distinguishes two forms of derived data:
 Build the sourced order ledger:
 
 ```bash
-uv run examples/cli/regional-sales-rollup/build.sh /tmp/epiq-regional-sales-rollup.sqlite
-uv run epiq use /tmp/epiq-regional-sales-rollup.sqlite
+examples/cli/regional-sales-rollup/build.sh /tmp/epiq-regional-sales-rollup.sqlite
+epiq use /tmp/epiq-regional-sales-rollup.sqlite
 
-uv run epiq --format table matrix \
+epiq --format table matrix \
   --kind Order --questions region,units,unit_price,discount_rate
 ```
 
@@ -20,10 +20,10 @@ The schema declares net revenue once as `=B1*C1*(1-D1)`, normalized to
 `x0*x1*(1-x2)`. Materialize it across the table:
 
 ```bash
-uv run epiq materialize \
+epiq materialize \
   --kind Order --valid-from 2026-08-18
 
-uv run epiq --format table matrix \
+epiq --format table matrix \
   --kind Order --questions region,units,unit_price,discount_rate,net_revenue
 ```
 
@@ -38,7 +38,7 @@ Now derive a summary table without creating artificial “North total” entitie
 into claims:
 
 ```bash
-uv run epiq --format table aggregate \
+epiq --format table aggregate \
   --kind Order --question net_revenue --op sum --group-by region
 ```
 
