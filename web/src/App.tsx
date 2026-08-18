@@ -688,6 +688,33 @@ export default function App() {
       );
     }
   };
+  const cancelResearchScope = async (
+    scope: "cell" | "row" | "column" | "table",
+    entityId?: string,
+    questionId?: string,
+  ) => {
+    try {
+      const result = await post<{ count: number; jobs: ResearchJob[] }>(
+        "/api/research/cancel",
+        {
+          scope,
+          entity_kind: kind,
+          entity_id: entityId,
+          question_id: questionId,
+        },
+      );
+      setJobs((current) => mergeJobs(current, result.jobs));
+      setJobNotice(
+        result.count
+          ? `Cancelling ${result.count} research ${result.count === 1 ? "job" : "jobs"}`
+          : "No active research matched that scope",
+      );
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not cancel research",
+      );
+    }
+  };
   const retryResearch = async (jobId: string) => {
     try {
       const job = await post<ResearchJob>(
@@ -709,6 +736,16 @@ export default function App() {
           .map((job) => [job.question_id, job]),
       ),
     [jobs],
+  );
+  const activeResearchJobs = useMemo(
+    () =>
+      jobs.filter(
+        (job) =>
+          (job.status === "queued" || job.status === "running") &&
+          (!job.job_type || job.job_type === "research") &&
+          job.entity_kind === kind,
+      ),
+    [jobs, kind],
   );
   const activeRowEntityIds = useMemo(
     () =>
@@ -1636,6 +1673,18 @@ export default function App() {
                     <span>✦ Research whole table</span>
                     <small>Fill every unanswered research cell</small>
                   </button>
+                  {activeResearchJobs.length > 0 && (
+                    <button
+                      className="destructive-menu-action"
+                      onClick={() => void cancelResearchScope("table")}
+                    >
+                      <span>Stop table research</span>
+                      <small>
+                        Cancel {activeResearchJobs.length} active job
+                        {activeResearchJobs.length === 1 ? "" : "s"}
+                      </small>
+                    </button>
+                  )}
                   <b>View</b>
                   <button onClick={toggleRows}>
                     <span>
@@ -2027,6 +2076,9 @@ export default function App() {
                         (suggestion) =>
                           suggestion.question_name === question.name,
                       );
+                    const activeColumnJobs = activeResearchJobs.filter(
+                      (job) => job.question_id === question.question_id,
+                    );
                     return (
                       <th
                         key={question.question_id}
@@ -2144,6 +2196,21 @@ export default function App() {
                                   </button>
                                 </>
                               )}
+                              {activeColumnJobs.length > 0 && (
+                                <button
+                                  className="destructive-menu-action"
+                                  onClick={() =>
+                                    void cancelResearchScope(
+                                      "column",
+                                      undefined,
+                                      question.question_id,
+                                    )
+                                  }
+                                >
+                                  Stop column research (
+                                  {activeColumnJobs.length})
+                                </button>
+                              )}
                               <button onClick={() => hideColumn(question.name)}>
                                 Hide field
                               </button>
@@ -2189,7 +2256,16 @@ export default function App() {
                       <td className="row-action-cell">
                         <small className="row-index">{index + 1}</small>
                         {isResearching ? (
-                          <span className="row-spinner" />
+                          <button
+                            className="row-research-cancel"
+                            title={`Stop research for ${row.name}`}
+                            aria-label={`Stop research for ${row.name}`}
+                            onClick={() =>
+                              void cancelResearchScope("row", row.entity_id)
+                            }
+                          >
+                            <span className="row-spinner" />
+                          </button>
                         ) : (
                           <button
                             className="row-agent-button"
@@ -2508,6 +2584,13 @@ export default function App() {
                 entityId: selection.entityId,
                 entityName: selection.entityName,
               })
+            }
+            onCancelResearch={() =>
+              cancelResearchScope(
+                "cell",
+                selection.entityId,
+                selection.question.question_id,
+              )
             }
             onPolicy={() => setDialog("policy")}
             onSchemaChallenge={() => {
@@ -6195,6 +6278,7 @@ function CellDrawer({
   onNotFound,
   onEnrich,
   onResearch,
+  onCancelResearch,
   onPolicy,
   onSchemaChallenge,
   onChallengeResearch,
@@ -6213,6 +6297,7 @@ function CellDrawer({
   onNotFound: () => void;
   onEnrich: () => void;
   onResearch: () => void;
+  onCancelResearch: () => Promise<void>;
   onPolicy: () => void;
   onSchemaChallenge: () => void;
   onChallengeResearch: () => void;
@@ -6508,7 +6593,11 @@ function CellDrawer({
         )}
       </div>
       <div className="drawer-actions">
-        {cell.state === "Answered" ? (
+        {isResearching ? (
+          <button className="danger-button" onClick={onCancelResearch}>
+            Stop research
+          </button>
+        ) : cell.state === "Answered" ? (
           <button className="ghost" onClick={onEnrich}>
             ✦ Get more evidence
           </button>
@@ -6526,12 +6615,8 @@ function CellDrawer({
             <button className="ghost" onClick={onNotFound}>
               Mark NotFound
             </button>
-            <button
-              className="primary"
-              onClick={onResearch}
-              disabled={isResearching}
-            >
-              {isResearching ? "Researching…" : "✦ Research this cell"}
+            <button className="primary" onClick={onResearch}>
+              ✦ Research this cell
             </button>
           </>
         )}

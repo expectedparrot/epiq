@@ -253,6 +253,13 @@ class TableResearchCreate(BaseModel):
     instructions: str = ""
 
 
+class ResearchCancelScope(BaseModel):
+    scope: Literal["cell", "row", "column", "table"]
+    entity_kind: str
+    entity_id: str | None = None
+    question_id: str | None = None
+
+
 class SuggestEntitiesCreate(BaseModel):
     entity_kind: str = Field(min_length=1)
     count: int = Field(default=5, ge=1, le=20)
@@ -1700,6 +1707,45 @@ def create_app(
             )
             persist_job(job_id)
             return job
+
+    @app.post("/api/research/cancel")
+    def cancel_research_scope(body: ResearchCancelScope) -> dict[str, Any]:
+        if body.scope in {"cell", "row"} and not body.entity_id:
+            raise EpiqError(
+                "invalid_cancel_scope", f"{body.scope.title()} cancel requires entity_id"
+            )
+        if body.scope in {"cell", "column"} and not body.question_id:
+            raise EpiqError(
+                "invalid_cancel_scope", f"{body.scope.title()} cancel requires question_id"
+            )
+        cancelled = []
+        with app.state.research_lock:
+            for job_id, job in app.state.research_jobs.items():
+                if job.get("status") not in {"queued", "running"}:
+                    continue
+                if job.get("job_type", "research") != "research":
+                    continue
+                if job.get("entity_kind") != body.entity_kind:
+                    continue
+                if body.question_id and job.get("question_id") != body.question_id:
+                    continue
+                entity_ids = {
+                    *job.get("target_entity_ids", []),
+                    *(job.get("requested_entity_ids") or []),
+                }
+                if body.entity_id and body.entity_id not in entity_ids:
+                    continue
+                if not job.get("cancel_requested"):
+                    job["cancel_requested"] = True
+                    job["messages"].append(
+                        {
+                            "at": datetime.now(UTC).isoformat(),
+                            "message": f"Cancellation requested from {body.scope} scope",
+                        }
+                    )
+                    persist_job(job_id)
+                cancelled.append(dict(job))
+        return {"scope": body.scope, "count": len(cancelled), "jobs": cancelled}
 
     @app.post("/api/research/jobs/{job_id}/retry", status_code=202)
     def retry_research(job_id: str) -> dict[str, Any]:

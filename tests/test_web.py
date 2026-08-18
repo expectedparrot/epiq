@@ -195,6 +195,55 @@ def test_research_jobs_can_be_cancelled_without_writing_late_results(tmp_path: P
     assert wait_for_job(client, retried.json()["job_id"])["status"] == "completed"
 
 
+def test_column_research_can_be_cancelled_as_one_scope(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+
+    def research(_kind, _question, targets, _progress=None):
+        started.set()
+        assert release.wait(1)
+        return [
+            {
+                "entity_id": targets[0]["entity_id"],
+                "status": "answered",
+                "value": True,
+                "confidence": "high",
+                "source_title": "Late source",
+                "source_url": "https://example.test/late",
+                "excerpt": "This result arrived after scoped cancellation.",
+            }
+        ]
+
+    client = TestClient(
+        create_app(tmp_path / "cancel-column.sqlite", tmp_path / "missing", research)
+    )
+    client.post("/api/project", json={"name": "Column cancellation"})
+    for name in ["Ada", "Grace"]:
+        client.post("/api/entities", json={"kind": "Person", "name": name})
+    question = client.post(
+        "/api/questions",
+        json={"name": "is_founder", "subject_kind": "Person", "value_type": "Bool"},
+    ).json()["question_id"]
+    launched = client.post(
+        "/api/research/column",
+        json={"entity_kind": "Person", "question": question, "scope": "column"},
+    ).json()
+    assert started.wait(1)
+    cancelled = client.post(
+        "/api/research/cancel",
+        json={"scope": "column", "entity_kind": "Person", "question_id": question},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["count"] == 2
+    release.set()
+    for job in launched["jobs"]:
+        assert wait_for_job(client, job["job_id"])["status"] == "cancelled"
+    assert all(
+        row["cells"]["is_founder"]["state"] == "Unasked"
+        for row in client.get("/api/matrix/Person").json()["rows"]
+    )
+
+
 def test_entity_suggestions_are_provisional_until_accepted(tmp_path: Path) -> None:
     def suggest(_kind, existing, count, instructions, progress=None):
         assert [item["name"] for item in existing] == ["Ada"]

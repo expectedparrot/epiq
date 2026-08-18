@@ -2045,6 +2045,20 @@ button:hover {
   padding: 0;
   width: 28px;
 }
+.row-research-cancel {
+  align-items: center;
+  background: #fff4cf;
+  border-color: #d2b45c;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  min-width: 28px;
+  padding: 0;
+  width: 28px;
+}
+.row-research-cancel .row-spinner {
+  margin: 0;
+}
 .field-action-cell {
   padding: 0 6px !important;
 }
