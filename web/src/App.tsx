@@ -817,6 +817,39 @@ export default function App() {
       );
     }
   };
+  const acceptProvisionalRelationships = async (
+    suggestions: ProvisionalRelationship[],
+  ) => {
+    const byJob = new Map<string, string[]>();
+    suggestions.forEach((suggestion) => {
+      const ids = byJob.get(suggestion.jobId) ?? [];
+      ids.push(suggestion.suggestion_id);
+      byJob.set(suggestion.jobId, ids);
+    });
+    if (!byJob.size) return;
+    try {
+      await Promise.all(
+        [...byJob].map(([jobId, suggestionIds]) =>
+          post(`/api/research/jobs/${jobId}/relationships/accept`, {
+            suggestion_ids: suggestionIds,
+          }),
+        ),
+      );
+      await loadOverview();
+      await loadMatrix();
+      setJobs(await api<ResearchJob[]>("/api/research/jobs"));
+      setClipboardNotice(
+        `Accepted ${suggestions.length} provisional entr${suggestions.length === 1 ? "y" : "ies"}`,
+      );
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not accept provisional entries",
+      );
+      throw caught;
+    }
+  };
   const acceptSchemaAdaptation = async (questionId: string) => {
     try {
       await post(`/api/research/schema-adaptations/${questionId}/accept`, {});
@@ -1891,6 +1924,10 @@ export default function App() {
                     />
                   </th>
                   {displayedQuestions.map((question, questionIndex) => {
+                    const pendingProvisional = provisionalRelationships.filter(
+                      (suggestion) =>
+                        suggestion.question_name === question.name,
+                    );
                     return (
                       <th
                         key={question.question_id}
@@ -1983,6 +2020,18 @@ export default function App() {
                               >
                                 Challenge schema
                               </button>
+                              {pendingProvisional.length > 0 && (
+                                <button
+                                  onClick={() =>
+                                    void acceptProvisionalRelationships(
+                                      pendingProvisional,
+                                    )
+                                  }
+                                >
+                                  Accept all {pendingProvisional.length}{" "}
+                                  provisional
+                                </button>
+                              )}
                               <button onClick={() => hideColumn(question.name)}>
                                 Hide field
                               </button>
@@ -2356,6 +2405,7 @@ export default function App() {
                 suggestion.suggestion_id,
               ]);
             }}
+            onAcceptAllProvisional={acceptProvisionalRelationships}
             onChanged={refresh}
           />
         )}
@@ -5879,6 +5929,7 @@ function CellDrawer({
   onChallengeResearch,
   onChallenge,
   onAcceptProvisional,
+  onAcceptAllProvisional,
   onChanged,
 }: {
   selection: Selection;
@@ -5895,6 +5946,9 @@ function CellDrawer({
   onChallengeResearch: () => void;
   onChallenge: (claimId: string) => void;
   onAcceptProvisional: (suggestion: ProvisionalRelationship) => Promise<void>;
+  onAcceptAllProvisional: (
+    suggestions: ProvisionalRelationship[],
+  ) => Promise<void>;
   onChanged: () => Promise<void>;
 }) {
   const { cell, entityName, question } = selection;
@@ -5982,10 +6036,28 @@ function CellDrawer({
         {provisionalRelationships.length > 0 && (
           <section className="provisional-relationships">
             <div className="proposal-heading">
-              <b>Provisional related rows</b>
-              <small>
-                Agent findings—not part of the database until approved.
-              </small>
+              <span>
+                <b>Provisional related rows</b>
+                <small>
+                  Agent findings—not part of the database until approved.
+                </small>
+              </span>
+              <button
+                className="accept-all-provisional"
+                disabled={busy === "all"}
+                onClick={async () => {
+                  setBusy("all");
+                  try {
+                    await onAcceptAllProvisional(provisionalRelationships);
+                  } finally {
+                    setBusy("");
+                  }
+                }}
+              >
+                {busy === "all"
+                  ? "Accepting…"
+                  : `Accept all ${provisionalRelationships.length}`}
+              </button>
             </div>
             {provisionalRelationships.map((suggestion) => (
               <article
@@ -6015,7 +6087,7 @@ function CellDrawer({
                 )}
                 <button
                   className="primary"
-                  disabled={busy === suggestion.suggestion_id}
+                  disabled={Boolean(busy)}
                   onClick={async () => {
                     setBusy(suggestion.suggestion_id);
                     try {

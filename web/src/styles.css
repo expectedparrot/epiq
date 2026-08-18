@@ -2597,6 +2597,20 @@ button:hover {
   color: var(--muted);
   font-size: 9px;
 }
+.provisional-relationships > .proposal-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.accept-all-provisional {
+  background: #e9f2ec;
+  border-color: #aec4b5;
+  color: #28664e;
+  flex: none;
+  font-size: 9px;
+  padding: 6px 8px;
+}
 .relationship-suggestion-card {
   display: flex;
   align-items: flex-start;
