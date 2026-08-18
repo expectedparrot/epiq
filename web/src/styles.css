@@ -2400,6 +2400,52 @@ button:hover {
   font: 9px DM Mono;
   padding: 4px 7px;
 }
+.workspace-plan-preview {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px;
+  background: #fffdf6;
+  border: 1px solid #d9cfad;
+  border-radius: 8px;
+}
+.workspace-plan-preview > div:not(.workspace-plan-actions) {
+  display: grid;
+  gap: 2px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid #e7e2d1;
+}
+.workspace-plan-preview b {
+  font-size: 11px;
+}
+.workspace-plan-preview small,
+.workspace-plan-preview span,
+.workspace-plan-preview p {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.workspace-plan-preview p {
+  margin: 3px 0;
+}
+.workspace-plan-actions {
+  display: flex;
+  gap: 7px;
+}
+.workspace-plan-actions button {
+  padding: 8px 10px;
+  font-size: 10px;
+}
+.workspace-plan-actions .primary {
+  background: #175b45;
+  border-color: #175b45;
+  color: white;
+}
+.plan-dismissed {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+}
 .agent-child-progress {
   margin-top: 12px;
   padding-top: 10px;

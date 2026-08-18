@@ -118,7 +118,13 @@ export interface ResearchJob {
     | "workspace_agent";
   messages: Array<{ at: string; message: string }>;
   error?: string | null;
-  outcome?: "changed" | "no_change" | "proposals" | "schema_proposal" | null;
+  outcome?:
+    | "changed"
+    | "no_change"
+    | "proposals"
+    | "schema_proposal"
+    | "workspace_proposal"
+    | null;
   written?: number;
   no_result?: number;
   rejected?: number;
@@ -136,6 +142,8 @@ export interface ResearchJob {
     research: Array<{ kind: string; question: string; entity_names: string[] }>;
   };
   child_job_ids?: string[];
+  approval_status?: "pending" | "approved" | "rejected";
+  estimated_research_cells?: number;
 }
 
 export interface SchemaAdaptation {

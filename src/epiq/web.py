@@ -1940,7 +1940,25 @@ def create_app(
                 ],
             }
             progress("Planning tables, fields, rows, and research tasks")
-            plan = app.state.workspace_agent_runner(body.message, context, progress)
+            plan = jobs[job_id].get("workspace_plan")
+            if plan is None:
+                plan = app.state.workspace_agent_runner(body.message, context, progress)
+                estimated_cells = sum(len(item["entity_names"]) for item in plan["research"])
+                progress(
+                    f"Plan ready for review: {len(plan['entity_kinds'])} tables, "
+                    f"{len(plan['questions'])} fields, {estimated_cells} research cells"
+                )
+                with app.state.research_lock:
+                    jobs[job_id]["status"] = "completed"
+                    jobs[job_id]["outcome"] = "workspace_proposal"
+                    jobs[job_id]["assistant_summary"] = str(plan["summary"]).strip()
+                    jobs[job_id]["workspace_plan"] = plan
+                    jobs[job_id]["approval_status"] = "pending"
+                    jobs[job_id]["estimated_research_cells"] = estimated_cells
+                    jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
+                    persist_job(job_id)
+                return
+            progress("Applying the approved workspace plan")
             entity_kinds = list(dict.fromkeys(str(item).strip() for item in plan["entity_kinds"]))
             entities = list(plan["entities"])
             questions = list(plan["questions"])
@@ -2195,6 +2213,48 @@ def create_app(
             persist_job(job_id)
         threading.Thread(target=execute_workspace_agent, args=(job_id, body), daemon=True).start()
         return job
+
+    @app.post("/api/workspace-agent/jobs/{job_id}/approve", status_code=202)
+    def approve_workspace_agent(job_id: str) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None or job.get("job_type") != "workspace_agent":
+                raise EpiqError("workspace_job_not_found", f"Workspace job not found: {job_id}")
+            if job.get("approval_status") != "pending" or not job.get("workspace_plan"):
+                raise EpiqError(
+                    "workspace_plan_unavailable",
+                    "This workspace plan is not awaiting approval",
+                )
+            job["approval_status"] = "approved"
+            job["status"] = "queued"
+            job["outcome"] = None
+            job["error"] = None
+            job["messages"].append(
+                {"at": datetime.now(UTC).isoformat(), "message": "Plan approved; execution queued"}
+            )
+            persist_job(job_id)
+            body = WorkspaceAgentCreate(message=str(job.get("user_message") or job["instructions"]))
+        threading.Thread(target=execute_workspace_agent, args=(job_id, body), daemon=True).start()
+        return job
+
+    @app.post("/api/workspace-agent/jobs/{job_id}/reject")
+    def reject_workspace_agent(job_id: str) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None or job.get("job_type") != "workspace_agent":
+                raise EpiqError("workspace_job_not_found", f"Workspace job not found: {job_id}")
+            if job.get("approval_status") != "pending":
+                raise EpiqError(
+                    "workspace_plan_unavailable",
+                    "This workspace plan is not awaiting approval",
+                )
+            job["approval_status"] = "rejected"
+            job["outcome"] = "workspace_proposal"
+            job["messages"].append(
+                {"at": datetime.now(UTC).isoformat(), "message": "Plan dismissed without changes"}
+            )
+            persist_job(job_id)
+            return job
 
     @app.get("/api/research/jobs")
     def research_jobs() -> list[dict[str, Any]]:

@@ -627,6 +627,20 @@ export default function App() {
     jobsRef.current = mergeJobs(jobsRef.current, [job]);
     setShowWorkspaceAgent(true);
   };
+  const approveWorkspacePlan = async (jobId: string) => {
+    const job = await post<ResearchJob>(
+      `/api/workspace-agent/jobs/${jobId}/approve`,
+      {},
+    );
+    setJobs((current) => mergeJobs(current, [job]));
+  };
+  const rejectWorkspacePlan = async (jobId: string) => {
+    const job = await post<ResearchJob>(
+      `/api/workspace-agent/jobs/${jobId}/reject`,
+      {},
+    );
+    setJobs((current) => mergeJobs(current, [job]));
+  };
   const inspectDiagnostic = (item: DiagnosticCell) => {
     const row = matrix?.rows.find(
       (candidate) => candidate.entity_id === item.entity_id,
@@ -2697,6 +2711,8 @@ export default function App() {
             onClose={() => setShowWorkspaceAgent(false)}
             onSend={directWorkspaceAgent}
             onCancel={cancelResearch}
+            onApprove={approveWorkspacePlan}
+            onReject={rejectWorkspacePlan}
           />
         )}
         {showReview && (
@@ -5140,11 +5156,15 @@ function WorkspaceAgentPanel({
   onClose,
   onSend,
   onCancel,
+  onApprove,
+  onReject,
 }: {
   jobs: ResearchJob[];
   onClose: () => void;
   onSend: (message: string) => Promise<void>;
   onCancel: (jobId: string) => Promise<void>;
+  onApprove: (jobId: string) => Promise<void>;
+  onReject: (jobId: string) => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -5223,12 +5243,43 @@ function WorkspaceAgentPanel({
                 <p>{job.messages.at(-1)?.message ?? "Preparing the workspace…"}</p>
               )}
               {job.workspace_plan && (
-                <div className="agent-plan-summary">
-                  <span>{job.workspace_plan.entity_kinds.length} tables</span>
-                  <span>{job.workspace_plan.entities.length} rows</span>
-                  <span>{job.workspace_plan.questions.length} fields</span>
-                  <span>{job.child_job_ids?.length ?? 0} research jobs</span>
-                </div>
+                <>
+                  <div className="agent-plan-summary">
+                    <span>{job.workspace_plan.entity_kinds.length} tables</span>
+                    <span>{job.workspace_plan.entities.length} rows</span>
+                    <span>{job.workspace_plan.questions.length} fields</span>
+                    <span>{job.estimated_research_cells ?? job.child_job_ids?.length ?? 0} research cells</span>
+                  </div>
+                  {job.approval_status === "pending" && (
+                    <div className="workspace-plan-preview">
+                      {job.workspace_plan.entity_kinds.map((entityKind) => (
+                        <div key={entityKind}>
+                          <b>{entityKind}</b>
+                          <small>
+                            {job.workspace_plan?.entities
+                              .filter((item) => item.kind === entityKind)
+                              .map((item) => item.name)
+                              .join(", ") || "No initial rows"}
+                          </small>
+                          <span>
+                            {job.workspace_plan?.questions
+                              .filter((item) => item.kind === entityKind)
+                              .map((item) => item.label || item.name)
+                              .join(" · ") || "No fields"}
+                          </span>
+                        </div>
+                      ))}
+                      <p>Nothing has been added yet. Approval creates this schema and starts the proposed research.</p>
+                      <div className="workspace-plan-actions">
+                        <button className="primary" onClick={() => void onApprove(job.job_id)}>Approve and populate</button>
+                        <button onClick={() => void onReject(job.job_id)}>Dismiss</button>
+                      </div>
+                    </div>
+                  )}
+                  {job.approval_status === "rejected" && (
+                    <small className="plan-dismissed">Plan dismissed without changing the workspace.</small>
+                  )}
+                </>
               )}
               {children.length > 0 && (
                 <div className="agent-child-progress">

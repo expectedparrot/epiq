@@ -1725,9 +1725,15 @@ def test_workspace_agent_applies_schema_rows_and_launches_cell_research(
         json={"message": "Collect data on AI interviewer startups"},
     )
     assert launched.status_code == 202
-    parent = wait_for_job(client, launched.json()["job_id"])
-    assert parent["status"] == "completed"
-    assert parent["assistant_summary"].startswith("Created a startup")
+    proposal = wait_for_job(client, launched.json()["job_id"])
+    assert proposal["status"] == "completed"
+    assert proposal["outcome"] == "workspace_proposal"
+    assert proposal["approval_status"] == "pending"
+    assert proposal["assistant_summary"].startswith("Created a startup")
+    assert client.get("/api/project").json()["entity_kinds"] == []
+    approved = client.post(f"/api/workspace-agent/jobs/{proposal['job_id']}/approve")
+    assert approved.status_code == 202
+    parent = wait_for_job(client, proposal["job_id"])
     assert len(parent["child_job_ids"]) == 2
     for child_job_id in parent["child_job_ids"]:
         assert wait_for_job(client, child_job_id)["status"] == "completed"
@@ -1798,8 +1804,12 @@ def test_workspace_agent_repairs_misplaced_research_table_and_field_names(
     launched = client.post(
         "/api/workspace-agent/jobs", json={"message": "Verify the existing action"}
     ).json()
+    proposal = wait_for_job(client, launched["job_id"])
+    assert proposal["approval_status"] == "pending"
+    assert researched == []
+    approved = client.post(f"/api/workspace-agent/jobs/{proposal['job_id']}/approve")
+    assert approved.status_code == 202
     parent = wait_for_job(client, launched["job_id"])
-    assert parent["status"] == "completed"
     assert len(parent["child_job_ids"]) == 2
     for child_job_id in parent["child_job_ids"]:
         assert wait_for_job(client, child_job_id)["status"] == "completed"
