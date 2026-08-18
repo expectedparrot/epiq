@@ -5,7 +5,8 @@ observation with a compound identity; its evidence links to the Study entity and
 
 ```bash
 uv run examples/cli/clinical-evidence-synthesis/build.sh /tmp/epiq-clinical.sqlite
-uv run epiq --db /tmp/epiq-clinical.sqlite --format table matrix --kind Finding
+uv run epiq use /tmp/epiq-clinical.sqlite
+uv run epiq --format table matrix --kind Finding
 ```
 
 | Finding | Study | Effect size | Sample size |
@@ -16,7 +17,7 @@ uv run epiq --db /tmp/epiq-clinical.sqlite --format table matrix --kind Finding
 Persist a sample-size-weighted estimate:
 
 ```bash
-uv run epiq --db /tmp/epiq-clinical.sqlite --actor agent:review derive \
+uv run epiq --actor agent:review derive \
   --subject "Sleep intervention review" --question pooled_effect \
   --operation weighted_avg \
   --valid-from 2026-08-17 \
@@ -30,8 +31,8 @@ Output value: `0.4`. The dossier contains both input claim IDs, both evidence re
 entity links, and locators `page 14/table 2` and `page 9/table 3`.
 
 ```bash
-uv run epiq --db /tmp/epiq-clinical.sqlite dossier "Sleep intervention review"
-uv run epiq --db /tmp/epiq-clinical.sqlite stale-derivations --kind Review
+uv run epiq dossier "Sleep intervention review"
+uv run epiq stale-derivations --kind Review
 ```
 
 The weights are claims, not copied constants. They appear as `parameter` dependencies and their
@@ -42,12 +43,13 @@ need first-class uncertainty and statistical model types.
 <!-- epiq-example -->
 ```bash
 examples/cli/clinical-evidence-synthesis/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" derive --subject "Sleep intervention review" \
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq derive --subject "Sleep intervention review" \
   --question pooled_effect --operation weighted_avg \
   --valid-from 2026-08-17 --input-cell "Alpha primary finding" effect \
   --input-cell "Beta primary finding" effect \
   --weight-cell "Alpha primary finding" sample_size \
   --weight-cell "Beta primary finding" sample_size
-epiq --db "$EPIQ_EXAMPLE_DB" --select count stale-derivations --kind Review
-epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Review
+epiq --select count stale-derivations --kind Review
+epiq --select rows matrix --kind Review
 ```

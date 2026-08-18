@@ -302,9 +302,10 @@ The packaged builder creates three products and five populated fields:
 
 ```bash
 uv run examples/cli/competitor-features/build.sh /tmp/epiq-competitors.sqlite
-uv run epiq --db /tmp/epiq-competitors.sqlite matrix --kind Product
-uv run epiq --db /tmp/epiq-competitors.sqlite stale --kind Product
-uv run epiq --db /tmp/epiq-competitors.sqlite export-xlsx --kind Product \
+uv run epiq use /tmp/epiq-competitors.sqlite
+uv run epiq matrix --kind Product
+uv run epiq stale --kind Product
+uv run epiq export-xlsx --kind Product \
   --output /tmp/epiq-competitors.xlsx
 ```
 
@@ -315,6 +316,7 @@ import of evidence and claims—the form a research agent commonly emits in prod
 <!-- epiq-example -->
 ```bash
 examples/cli/competitor-features/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Product \
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq --select query.matched query --kind Product \
   --where 'starting_price <= 300' --where 'api_access != none'
 ```

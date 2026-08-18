@@ -57,6 +57,10 @@ Every tutorial has two ways to run it:
   `schema.json` and `writeback.json` because those formats are useful for repeatable imports and
   automated tests—not because they are the best introduction to Epiq.
 
+After creating or building a database, tutorials select it once with `epiq use /path/project.sqlite`.
+Subsequent commands operate on that workspace selection, so examples stay readable. Use `epiq db`
+to inspect the selection; reserve `--db` for intentionally overriding it for one command.
+
 ## The four objects to keep in mind
 
 | You want to represent | Epiq object | Spreadsheet analogy |

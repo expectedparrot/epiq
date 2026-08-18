@@ -275,8 +275,9 @@ says there should be one committee outcome.
 
 ```bash
 uv run examples/cli/hiring-committee/build.sh /tmp/epiq-hiring.sqlite
-uv run epiq --db /tmp/epiq-hiring.sqlite dossier "Alex Rivera"
-uv run epiq --db /tmp/epiq-hiring.sqlite query --kind Candidate \
+uv run epiq use /tmp/epiq-hiring.sqlite
+uv run epiq dossier "Alex Rivera"
+uv run epiq query --kind Candidate \
   --where 'committee_recommendation=hire'
 ```
 
@@ -286,6 +287,7 @@ the tutorial as examples of idempotent setup and atomic multi-agent writeback.
 <!-- epiq-example -->
 ```bash
 examples/cli/hiring-committee/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Candidate \
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq --select query.matched query --kind Candidate \
   --where 'committee_recommendation=hire'
 ```

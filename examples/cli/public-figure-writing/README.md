@@ -202,9 +202,10 @@ The packaged fixture performs the same writes in a reproducible form:
 
 ```bash
 uv run examples/cli/public-figure-writing/build.sh /tmp/epiq-public-writing.sqlite
-uv run epiq --db /tmp/epiq-public-writing.sqlite --format table matrix --kind Person
-uv run epiq --db /tmp/epiq-public-writing.sqlite --format table matrix --kind Work
-uv run epiq --db /tmp/epiq-public-writing.sqlite related "Paul Graham" \
+uv run epiq use /tmp/epiq-public-writing.sqlite
+uv run epiq --format table matrix --kind Person
+uv run epiq --format table matrix --kind Work
+uv run epiq related "Paul Graham" \
   --via author --direction incoming
 ```
 
@@ -215,8 +216,9 @@ agent write-back; they are not a different database abstraction.
 <!-- epiq-example -->
 ```bash
 examples/cli/public-figure-writing/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" --select count related "Paul Graham" \
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq --select count related "Paul Graham" \
   --via author --direction incoming
-epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Work \
+epiq --select query.matched query --kind Work \
   --where 'author=Paul Graham'
 ```

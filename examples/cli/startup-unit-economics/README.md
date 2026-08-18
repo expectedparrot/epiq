@@ -7,7 +7,8 @@ Build the base facts and inspect them before calculating anything:
 
 ```bash
 uv run examples/cli/startup-unit-economics/build.sh /tmp/epiq-startup-unit-economics.sqlite
-uv run epiq --db /tmp/epiq-startup-unit-economics.sqlite --format table matrix --kind Startup
+uv run epiq use /tmp/epiq-startup-unit-economics.sqlite
+uv run epiq --format table matrix --kind Startup
 ```
 
 The three formula fields are equivalent to spreadsheet formulas, but store stable field names:
@@ -21,10 +22,10 @@ The three formula fields are equivalent to spreadsheet formulas, but store stabl
 Materialize every ready formula:
 
 ```bash
-uv run epiq --db /tmp/epiq-startup-unit-economics.sqlite materialize \
+uv run epiq materialize \
   --kind Startup --valid-from 2026-08-18
 
-uv run epiq --db /tmp/epiq-startup-unit-economics.sqlite --format table matrix \
+uv run epiq --format table matrix \
   --kind Startup --questions monthly_recurring_revenue,customers,employees,founded_year,revenue_per_customer,annualized_revenue_per_employee,company_age
 ```
 
@@ -43,7 +44,7 @@ dependencies. If Acorn later reports revised MRR, the historical calculation rem
 flagged as stale:
 
 ```bash
-uv run epiq --db /tmp/epiq-startup-unit-economics.sqlite stale-derivations --kind Startup
+uv run epiq stale-derivations --kind Startup
 ```
 
 Re-run `materialize` after reviewing the changed dependency to create current derived claims.
@@ -52,7 +53,8 @@ Division by zero and unsafe expressions fail without writing a partial result.
 <!-- epiq-example -->
 ```bash
 examples/cli/startup-unit-economics/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" materialize --kind Startup --valid-from 2026-08-18
-epiq --db "$EPIQ_EXAMPLE_DB" --select count stale-derivations --kind Startup
-epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Startup
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq materialize --kind Startup --valid-from 2026-08-18
+epiq --select count stale-derivations --kind Startup
+epiq --select rows matrix --kind Startup
 ```

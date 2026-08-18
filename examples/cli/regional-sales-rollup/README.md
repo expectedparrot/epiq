@@ -10,8 +10,9 @@ Build the sourced order ledger:
 
 ```bash
 uv run examples/cli/regional-sales-rollup/build.sh /tmp/epiq-regional-sales-rollup.sqlite
+uv run epiq use /tmp/epiq-regional-sales-rollup.sqlite
 
-uv run epiq --db /tmp/epiq-regional-sales-rollup.sqlite --format table matrix \
+uv run epiq --format table matrix \
   --kind Order --questions region,units,unit_price,discount_rate
 ```
 
@@ -19,10 +20,10 @@ The schema declares net revenue once as `=B1*C1*(1-D1)`, normalized to
 `x0*x1*(1-x2)`. Materialize it across the table:
 
 ```bash
-uv run epiq --db /tmp/epiq-regional-sales-rollup.sqlite materialize \
+uv run epiq materialize \
   --kind Order --valid-from 2026-08-18
 
-uv run epiq --db /tmp/epiq-regional-sales-rollup.sqlite --format table matrix \
+uv run epiq --format table matrix \
   --kind Order --questions region,units,unit_price,discount_rate,net_revenue
 ```
 
@@ -37,7 +38,7 @@ Now derive a summary table without creating artificial “North total” entitie
 into claims:
 
 ```bash
-uv run epiq --db /tmp/epiq-regional-sales-rollup.sqlite --format table aggregate \
+uv run epiq --format table aggregate \
   --kind Order --question net_revenue --op sum --group-by region
 ```
 
@@ -53,18 +54,19 @@ evidence produced each order-level result.
 You can derive other views without changing the schema:
 
 ```bash
-epiq --db /tmp/epiq-regional-sales-rollup.sqlite --format table aggregate \
+epiq --format table aggregate \
   --kind Order --question net_revenue --op avg --group-by region
 
-epiq --db /tmp/epiq-regional-sales-rollup.sqlite query --kind Order \
+epiq query --kind Order \
   --where 'net_revenue >= 950'
 ```
 
 <!-- epiq-example -->
 ```bash
 examples/cli/regional-sales-rollup/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" materialize --kind Order --valid-from 2026-08-18
-epiq --db "$EPIQ_EXAMPLE_DB" --select groups aggregate --kind Order \
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq materialize --kind Order --valid-from 2026-08-18
+epiq --select groups aggregate --kind Order \
   --question net_revenue --op sum --group-by region
-epiq --db "$EPIQ_EXAMPLE_DB" --select rows matrix --kind Order
+epiq --select rows matrix --kind Order
 ```

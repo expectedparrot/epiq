@@ -6,7 +6,8 @@ identity of paper, outcome, and analysis; ingesting the same result twice resolv
 
 ```bash
 uv run examples/cli/literature-review/build.sh /tmp/epiq-literature.sqlite
-uv run epiq --db /tmp/epiq-literature.sqlite --format table matrix --kind Finding
+uv run epiq use /tmp/epiq-literature.sqlite
+uv run epiq --format table matrix --kind Finding
 ```
 
 | Finding | Paper | Research question | Effect | Interpretation |
@@ -15,7 +16,7 @@ uv run epiq --db /tmp/epiq-literature.sqlite --format table matrix --kind Findin
 | Study B productivity finding | Remote Work Study B | Effect of remote work on productivity | -0.05 | null |
 
 ```bash
-uv run epiq --db /tmp/epiq-literature.sqlite query --kind Finding --where 'effect_size > 0'
+uv run epiq query --kind Finding --where 'effect_size > 0'
 ```
 
 Output: `matched: 1`, returning Study A's finding and its structured `{"page":12}` locator.
@@ -32,5 +33,6 @@ Output: `matched: 1`, returning Study A's finding and its structured `{"page":12
 <!-- epiq-example -->
 ```bash
 examples/cli/literature-review/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Finding --where 'effect_size > 0'
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq --select query.matched query --kind Finding --where 'effect_size > 0'
 ```

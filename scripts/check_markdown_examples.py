@@ -27,6 +27,9 @@ def main() -> None:
     executed = 0
     with tempfile.TemporaryDirectory(prefix="epiq-markdown-") as directory:
         temporary = Path(directory)
+        # Tutorials use `epiq use`, which writes workspace-local selection state. Keep that state
+        # out of the repository while retaining the examples/ paths used by their build commands.
+        (temporary / "examples").symlink_to(root / "examples", target_is_directory=True)
         for path in paths:
             resolved = path if path.is_absolute() else root / path
             blocks = BLOCK.findall(resolved.read_text())
@@ -39,7 +42,7 @@ def main() -> None:
                 }
                 subprocess.run(
                     ["bash", "-eu", "-o", "pipefail", "-c", block],
-                    cwd=root,
+                    cwd=temporary,
                     env=environment,
                     check=True,
                 )

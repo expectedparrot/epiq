@@ -184,8 +184,9 @@ The full example contains three companies, multiple risks, and public and privat
 
 ```bash
 uv run examples/cli/investment-opportunities/build.sh /tmp/epiq-investments.sqlite
-uv run epiq --db /tmp/epiq-investments.sqlite matrix --kind Company
-uv run epiq --db /tmp/epiq-investments.sqlite timeline --kind Company \
+uv run epiq use /tmp/epiq-investments.sqlite
+uv run epiq matrix --kind Company
+uv run epiq timeline --kind Company \
   --question amount_raised
 ```
 
@@ -195,6 +196,7 @@ atomic agent writeback. They encode the same concepts as the commands above.
 <!-- epiq-example -->
 ```bash
 examples/cli/investment-opportunities/build.sh "$EPIQ_EXAMPLE_DB"
-epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Company \
+epiq --quiet use "$EPIQ_EXAMPLE_DB"
+epiq --select query.matched query --kind Company \
   --where 'investment_probability >= 0.65'
 ```
