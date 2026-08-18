@@ -452,7 +452,9 @@ export default function App() {
           : { key: "__entity__", direction: "asc" },
       );
       setStatusFilter(
-        ["all", "answered", "unanswered", "review"].includes(saved.statusFilter)
+        ["all", "answered", "unanswered", "provisional", "review"].includes(
+          saved.statusFilter,
+        )
           ? saved.statusFilter
           : "all",
       );
@@ -838,6 +840,7 @@ export default function App() {
     try {
       await post("/api/research/relationships/accept", {
         scope,
+        entity_kind: scope === "table" ? kind : undefined,
         question_id:
           questionIds.size === 1 ? suggestions[0].question_id : undefined,
         subject_entity_id:
@@ -931,6 +934,14 @@ export default function App() {
       ),
     [jobs],
   );
+  const tableProvisionalRelationships = useMemo(() => {
+    const questionIds = new Set(
+      (matrix?.questions ?? []).map((question) => question.question_id),
+    );
+    return provisionalRelationships.filter((suggestion) =>
+      questionIds.has(suggestion.question_id),
+    );
+  }, [matrix, provisionalRelationships]);
   const activeSelection = useMemo(() => {
     if (!activeGridCell || !matrix) return null;
     const row = matrix.rows.find(
@@ -967,13 +978,20 @@ export default function App() {
           cells.some((cell) => cell.state === "Answered")) ||
         (statusFilter === "unanswered" &&
           cells.some((cell) => cell.state === "Unasked")) ||
+        (statusFilter === "provisional" &&
+          tableProvisionalRelationships.some(
+            (suggestion) => suggestion.subject_entity_id === row.entity_id,
+          )) ||
         (statusFilter === "review" &&
-          cells.some(
+          (cells.some(
             (cell) =>
               cell.state === "Contested" ||
               cell.state === "NotFound" ||
               cell.temporal?.freshness === "stale",
-          ));
+          ) ||
+            tableProvisionalRelationships.some(
+              (suggestion) => suggestion.subject_entity_id === row.entity_id,
+            )));
       return matchesText && matchesStatus;
     });
     const direction = sort.direction === "asc" ? 1 : -1;
@@ -997,7 +1015,7 @@ export default function App() {
         }) * direction
       );
     });
-  }, [matrix, filterText, statusFilter, sort]);
+  }, [matrix, filterText, statusFilter, sort, tableProvisionalRelationships]);
   const selectedRange = useMemo(() => {
     if (!activeGridCell || !selectionAnchor) return null;
     const anchorRow = displayedRows.findIndex(
@@ -1421,11 +1439,13 @@ export default function App() {
             <span>◈ Review</span>
             {reviewItems.stale.length +
             reviewItems.contradictions.length +
-            staleDerivations.length ? (
+            staleDerivations.length +
+            tableProvisionalRelationships.length ? (
               <strong className="action-count">
                 {reviewItems.stale.length +
                   reviewItems.contradictions.length +
-                  staleDerivations.length}
+                  staleDerivations.length +
+                  tableProvisionalRelationships.length}
               </strong>
             ) : (
               ""
@@ -1703,6 +1723,7 @@ export default function App() {
               <option value="all">All rows</option>
               <option value="answered">Has answers</option>
               <option value="unanswered">Has unanswered fields</option>
+              <option value="provisional">Has provisional entries</option>
               <option value="review">Needs review</option>
             </select>
             <select
@@ -1835,6 +1856,11 @@ export default function App() {
                   <th className="table-research-corner">
                     <button
                       className="agent-button compact-agent-action"
+                      data-count={
+                        tableProvisionalRelationships.length
+                          ? tableProvisionalRelationships.length
+                          : undefined
+                      }
                       title="Research every unanswered cell in the table"
                       aria-label="Research every unanswered cell in the table"
                       onClick={() => void launchTableResearch()}
@@ -1879,6 +1905,13 @@ export default function App() {
                               job
                                 ? "agent-button running compact-agent-action"
                                 : "agent-button compact-agent-action"
+                            }
+                            data-count={
+                              tableProvisionalRelationships.filter(
+                                (suggestion) =>
+                                  suggestion.question_id ===
+                                  question.question_id,
+                              ).length || undefined
                             }
                             title={
                               job
@@ -1933,10 +1966,11 @@ export default function App() {
                     />
                   </th>
                   {displayedQuestions.map((question, questionIndex) => {
-                    const pendingProvisional = provisionalRelationships.filter(
-                      (suggestion) =>
-                        suggestion.question_name === question.name,
-                    );
+                    const pendingProvisional =
+                      tableProvisionalRelationships.filter(
+                        (suggestion) =>
+                          suggestion.question_name === question.name,
+                      );
                     return (
                       <th
                         key={question.question_id}
@@ -2074,6 +2108,11 @@ export default function App() {
               <tbody>
                 {displayedRows.map((row, index) => {
                   const isResearching = activeRowEntityIds.has(row.entity_id);
+                  const rowProvisionalCount =
+                    tableProvisionalRelationships.filter(
+                      (suggestion) =>
+                        suggestion.subject_entity_id === row.entity_id,
+                    ).length;
                   return (
                     <tr
                       key={row.entity_id}
@@ -2086,6 +2125,7 @@ export default function App() {
                         ) : (
                           <button
                             className="row-agent-button"
+                            data-count={rowProvisionalCount || undefined}
                             title={`Research unanswered fields for ${row.name}`}
                             aria-label={`Research unanswered fields for ${row.name}`}
                             onClick={() => {
@@ -2126,11 +2166,12 @@ export default function App() {
                         const columnIndex =
                           displayedQuestions.indexOf(question);
                         const cell = row.cells[question.name];
-                        const provisional = provisionalRelationships.filter(
-                          (suggestion) =>
-                            suggestion.subject_entity_id === row.entity_id &&
-                            suggestion.question_name === question.name,
-                        );
+                        const provisional =
+                          tableProvisionalRelationships.filter(
+                            (suggestion) =>
+                              suggestion.subject_entity_id === row.entity_id &&
+                              suggestion.question_name === question.name,
+                          );
                         const derivedClaims = cell.lineage.filter(
                           (item) => item.derivation,
                         );
@@ -2375,7 +2416,7 @@ export default function App() {
         {selection && (
           <CellDrawer
             selection={selection}
-            provisionalRelationships={provisionalRelationships.filter(
+            provisionalRelationships={tableProvisionalRelationships.filter(
               (suggestion) =>
                 suggestion.subject_entity_id === selection.entityId &&
                 suggestion.question_name === selection.question.name,
@@ -2449,6 +2490,7 @@ export default function App() {
             stale={reviewItems.stale}
             contradictions={reviewItems.contradictions}
             staleDerivations={staleDerivations}
+            provisionalRelationships={tableProvisionalRelationships}
             onClose={() => setShowReview(false)}
             onInspect={inspectDiagnostic}
             onRecalculate={async (item) => {
@@ -2458,6 +2500,31 @@ export default function App() {
               if (question) await materializeFormula(question);
               await loadReviewItems();
             }}
+            onInspectProvisional={(suggestion) => {
+              const row = matrix?.rows.find(
+                (item) => item.entity_id === suggestion.subject_entity_id,
+              );
+              const question = matrix?.questions.find(
+                (item) => item.question_id === suggestion.question_id,
+              );
+              if (!row || !question) return;
+              setSelection({
+                entityId: row.entity_id,
+                entityName: row.name,
+                question,
+                cell: row.cells[question.name],
+              });
+              setShowReview(false);
+            }}
+            onAcceptProvisional={(suggestions) =>
+              acceptProvisionalRelationships(suggestions, "cell")
+            }
+            onAcceptAllProvisional={() =>
+              acceptProvisionalRelationships(
+                tableProvisionalRelationships,
+                "table",
+              )
+            }
           />
         )}
         {showSchemaReview && (
@@ -4570,26 +4637,47 @@ function ReviewPanel({
   stale,
   contradictions,
   staleDerivations,
+  provisionalRelationships,
   onClose,
   onInspect,
   onRecalculate,
+  onInspectProvisional,
+  onAcceptProvisional,
+  onAcceptAllProvisional,
 }: {
   stale: DiagnosticCell[];
   contradictions: DiagnosticCell[];
   staleDerivations: StaleDerivation[];
+  provisionalRelationships: ProvisionalRelationship[];
   onClose: () => void;
   onInspect: (item: DiagnosticCell) => void;
   onRecalculate: (item: StaleDerivation) => Promise<void>;
+  onInspectProvisional: (item: ProvisionalRelationship) => void;
+  onAcceptProvisional: (items: ProvisionalRelationship[]) => Promise<void>;
+  onAcceptAllProvisional: () => Promise<void>;
 }) {
-  const [tab, setTab] = useState<"contradictions" | "stale" | "calculations">(
-    contradictions.length
-      ? "contradictions"
-      : stale.length
-        ? "stale"
-        : "calculations",
+  const [tab, setTab] = useState<
+    "provisional" | "contradictions" | "stale" | "calculations"
+  >(
+    provisionalRelationships.length
+      ? "provisional"
+      : contradictions.length
+        ? "contradictions"
+        : stale.length
+          ? "stale"
+          : "calculations",
   );
   const [busy, setBusy] = useState("");
+  const provisionalCells = useMemo(() => {
+    const groups = new Map<string, ProvisionalRelationship[]>();
+    provisionalRelationships.forEach((suggestion) => {
+      const key = `${suggestion.subject_entity_id}:${suggestion.question_id}`;
+      groups.set(key, [...(groups.get(key) ?? []), suggestion]);
+    });
+    return [...groups.values()];
+  }, [provisionalRelationships]);
   const tabs = [
+    ["provisional", "Provisional", provisionalRelationships.length],
     ["contradictions", "Contradictions", contradictions.length],
     ["stale", "Stale evidence", stale.length],
     ["calculations", "Calculations", staleDerivations.length],
@@ -4604,7 +4692,8 @@ function ReviewPanel({
         </button>
         <h2>Needs attention</h2>
         <p>
-          Inspect disagreements and information that may no longer be current.
+          Review agent proposals, disagreements, stale evidence, and derived
+          values.
         </p>
       </div>
       <div className="review-tabs">
@@ -4620,7 +4709,76 @@ function ReviewPanel({
         ))}
       </div>
       <div className="activity-list review-list">
+        {tab === "provisional" && provisionalRelationships.length > 0 && (
+          <div className="review-bulk-bar">
+            <span>
+              {provisionalCells.length} cell
+              {provisionalCells.length === 1 ? "" : "s"}
+            </span>
+            <button
+              className="primary"
+              disabled={busy === "all-provisional"}
+              onClick={async () => {
+                setBusy("all-provisional");
+                try {
+                  await onAcceptAllProvisional();
+                } finally {
+                  setBusy("");
+                }
+              }}
+            >
+              {busy === "all-provisional"
+                ? "Accepting…"
+                : `Accept all ${provisionalRelationships.length}`}
+            </button>
+          </div>
+        )}
+        {tab === "provisional" &&
+          provisionalCells.map((items) => {
+            const first = items[0];
+            const key = `${first.subject_entity_id}:${first.question_id}`;
+            return (
+              <article
+                className="review-card provisional-review-card"
+                key={key}
+              >
+                <div className="review-card-head">
+                  <span className="review-kind provisional">PROVISIONAL</span>
+                  <small>
+                    {items.length} entr{items.length === 1 ? "y" : "ies"}
+                  </small>
+                </div>
+                <h3>{first.subject_name}</h3>
+                <p>{first.question_name.replaceAll("_", " ")}</p>
+                <div className="provisional-review-values">
+                  {items.map((item) => (
+                    <code key={item.suggestion_id}>{item.target_name}</code>
+                  ))}
+                </div>
+                <div className="review-card-actions">
+                  <button onClick={() => onInspectProvisional(first)}>
+                    Inspect
+                  </button>
+                  <button
+                    className="primary"
+                    disabled={busy === key}
+                    onClick={async () => {
+                      setBusy(key);
+                      try {
+                        await onAcceptProvisional(items);
+                      } finally {
+                        setBusy("");
+                      }
+                    }}
+                  >
+                    {busy === key ? "Accepting…" : `Accept all ${items.length}`}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         {tab !== "calculations" &&
+          tab !== "provisional" &&
           items.map((item) => (
             <article
               className="review-card"
@@ -4677,7 +4835,10 @@ function ReviewPanel({
               </button>
             </article>
           ))}
-        {((tab !== "calculations" && items.length === 0) ||
+        {((tab === "provisional" && provisionalCells.length === 0) ||
+          (tab !== "calculations" &&
+            tab !== "provisional" &&
+            items.length === 0) ||
           (tab === "calculations" && staleDerivations.length === 0)) && (
           <div className="drawer-empty review-empty">
             <div>✓</div>

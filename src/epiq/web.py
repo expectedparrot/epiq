@@ -271,6 +271,7 @@ class AcceptRelationshipSuggestionsCreate(BaseModel):
 
 class RelationshipReviewScope(BaseModel):
     scope: Literal["cell", "column", "table"]
+    entity_kind: str | None = None
     subject_entity_id: str | None = None
     question_id: str | None = None
     review_id: str = Field(default_factory=lambda: f"rrv_{uuid.uuid4().hex}")
@@ -1716,6 +1717,8 @@ def create_app(
         selected: list[tuple[str, dict[str, Any]]] = []
         with app.state.research_lock:
             for job_id, job in app.state.research_jobs.items():
+                if body.entity_kind and job.get("entity_kind") != body.entity_kind:
+                    continue
                 for item in job.get("relationship_suggestions", []):
                     if item.get("status") != "pending":
                         continue
