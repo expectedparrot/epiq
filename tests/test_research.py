@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from epiq.research import OpenAIResearchRunner, _parse_values
+from epiq.research import OpenAIResearchRunner, OpenAIWorkspaceAgentRunner, _parse_values
 
 
 class _StreamingResponse:
@@ -116,3 +116,50 @@ def test_not_found_research_rejects_non_null_value() -> None:
         _parse_values(
             [{"entity_id": "theater_savoy", "status": "not_found", "value_json": "1891"}]
         )
+
+
+def test_workspace_planning_does_not_enable_web_search(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    plan = {
+        "summary": "Start with a compact comparison table.",
+        "entity_kinds": ["Platform"],
+        "entities": [{"kind": "Platform", "name": "Qualtrics"}],
+        "questions": [],
+        "research": [],
+    }
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __iter__(self):
+            event = {
+                "type": "response.completed",
+                "response": {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": json.dumps(plan)}
+                            ],
+                        }
+                    ]
+                },
+            }
+            yield f"data: {json.dumps(event)}\n".encode()
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    runner = OpenAIWorkspaceAgentRunner(api_key="test-key", model="test-model")
+
+    result = runner("Compare survey platforms", {"project": {}, "tables": []})
+
+    assert "tools" not in captured["payload"]
+    assert "Do not perform web research during this planning step" in captured["payload"]["input"]
+    assert result == plan

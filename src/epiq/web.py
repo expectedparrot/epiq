@@ -2021,10 +2021,74 @@ def create_app(
                     for item in overview["entity_kinds"]
                 ],
             }
-            progress("Planning tables, fields, rows, and research tasks")
+            progress("Drafting a starter schema, seed rows, and bounded research plan")
             plan = jobs[job_id].get("workspace_plan")
             if plan is None:
                 plan = app.state.workspace_agent_runner(body.message, context, progress)
+                proposed_kinds = list(
+                    dict.fromkeys(
+                        [
+                            *[str(kind) for kind in plan["entity_kinds"]],
+                            *[str(item["kind"]) for item in plan["entities"]],
+                            *[str(item["kind"]) for item in plan["questions"]],
+                        ]
+                    )
+                )[:3]
+                proposed_entities = [
+                    item for item in plan["entities"] if str(item["kind"]) in proposed_kinds
+                ][:5]
+                proposed_questions = [
+                    item for item in plan["questions"] if str(item["kind"]) in proposed_kinds
+                ][:8]
+                allowed_rows: dict[str, list[str]] = {
+                    str(table["kind"]): [str(name) for name in table["rows"]]
+                    for table in context["tables"]
+                }
+                for entity in proposed_entities:
+                    allowed_rows.setdefault(str(entity["kind"]), []).append(str(entity["name"]))
+                bounded_research = []
+                seen_cells: set[tuple[str, str, str]] = set()
+                for request in plan["research"]:
+                    request_kind = str(request["kind"])
+                    request_question = str(request["question"])
+                    requested_names = [str(name) for name in request["entity_names"]]
+                    row_kind = request_kind
+                    if row_kind not in allowed_rows and requested_names:
+                        requested_set = {name.casefold() for name in requested_names}
+                        matching_kinds = [
+                            kind
+                            for kind, names in allowed_rows.items()
+                            if requested_set <= {name.casefold() for name in names}
+                        ]
+                        if len(matching_kinds) == 1:
+                            row_kind = matching_kinds[0]
+                    if row_kind not in allowed_rows:
+                        continue
+                    names = requested_names or allowed_rows[row_kind]
+                    bounded_names = []
+                    allowed_names = {
+                        name.casefold(): name for name in allowed_rows[row_kind]
+                    }
+                    for name in names:
+                        canonical_name = allowed_names.get(name.casefold())
+                        cell = (request_kind, request_question, name.casefold())
+                        if canonical_name is None or cell in seen_cells:
+                            continue
+                        bounded_names.append(canonical_name)
+                        seen_cells.add(cell)
+                        if len(seen_cells) == 24:
+                            break
+                    if bounded_names:
+                        bounded_research.append({**request, "entity_names": bounded_names})
+                    if len(seen_cells) == 24:
+                        break
+                plan = {
+                    **plan,
+                    "entity_kinds": proposed_kinds,
+                    "entities": proposed_entities,
+                    "questions": proposed_questions,
+                    "research": bounded_research,
+                }
                 estimated_cells = sum(len(item["entity_names"]) for item in plan["research"])
                 progress(
                     f"Plan ready for review: {len(plan['entity_kinds'])} tables, "

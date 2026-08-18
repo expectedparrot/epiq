@@ -1777,6 +1777,65 @@ def test_workspace_agent_applies_schema_rows_and_launches_cell_research(
     assert "migrate" not in available
 
 
+def test_workspace_agent_bounds_starter_plan_before_review(tmp_path: Path) -> None:
+    names = [f"Platform {index}" for index in range(7)]
+
+    def planner(_goal, _context, progress=None):
+        questions = [
+            {
+                "kind": "Platform",
+                "name": f"field_{index}",
+                "value_type": "String",
+                "label": f"Field {index}",
+                "cardinality": "one",
+                "volatility": "slow",
+                "freshness_days": None,
+                "research_guidance": "Use an official product page.",
+            }
+            for index in range(10)
+        ]
+        return {
+            "summary": "A deliberately oversized starter plan.",
+            "entity_kinds": ["Platform"],
+            "entities": [{"kind": "Platform", "name": name} for name in names],
+            "questions": questions,
+            "research": [
+                {
+                    "kind": "Platform",
+                    "question": question["name"],
+                    "entity_names": names,
+                    "instructions": "Verify this starter comparison field.",
+                }
+                for question in questions
+            ],
+        }
+
+    client = TestClient(
+        create_app(
+            tmp_path / "bounded-workspace.sqlite",
+            tmp_path / "missing",
+            workspace_agent_runner=planner,
+        )
+    )
+    client.post("/api/project", json={"name": "Survey platforms"})
+
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Collect information on all survey platforms"},
+    ).json()
+    proposal = wait_for_job(client, launched["job_id"])
+
+    assert proposal["approval_status"] == "pending"
+    assert len(proposal["workspace_plan"]["entities"]) == 5
+    assert len(proposal["workspace_plan"]["questions"]) == 8
+    assert proposal["estimated_research_cells"] == 24
+    assert sum(
+        len(request["entity_names"])
+        for request in proposal["workspace_plan"]["research"]
+    ) == 24
+    assert client.get("/api/project").json()["entity_kinds"] == []
+
+
 def test_workspace_agent_repairs_misplaced_research_table_and_field_names(
     tmp_path: Path,
 ) -> None:

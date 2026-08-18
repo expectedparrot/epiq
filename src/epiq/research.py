@@ -454,16 +454,18 @@ class OpenAIWorkspaceAgentRunner(OpenAIResearchRunner):
 User direction: {goal}
 Current workspace: {json.dumps(context, sort_keys=True)}
 
-Return a small, useful plan that can be executed immediately. Epiq models durable things as entity
+Return a fast, schema-first starter plan. Do not perform web research during this planning step.
+Epiq models durable things as entity
 rows, typed questions as columns, and one-to-many facts (funding rounds, press articles, writings,
 observations) as related entity tables rather than JSON arrays. Prefer one primary table plus only
 the related tables genuinely needed by the user's goal. Use Ref[Kind] questions for relationships.
 
 You may propose only additive operations: entity kinds, entities, questions, and research requests.
-Do not rename, delete, retire, supersede, or invent claims. Reuse existing schema and rows. Initial
-entities must be real, identifiable examples supported by web research; do not create placeholder
-rows. Keep the plan bounded to at most 6 entity kinds, 15 entities, and 24 questions. Research only
-the cells needed to make the initial workspace useful. Question names must be snake_case. Use Epiq
+Do not rename, delete, retire, supersede, or invent claims. Reuse existing schema and rows. For an
+empty workspace, propose at most 3 tables, 5 recognizable seed rows, 8 initial fields, and 24
+initial research cells. Seed rows are a bounded starting set, never a claim of exhaustive coverage.
+Broader entity discovery happens incrementally after approval. Research only the cells needed to
+make the starter workspace useful. Question names must be snake_case. Use Epiq
 value types such as String, Bool, Int,
 Float, Year, Date, URL, Probability, Enum[a,b], Quantity[USD], and Ref[Kind]. Put a concise label,
 cardinality, volatility, freshness_days when appropriate, and precise research_guidance in each
@@ -481,7 +483,6 @@ research is already complete.
         payload = {
             "model": self.model,
             "input": prompt,
-            "tools": [{"type": "web_search"}],
             "text": {
                 "format": {
                     "type": "json_schema",
