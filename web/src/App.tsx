@@ -2021,6 +2021,7 @@ export default function App() {
                         <button
                           className="row-agent-button"
                           title={`Research unanswered fields for ${row.name}`}
+                          aria-label={`Research unanswered fields for ${row.name}`}
                           onClick={() => {
                             setRowResearchTarget({
                               entityId: row.entity_id,
@@ -2033,7 +2034,7 @@ export default function App() {
                             setDialog("rowResearch");
                           }}
                         >
-                          ✦ Research
+                          ✦
                         </button>
                       </td>
                       {displayedQuestions.map((question) => {

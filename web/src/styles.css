@@ -2012,9 +2012,17 @@ button:hover {
 }
 .row-action-cell {
   padding: 0 7px !important;
+  text-align: center;
 }
 .row-action-cell .row-agent-button {
-  width: 100%;
+  align-items: center;
+  display: inline-flex;
+  font-size: 12px;
+  height: 28px;
+  justify-content: center;
+  min-width: 28px;
+  padding: 0;
+  width: 28px;
 }
 .field-action-cell {
   padding: 0 6px !important;
