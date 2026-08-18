@@ -1,1 +1,24 @@
-{"project":{"name":"Synthetic Literature Review"},"entity_kinds":["Paper","Author","Finding"],"entities":[{"kind":"Paper","name":"Remote Work Study A"},{"kind":"Paper","name":"Remote Work Study B"},{"kind":"Author","name":"Dana Example"},{"kind":"Finding","name":"Study A productivity finding","role":"observation","identity":{"paper":"Remote Work Study A","outcome":"productivity","analysis":"primary"}},{"kind":"Finding","name":"Study B productivity finding","role":"observation","identity":{"paper":"Remote Work Study B","outcome":"productivity","analysis":"primary"}}],"questions":[{"name":"author","subject_kind":"Paper","value_type":"Ref[Author]","definition":{"label":"Author","cardinality":"many"}},{"name":"paper","subject_kind":"Finding","value_type":"Ref[Paper]","definition":{"label":"Paper"}},{"name":"research_question","subject_kind":"Finding","value_type":"String","definition":{"label":"Research question"}},{"name":"effect_size","subject_kind":"Finding","value_type":"Float","definition":{"label":"Standardized effect"}},{"name":"interpretation","subject_kind":"Finding","value_type":"Enum[positive,null,negative]","definition":{"label":"Interpretation"}}]}
+{
+  "project": {"name": "Synthetic Remote Work Literature Review"},
+  "entity_kinds": ["Paper", "Author", "Finding"],
+  "entities": [
+    {"kind":"Paper","name":"Remote Work Study A"},
+    {"kind":"Paper","name":"Remote Work Study B"},
+    {"kind":"Author","name":"Dana Example"},
+    {"kind":"Author","name":"Lee Example"},
+    {"kind":"Finding","name":"Study A productivity primary","role":"observation","identity":{"paper":"Remote Work Study A","outcome":"productivity","analysis":"primary"}},
+    {"kind":"Finding","name":"Study A retention primary","role":"observation","identity":{"paper":"Remote Work Study A","outcome":"retention","analysis":"primary"}},
+    {"kind":"Finding","name":"Study A manager subgroup","role":"observation","identity":{"paper":"Remote Work Study A","outcome":"productivity","analysis":"manager_subgroup"}},
+    {"kind":"Finding","name":"Study B productivity primary","role":"observation","identity":{"paper":"Remote Work Study B","outcome":"productivity","analysis":"primary"}}
+  ],
+  "questions": [
+    {"name":"author","subject_kind":"Paper","value_type":"Ref[Author]","definition":{"label":"Author","cardinality":"many"}},
+    {"name":"paper","subject_kind":"Finding","value_type":"Ref[Paper]","definition":{"label":"Paper"}},
+    {"name":"outcome","subject_kind":"Finding","value_type":"Enum[productivity,retention]","definition":{"label":"Outcome"}},
+    {"name":"analysis","subject_kind":"Finding","value_type":"Enum[primary,manager_subgroup]","definition":{"label":"Analysis"}},
+    {"name":"effect_size","subject_kind":"Finding","value_type":"Float","definition":{"label":"Standardized effect"}},
+    {"name":"sample_size","subject_kind":"Finding","value_type":"Int","definition":{"label":"Sample size"}},
+    {"name":"ci_lower","subject_kind":"Finding","value_type":"Float","definition":{"label":"95% CI lower"}},
+    {"name":"ci_upper","subject_kind":"Finding","value_type":"Float","definition":{"label":"95% CI upper"}}
+  ]
+}
