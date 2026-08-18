@@ -901,9 +901,8 @@ export default function App() {
     return { row, question, cell: row.cells[question.name] };
   }, [activeGridCell, matrix]);
   const tableWidth =
-    48 +
+    56 +
     (columnWidths.__entity__ ?? 220) +
-    118 +
     displayedQuestions.reduce(
       (total, question) => total + (columnWidths[question.name] ?? 180),
       0,
@@ -1779,9 +1778,8 @@ export default function App() {
               style={{ width: tableWidth }}
             >
               <colgroup>
-                <col style={{ width: 48 }} />
+                <col style={{ width: 56 }} />
                 <col style={{ width: columnWidths.__entity__ ?? 220 }} />
-                <col style={{ width: 118 }} />
                 {displayedQuestions.map((question) => (
                   <col
                     key={question.name}
@@ -1791,8 +1789,80 @@ export default function App() {
                 <col style={{ width: 50 }} />
               </colgroup>
               <thead>
+                <tr className="column-action-row">
+                  <th className="table-research-corner">
+                    <button
+                      className="agent-button compact-agent-action"
+                      title="Research every unanswered cell in the table"
+                      aria-label="Research every unanswered cell in the table"
+                      onClick={() => void launchTableResearch()}
+                    >
+                      ✦
+                    </button>
+                  </th>
+                  <th className="entity-action-head">
+                    <button
+                      className="suggest-entities-button"
+                      title={`Find more ${kind.toLowerCase()} rows`}
+                      onClick={() => setDialog("suggestEntities")}
+                    >
+                      ✦ Find rows
+                    </button>
+                  </th>
+                  {displayedQuestions.map((question) => {
+                    const job = activeJobs.get(question.question_id);
+                    return (
+                      <th
+                        key={`research-${question.question_id}`}
+                        className="field-action-cell"
+                      >
+                        {Boolean(question.definition.formula) ? (
+                          <button
+                            className="formula-button formula-fill-button compact-agent-action"
+                            aria-label="Fill formula down"
+                            title="Click to fill every row, or drag down the column"
+                            draggable
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = "copy";
+                              setFormulaDragQuestion(question);
+                            }}
+                            onDragEnd={() => setFormulaDragQuestion(null)}
+                            onClick={() => void materializeFormula(question)}
+                          >
+                            ƒ
+                          </button>
+                        ) : (
+                          <button
+                            className={
+                              job
+                                ? "agent-button running compact-agent-action"
+                                : "agent-button compact-agent-action"
+                            }
+                            title={
+                              job
+                                ? `Research in progress (${job.completed}/${job.total || "…"})`
+                                : "Research this column"
+                            }
+                            aria-label={
+                              job
+                                ? `Research in progress (${job.completed}/${job.total || "…"})`
+                                : "Research this column"
+                            }
+                            disabled={Boolean(job)}
+                            onClick={() =>
+                              openResearch(question, "fill_missing")
+                            }
+                          >
+                            ✦
+                          </button>
+                        )}
+                      </th>
+                    );
+                  })}
+                  <th className="add-column-action" />
+                </tr>
                 <tr className="field-header-row">
-                  <th className="row-number">#</th>
+                  <th className="row-action-heading">#</th>
                   <th className="name-column entity-column-head">
                     <em className="spreadsheet-column-letter">A</em>
                     <div className="entity-column-label column-header-title">
@@ -1819,10 +1889,6 @@ export default function App() {
                       className="column-resizer"
                       onMouseDown={(event) => resizeColumn("__entity__", event)}
                     />
-                  </th>
-                  <th className="row-action-column">
-                    <span>Row research</span>
-                    <small>Agent action</small>
                   </th>
                   {displayedQuestions.map((question, questionIndex) => {
                     return (
@@ -1945,79 +2011,6 @@ export default function App() {
                     <button onClick={() => setDialog("question")}>＋</button>
                   </th>
                 </tr>
-                <tr className="column-action-row">
-                  <th className="action-row-label">Research</th>
-                  <th className="entity-action-head">
-                    <button
-                      className="suggest-entities-button"
-                      title={`Find more ${kind.toLowerCase()} rows`}
-                      onClick={() => setDialog("suggestEntities")}
-                    >
-                      ✦ Find rows
-                    </button>
-                  </th>
-                  <th className="table-research-corner">
-                    <button
-                      className="agent-button compact-agent-action"
-                      title="Research every unanswered cell in the table"
-                      aria-label="Research every unanswered cell in the table"
-                      onClick={() => void launchTableResearch()}
-                    >
-                      ✦
-                    </button>
-                  </th>
-                  {displayedQuestions.map((question) => {
-                    const job = activeJobs.get(question.question_id);
-                    return (
-                      <th
-                        key={`research-${question.question_id}`}
-                        className="field-action-cell"
-                      >
-                        {Boolean(question.definition.formula) ? (
-                          <button
-                            className="formula-button formula-fill-button compact-agent-action"
-                            aria-label="Fill formula down"
-                            title="Click to fill every row, or drag down the column"
-                            draggable
-                            onDragStart={(event) => {
-                              event.dataTransfer.effectAllowed = "copy";
-                              setFormulaDragQuestion(question);
-                            }}
-                            onDragEnd={() => setFormulaDragQuestion(null)}
-                            onClick={() => void materializeFormula(question)}
-                          >
-                            ƒ
-                          </button>
-                        ) : (
-                          <button
-                            className={
-                              job
-                                ? "agent-button running compact-agent-action"
-                                : "agent-button compact-agent-action"
-                            }
-                            title={
-                              job
-                                ? `Research in progress (${job.completed}/${job.total || "…"})`
-                                : "Research this column"
-                            }
-                            aria-label={
-                              job
-                                ? `Research in progress (${job.completed}/${job.total || "…"})`
-                                : "Research this column"
-                            }
-                            disabled={Boolean(job)}
-                            onClick={() =>
-                              openResearch(question, "fill_missing")
-                            }
-                          >
-                            ✦
-                          </button>
-                        )}
-                      </th>
-                    );
-                  })}
-                  <th className="add-column-action" />
-                </tr>
               </thead>
               <tbody>
                 {displayedRows.map((row, index) => {
@@ -2027,11 +2020,30 @@ export default function App() {
                       key={row.entity_id}
                       className={isResearching ? "row-is-researching" : ""}
                     >
-                      <td className="row-number">
+                      <td className="row-action-cell">
+                        <small className="row-index">{index + 1}</small>
                         {isResearching ? (
                           <span className="row-spinner" />
                         ) : (
-                          index + 1
+                          <button
+                            className="row-agent-button"
+                            title={`Research unanswered fields for ${row.name}`}
+                            aria-label={`Research unanswered fields for ${row.name}`}
+                            onClick={() => {
+                              setRowResearchTarget({
+                                entityId: row.entity_id,
+                                entityName: row.name,
+                                missing: displayedQuestions.filter(
+                                  (question) =>
+                                    row.cells[question.name].state ===
+                                    "Unasked",
+                                ).length,
+                              });
+                              setDialog("rowResearch");
+                            }}
+                          >
+                            ✦
+                          </button>
                         )}
                       </td>
                       <td
@@ -2050,26 +2062,6 @@ export default function App() {
                           <span>{row.name}</span>
                           <small className="backref-affordance">↩ refs</small>
                         </div>
-                      </td>
-                      <td className="row-action-cell">
-                        <button
-                          className="row-agent-button"
-                          title={`Research unanswered fields for ${row.name}`}
-                          aria-label={`Research unanswered fields for ${row.name}`}
-                          onClick={() => {
-                            setRowResearchTarget({
-                              entityId: row.entity_id,
-                              entityName: row.name,
-                              missing: displayedQuestions.filter(
-                                (question) =>
-                                  row.cells[question.name].state === "Unasked",
-                              ).length,
-                            });
-                            setDialog("rowResearch");
-                          }}
-                        >
-                          ✦
-                        </button>
                       </td>
                       {displayedQuestions.map((question) => {
                         const columnIndex =
@@ -2237,7 +2229,7 @@ export default function App() {
                 {(matrix?.rows.length ?? 0) > 0 && (
                   <tr className="add-row">
                     <td />
-                    <td colSpan={(matrix?.questions.length ?? 0) + 3}>
+                    <td colSpan={(matrix?.questions.length ?? 0) + 2}>
                       <button onClick={() => setDialog("entity")}>
                         ＋ Add row
                       </button>
@@ -2246,7 +2238,7 @@ export default function App() {
                 )}
                 {matrix?.rows.length === 0 && (
                   <tr className="empty-table-row">
-                    <td colSpan={(matrix?.questions.length ?? 0) + 4}>
+                    <td colSpan={(matrix?.questions.length ?? 0) + 3}>
                       <div className="empty-table-state">
                         <div className="empty-table-icon">▦</div>
                         <h2>Your research table is empty</h2>
@@ -2267,7 +2259,7 @@ export default function App() {
                 {(matrix?.rows.length ?? 0) > 0 &&
                   displayedRows.length === 0 && (
                     <tr className="empty-table-row filtered-table-row">
-                      <td colSpan={(matrix?.questions.length ?? 0) + 4}>
+                      <td colSpan={(matrix?.questions.length ?? 0) + 3}>
                         <div className="empty-table-state">
                           <div className="empty-table-icon">⌕</div>
                           <h2>No rows match this view</h2>
