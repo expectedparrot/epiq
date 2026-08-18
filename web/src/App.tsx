@@ -1825,7 +1825,6 @@ export default function App() {
                     <small>Agent action</small>
                   </th>
                   {displayedQuestions.map((question, questionIndex) => {
-                    const job = activeJobs.get(question.question_id);
                     return (
                       <th
                         key={question.question_id}
@@ -1875,44 +1874,6 @@ export default function App() {
                           </small>
                         </div>
                         <div className="column-actions">
-                          {Boolean(question.definition.formula) ? (
-                            <button
-                              className="formula-button formula-fill-button"
-                              aria-label="Fill formula down"
-                              title="Click to fill every row, or drag down the column"
-                              draggable
-                              onDragStart={(event) => {
-                                event.dataTransfer.effectAllowed = "copy";
-                                setFormulaDragQuestion(question);
-                              }}
-                              onDragEnd={() => setFormulaDragQuestion(null)}
-                              onClick={() => void materializeFormula(question)}
-                            >
-                              ƒ
-                            </button>
-                          ) : (
-                            <button
-                              className={
-                                job ? "agent-button running" : "agent-button"
-                              }
-                              title={
-                                job
-                                  ? `Research in progress (${job.completed}/${job.total || "…"})`
-                                  : "Research this column"
-                              }
-                              aria-label={
-                                job
-                                  ? `Research in progress (${job.completed}/${job.total || "…"})`
-                                  : "Research this column"
-                              }
-                              disabled={Boolean(job)}
-                              onClick={() =>
-                                openResearch(question, "fill_missing")
-                              }
-                            >
-                              ✦
-                            </button>
-                          )}
                           <details className="column-menu">
                             <summary title="Field actions">•••</summary>
                             <div>
@@ -1983,6 +1944,79 @@ export default function App() {
                   <th className="add-column">
                     <button onClick={() => setDialog("question")}>＋</button>
                   </th>
+                </tr>
+                <tr className="column-action-row">
+                  <th className="action-row-label">Research</th>
+                  <th className="entity-action-head">
+                    <button
+                      className="suggest-entities-button"
+                      title={`Find more ${kind.toLowerCase()} rows`}
+                      onClick={() => setDialog("suggestEntities")}
+                    >
+                      ✦ Find rows
+                    </button>
+                  </th>
+                  <th className="table-research-corner">
+                    <button
+                      className="agent-button compact-agent-action"
+                      title="Research every unanswered cell in the table"
+                      aria-label="Research every unanswered cell in the table"
+                      onClick={() => void launchTableResearch()}
+                    >
+                      ✦
+                    </button>
+                  </th>
+                  {displayedQuestions.map((question) => {
+                    const job = activeJobs.get(question.question_id);
+                    return (
+                      <th
+                        key={`research-${question.question_id}`}
+                        className="field-action-cell"
+                      >
+                        {Boolean(question.definition.formula) ? (
+                          <button
+                            className="formula-button formula-fill-button compact-agent-action"
+                            aria-label="Fill formula down"
+                            title="Click to fill every row, or drag down the column"
+                            draggable
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = "copy";
+                              setFormulaDragQuestion(question);
+                            }}
+                            onDragEnd={() => setFormulaDragQuestion(null)}
+                            onClick={() => void materializeFormula(question)}
+                          >
+                            ƒ
+                          </button>
+                        ) : (
+                          <button
+                            className={
+                              job
+                                ? "agent-button running compact-agent-action"
+                                : "agent-button compact-agent-action"
+                            }
+                            title={
+                              job
+                                ? `Research in progress (${job.completed}/${job.total || "…"})`
+                                : "Research this column"
+                            }
+                            aria-label={
+                              job
+                                ? `Research in progress (${job.completed}/${job.total || "…"})`
+                                : "Research this column"
+                            }
+                            disabled={Boolean(job)}
+                            onClick={() =>
+                              openResearch(question, "fill_missing")
+                            }
+                          >
+                            ✦
+                          </button>
+                        )}
+                      </th>
+                    );
+                  })}
+                  <th className="add-column-action" />
                 </tr>
               </thead>
               <tbody>

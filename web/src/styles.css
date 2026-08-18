@@ -1894,10 +1894,10 @@ button:hover {
   opacity: 1;
 }
 
-/* Compact spreadsheet header: field identity and its primary action share one row. */
+/* Spreadsheet axes: field identity above, research actions on their own row. */
 .grid .field-header-row th {
-  height: 92px;
-  padding-bottom: 42px;
+  height: 62px;
+  padding-bottom: 10px;
   padding-top: 10px;
   top: 0;
   vertical-align: top;
@@ -1928,7 +1928,7 @@ button:hover {
 }
 .grid .field-header-row .column-actions {
   align-items: center;
-  bottom: 9px;
+  bottom: 8px;
   display: flex;
   gap: 5px;
   justify-content: flex-end;
@@ -1936,10 +1936,9 @@ button:hover {
   position: absolute;
   right: 10px;
 }
-.grid .field-header-row .agent-button {
+.compact-agent-action {
   align-items: center;
   display: inline-flex;
-  flex: 0 0 28px;
   font-size: 12px;
   height: 28px;
   justify-content: center;
@@ -1948,18 +1947,8 @@ button:hover {
   padding: 0;
   width: 28px;
 }
-.grid .field-header-row .formula-button {
-  align-items: center;
+.grid .column-action-row .formula-button {
   cursor: grab;
-  display: inline-flex;
-  flex: 0 0 28px;
-  font-size: 12px;
-  height: 28px;
-  justify-content: center;
-  line-height: 1;
-  min-width: 28px;
-  padding: 0;
-  width: 28px;
 }
 .grid .field-header-row .column-menu {
   flex: 0 0 auto;
@@ -1972,12 +1961,10 @@ button:hover {
   box-shadow: inset 0 -2px 0 #3a8a67;
 }
 .grid .entity-column-head .suggest-entities-button {
-  bottom: 9px;
-  left: 12px;
-  position: absolute;
+  display: none;
 }
 .grid .field-header-row .row-action-column {
-  padding: 28px 6px 0;
+  padding: 16px 6px 0;
   vertical-align: top;
 }
 .grid .entity-action-head {
@@ -2035,7 +2022,7 @@ button:hover {
   position: static;
 }
 .field-action-cell .agent-button {
-  min-width: 72px;
+  min-width: 28px;
 }
 .column-menu {
   position: relative;
@@ -2095,7 +2082,14 @@ button:hover {
   color: white;
 }
 .column-action-row .table-research-corner {
+  padding: 0 !important;
+  text-align: center;
   top: 62px;
+}
+.column-action-row .add-column-action {
+  min-width: 50px !important;
+  padding: 0 !important;
+  width: 50px !important;
 }
 .row-research-summary {
   display: flex;
