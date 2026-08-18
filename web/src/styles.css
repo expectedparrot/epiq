@@ -408,6 +408,29 @@ button:hover {
 .selection-bar > button {
   padding: 5px 10px;
 }
+.number-format-toolbar {
+  align-items: center;
+  border-left: 1px solid var(--line);
+  display: flex;
+  gap: 3px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+.number-format-toolbar button,
+.number-format-toolbar select {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 10px;
+  height: 30px;
+  padding: 4px 7px;
+}
+.number-format-toolbar button:hover,
+.number-format-toolbar select:hover,
+.number-format-toolbar button.active {
+  background: #edf4ef;
+  border-color: #b9ccbf;
+}
 .toast-region {
   bottom: 18px;
   display: grid;

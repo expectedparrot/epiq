@@ -52,6 +52,12 @@ type SavedView = {
   columnOrder: string[];
   columnWidths: Record<string, number>;
   hiddenColumns: string[];
+  columnFormats: Record<string, NumberFormat>;
+};
+type NumberFormat = {
+  use_grouping: boolean;
+  precision: "decimal" | "significant";
+  digits: number;
 };
 type PastedClaim = {
   entityId: string;
@@ -147,13 +153,20 @@ const display = (value: unknown) => {
     return integerFormat.format(value);
   return String(value);
 };
-const formattedValue = (value: unknown, question?: Question | string) => {
+const formattedValue = (
+  value: unknown,
+  question?: Question | string,
+  override?: NumberFormat,
+) => {
   const valueType =
     typeof question === "string" ? question : question?.value_type;
   const definition =
     typeof question === "string" ? {} : (question?.definition ?? {});
-  const format = (definition.display_format ?? {}) as Record<string, unknown>;
-  const hasDisplayFormat = Boolean(definition.display_format);
+  const format = (override ?? definition.display_format ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const hasDisplayFormat = Boolean(override ?? definition.display_format);
   if (valueType === "Year" && typeof value === "number") return String(value);
   if (valueType === "Int" && typeof value === "number") {
     return new Intl.NumberFormat("en-US", {
@@ -176,12 +189,16 @@ const formattedValue = (value: unknown, question?: Question | string) => {
   }
   return display(value);
 };
-const cellDisplay = (cell: Cell, question?: Question | string) => {
+const cellDisplay = (
+  cell: Cell,
+  question?: Question | string,
+  format?: NumberFormat,
+) => {
   if (cell.references?.length)
     return cell.references.map((item) => item.name).join(", ");
   if (cell.state === "Answered") {
     const value = cell.value ?? cell.values;
-    return formattedValue(value, question);
+    return formattedValue(value, question, format);
   }
   if (cell.state === "Contested")
     return `${cell.values.length} competing answers`;
@@ -276,6 +293,9 @@ export default function App() {
   const [wrapText, setWrapText] = useState(true);
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
+  const [columnFormats, setColumnFormats] = useState<
+    Record<string, NumberFormat>
+  >({});
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeViewId, setActiveViewId] = useState("");
@@ -313,6 +333,19 @@ export default function App() {
   );
   const layoutKey = `epiq-layout:${overview?.project.project_id ?? "project"}:${kind}`;
   const viewsKey = `epiq-views:${overview?.project.project_id ?? "project"}:${kind}`;
+  const getColumnFormat = (question: Question): NumberFormat => {
+    const stored = (question.definition.display_format ?? {}) as Record<
+      string,
+      unknown
+    >;
+    return (
+      columnFormats[question.name] ?? {
+        use_grouping: stored.use_grouping !== false,
+        precision: stored.precision === "decimal" ? "decimal" : "significant",
+        digits: Number(stored.digits ?? 3),
+      }
+    );
+  };
 
   const loadOverview = useCallback(async () => {
     try {
@@ -409,6 +442,7 @@ export default function App() {
       setWrapText(saved.wrapText ?? true);
       setColumnOrder(Array.isArray(saved.columnOrder) ? saved.columnOrder : []);
       setColumnWidths(saved.columnWidths ?? {});
+      setColumnFormats(saved.columnFormats ?? {});
       setHiddenColumns(
         Array.isArray(saved.hiddenColumns) ? saved.hiddenColumns : [],
       );
@@ -426,6 +460,7 @@ export default function App() {
       setWrapText(true);
       setColumnOrder([]);
       setColumnWidths({});
+      setColumnFormats({});
       setHiddenColumns([]);
       setSort({ key: "__entity__", direction: "asc" });
       setStatusFilter("all");
@@ -960,6 +995,7 @@ export default function App() {
     nextSort: SortState = sort,
     nextStatusFilter: string = statusFilter,
     nextHiddenColumns: string[] = hiddenColumns,
+    nextColumnFormats: Record<string, NumberFormat> = columnFormats,
   ) => {
     localStorage.setItem(
       layoutKey,
@@ -970,6 +1006,7 @@ export default function App() {
         sort: nextSort,
         statusFilter: nextStatusFilter,
         hiddenColumns: nextHiddenColumns,
+        columnFormats: nextColumnFormats,
       }),
     );
   };
@@ -985,6 +1022,27 @@ export default function App() {
     setActiveViewId("");
     saveLayout(wrapText, columnOrder, columnWidths, sort, statusFilter, next);
   };
+  const updateColumnFormat = (
+    question: Question,
+    update: Partial<NumberFormat>,
+  ) => {
+    const current = getColumnFormat(question);
+    const next = {
+      ...columnFormats,
+      [question.name]: { ...current, ...update },
+    };
+    setColumnFormats(next);
+    setActiveViewId("");
+    saveLayout(
+      wrapText,
+      columnOrder,
+      columnWidths,
+      sort,
+      statusFilter,
+      hiddenColumns,
+      next,
+    );
+  };
   const saveCurrentView = () => {
     const name = window.prompt("Name this view");
     if (!name?.trim()) return;
@@ -998,6 +1056,7 @@ export default function App() {
       columnOrder,
       columnWidths,
       hiddenColumns,
+      columnFormats,
     };
     const next = [...savedViews, view];
     setSavedViews(next);
@@ -1017,6 +1076,7 @@ export default function App() {
     setColumnOrder(view.columnOrder);
     setColumnWidths(view.columnWidths);
     setHiddenColumns(view.hiddenColumns ?? []);
+    setColumnFormats(view.columnFormats ?? {});
     saveLayout(
       view.wrapText,
       view.columnOrder,
@@ -1024,6 +1084,7 @@ export default function App() {
       view.sort,
       view.statusFilter,
       view.hiddenColumns ?? [],
+      view.columnFormats ?? {},
     );
   };
   const deleteActiveView = () => {
@@ -1135,12 +1196,20 @@ export default function App() {
                     selectedRange.lastColumn + 1,
                   )
                   .map((question) =>
-                    cellDisplay(row.cells[question.name], question),
+                    cellDisplay(
+                      row.cells[question.name],
+                      question,
+                      columnFormats[question.name],
+                    ),
                   )
                   .join("\t"),
               )
               .join("\n")
-          : cellDisplay(cell, displayedQuestions[columnIndex]);
+          : cellDisplay(
+              cell,
+              displayedQuestions[columnIndex],
+              columnFormats[displayedQuestions[columnIndex]?.name],
+            );
         await navigator.clipboard.writeText(value);
         setClipboardNotice(
           selectedCellCount > 1
@@ -1560,9 +1629,84 @@ export default function App() {
                 <code>{selectedCellCount} cells selected</code>
               )}
               <span className="selection-value">
-                {cellDisplay(activeSelection.cell, activeSelection.question) ||
-                  "No value"}
+                {cellDisplay(
+                  activeSelection.cell,
+                  activeSelection.question,
+                  columnFormats[activeSelection.question.name],
+                ) || "No value"}
               </span>
+              {["Int", "Float", "Probability"].includes(
+                activeSelection.question.value_type,
+              ) && (
+                <div
+                  className="number-format-toolbar"
+                  aria-label="Number formatting"
+                >
+                  <button
+                    title="Toggle thousands separators"
+                    className={
+                      getColumnFormat(activeSelection.question).use_grouping
+                        ? "active"
+                        : ""
+                    }
+                    onClick={() =>
+                      updateColumnFormat(activeSelection.question, {
+                        use_grouping: !getColumnFormat(activeSelection.question)
+                          .use_grouping,
+                      })
+                    }
+                  >
+                    1,000
+                  </button>
+                  {activeSelection.question.value_type !== "Int" && (
+                    <>
+                      <select
+                        aria-label="Precision style"
+                        value={
+                          getColumnFormat(activeSelection.question).precision
+                        }
+                        onChange={(event) =>
+                          updateColumnFormat(activeSelection.question, {
+                            precision: event.target.value as
+                              "decimal" | "significant",
+                          })
+                        }
+                      >
+                        <option value="decimal">0.00</option>
+                        <option value="significant">3 sig</option>
+                      </select>
+                      <button
+                        title="Decrease precision"
+                        onClick={() =>
+                          updateColumnFormat(activeSelection.question, {
+                            digits: Math.max(
+                              1,
+                              getColumnFormat(activeSelection.question).digits -
+                                1,
+                            ),
+                          })
+                        }
+                      >
+                        .0←
+                      </button>
+                      <button
+                        title="Increase precision"
+                        onClick={() =>
+                          updateColumnFormat(activeSelection.question, {
+                            digits: Math.min(
+                              12,
+                              getColumnFormat(activeSelection.question).digits +
+                                1,
+                            ),
+                          })
+                        }
+                      >
+                        .00→
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
               <button
                 onClick={() =>
                   setSelection({
@@ -1963,7 +2107,11 @@ export default function App() {
                                   {cell.value} ↗
                                 </a>
                               ) : (
-                                cellDisplay(cell, question)
+                                cellDisplay(
+                                  cell,
+                                  question,
+                                  columnFormats[question.name],
+                                )
                               )}
                             </div>
                             {provisional.length > 0 && (
