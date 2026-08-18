@@ -30,7 +30,9 @@ from .research import (
     OpenAIEntitySuggestionRunner,
     OpenAIFieldSuggestionRunner,
     OpenAIResearchRunner,
+    OpenAIWorkspaceAgentRunner,
     ResearchRunner,
+    WorkspaceAgentRunner,
 )
 from .store import LATEST_SCHEMA_VERSION, Store
 from .xlsx import write_xlsx
@@ -293,6 +295,10 @@ class SuggestFieldsCreate(BaseModel):
     instructions: str = ""
 
 
+class WorkspaceAgentCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+
+
 class AcceptFieldSuggestionsCreate(BaseModel):
     suggestion_ids: list[str] = Field(min_length=1)
     actor: str = "human:web"
@@ -353,6 +359,7 @@ def create_app(
     research_runner: ResearchRunner | None = None,
     suggestion_runner: EntitySuggestionRunner | None = None,
     field_suggestion_runner: FieldSuggestionRunner | None = None,
+    workspace_agent_runner: WorkspaceAgentRunner | None = None,
     projects_directory: str | Path | None = None,
 ) -> FastAPI:
     """Create an application bound to one local Epiq database."""
@@ -369,6 +376,7 @@ def create_app(
     app.state.research_runner = research_runner or OpenAIResearchRunner()
     app.state.suggestion_runner = suggestion_runner or OpenAIEntitySuggestionRunner()
     app.state.field_suggestion_runner = field_suggestion_runner or OpenAIFieldSuggestionRunner()
+    app.state.workspace_agent_runner = workspace_agent_runner or OpenAIWorkspaceAgentRunner()
     app.state.research_jobs = {}
     app.state.research_lock = threading.Lock()
     app.state.research_semaphore = threading.Semaphore(
@@ -1802,6 +1810,212 @@ def create_app(
             for entity_id in entity_ids
         ]
         return {"question_id": body.question, "cells": len(jobs), "jobs": jobs}
+
+    def execute_workspace_agent(job_id: str, body: WorkspaceAgentCreate) -> None:
+        jobs: dict[str, dict[str, Any]] = app.state.research_jobs
+
+        def progress(message: str) -> None:
+            with app.state.research_lock:
+                jobs[job_id]["messages"].append(
+                    {"at": datetime.now(UTC).isoformat(), "message": message}
+                )
+                persist_job(job_id)
+
+        with app.state.research_lock:
+            jobs[job_id]["status"] = "running"
+            jobs[job_id]["started_at"] = datetime.now(UTC).isoformat()
+            persist_job(job_id)
+        try:
+            project = store()
+            overview = project.overview()
+            context = {
+                "project": overview["project"],
+                "tables": [
+                    {
+                        "kind": item["kind"],
+                        "rows": [row["name"] for row in project.matrix(str(item["kind"]))["rows"]],
+                        "questions": [
+                            {
+                                "name": question["name"],
+                                "value_type": question["value_type"],
+                                "definition": question["definition"],
+                            }
+                            for question in project.matrix(str(item["kind"]))["questions"]
+                        ],
+                    }
+                    for item in overview["entity_kinds"]
+                ],
+            }
+            progress("Planning tables, fields, rows, and research tasks")
+            plan = app.state.workspace_agent_runner(body.message, context, progress)
+            entity_kinds = list(dict.fromkeys(str(item).strip() for item in plan["entity_kinds"]))
+            entities = list(plan["entities"])
+            questions = list(plan["questions"])
+            research = list(plan["research"])
+            if len(entity_kinds) > 6 or len(entities) > 15 or len(questions) > 24:
+                raise EpiqError(
+                    "workspace_plan_too_large",
+                    "Workspace agent exceeded the bounded schema plan",
+                )
+            if len(research) > 40:
+                raise EpiqError(
+                    "workspace_plan_too_large",
+                    "Workspace agent requested more than 40 research groups",
+                )
+            if jobs[job_id].get("cancel_requested"):
+                raise EpiqError("workspace_cancelled", "Workspace agent was cancelled")
+
+            existing_kinds = {str(item["kind"]) for item in overview["entity_kinds"]}
+            current_entities = {
+                (str(item["kind"]), str(row["name"]).casefold())
+                for item in overview["entity_kinds"]
+                for row in project.matrix(str(item["kind"]))["rows"]
+            }
+            current_questions = {
+                (str(item["kind"]), str(question["name"]))
+                for item in overview["entity_kinds"]
+                for question in project.matrix(str(item["kind"]))["questions"]
+            }
+            normalized_entities = []
+            for item in entities:
+                kind, name = str(item["kind"]).strip(), str(item["name"]).strip()
+                if not kind or not name or (kind, name.casefold()) in current_entities:
+                    continue
+                normalized_entities.append({"kind": kind, "name": name, "attributes": {}})
+                current_entities.add((kind, name.casefold()))
+                entity_kinds.append(kind)
+            normalized_questions = []
+            for item in questions:
+                kind, name = str(item["kind"]).strip(), str(item["name"]).strip()
+                if not re.fullmatch(r"[a-z_][a-z0-9_]*", name):
+                    raise EpiqError("invalid_question_name", f"Invalid question name: {name}")
+                if (kind, name) in current_questions:
+                    continue
+                value_type = str(item["value_type"]).strip()
+                Store._check_type_declaration(value_type)
+                normalized_questions.append(
+                    {
+                        "name": name,
+                        "subject_kind": kind,
+                        "value_type": value_type,
+                        "definition": {
+                            "label": str(item["label"]).strip() or name.replace("_", " ").title(),
+                            "cardinality": str(item["cardinality"]),
+                            "volatility": str(item["volatility"]),
+                            "freshness_days": item["freshness_days"],
+                            "research_guidance": str(item["research_guidance"]).strip(),
+                        },
+                    }
+                )
+                current_questions.add((kind, name))
+                entity_kinds.append(kind)
+            entity_kinds = list(dict.fromkeys([*existing_kinds, *entity_kinds]))
+            progress(
+                f"Applying {len(normalized_entities)} rows and {len(normalized_questions)} fields"
+            )
+            applied = project.apply_document(
+                {
+                    "entity_kinds": entity_kinds,
+                    "entities": normalized_entities,
+                    "questions": normalized_questions,
+                },
+                "agent:workspace",
+            )
+
+            child_job_ids = []
+            requested_cells = 0
+            for request in research:
+                kind = str(request["kind"])
+                projection = project.matrix(kind)
+                question = next(
+                    (
+                        item
+                        for item in projection["questions"]
+                        if item["name"] == str(request["question"])
+                    ),
+                    None,
+                )
+                if question is None:
+                    progress(f"Skipped unknown research field {kind}.{request['question']}")
+                    continue
+                requested_names = {str(name).casefold() for name in request["entity_names"]}
+                targets = [
+                    row
+                    for row in projection["rows"]
+                    if not requested_names or str(row["name"]).casefold() in requested_names
+                ]
+                for row in targets:
+                    if requested_cells >= 40:
+                        break
+                    child = launch_research(
+                        ResearchCreate(
+                            entity_kind=kind,
+                            question=str(question["question_id"]),
+                            mode="fill_missing",
+                            instructions=str(request["instructions"]),
+                            entity_ids=[str(row["entity_id"])],
+                            scope="cell",
+                        )
+                    )
+                    child_job_ids.append(str(child["job_id"]))
+                    requested_cells += 1
+            summary = str(plan["summary"]).strip()
+            progress(f"Workspace ready; launched {len(child_job_ids)} cell research jobs")
+            with app.state.research_lock:
+                jobs[job_id]["status"] = "completed"
+                jobs[job_id]["outcome"] = "changed"
+                jobs[job_id]["assistant_summary"] = summary
+                jobs[job_id]["workspace_plan"] = plan
+                jobs[job_id]["applied"] = applied
+                jobs[job_id]["child_job_ids"] = child_job_ids
+                jobs[job_id]["total"] = len(normalized_entities) + len(normalized_questions)
+                jobs[job_id]["completed"] = jobs[job_id]["total"]
+                jobs[job_id]["written"] = jobs[job_id]["total"]
+                jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
+                persist_job(job_id)
+        except Exception as error:
+            with app.state.research_lock:
+                jobs[job_id]["status"] = (
+                    "cancelled"
+                    if jobs[job_id].get("cancel_requested")
+                    or isinstance(error, EpiqError)
+                    and error.code == "workspace_cancelled"
+                    else "failed"
+                )
+                jobs[job_id]["error"] = str(error)
+                jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
+                persist_job(job_id)
+
+    @app.post("/api/workspace-agent/jobs", status_code=202)
+    def launch_workspace_agent(body: WorkspaceAgentCreate) -> dict[str, Any]:
+        store().overview()
+        job_id = f"job_{uuid.uuid4().hex[:16]}"
+        job = {
+            "job_id": job_id,
+            "job_type": "workspace_agent",
+            "entity_kind": "Workspace",
+            "question_id": "",
+            "mode": "workspace_agent",
+            "instructions": body.message,
+            "user_message": body.message,
+            "status": "queued",
+            "total": 0,
+            "completed": 0,
+            "target_entity_ids": [],
+            "created_at": datetime.now(UTC).isoformat(),
+            "error": None,
+            "cancel_requested": False,
+            "written": 0,
+            "outcome": None,
+            "messages": [
+                {"at": datetime.now(UTC).isoformat(), "message": "Workspace agent queued"}
+            ],
+        }
+        with app.state.research_lock:
+            app.state.research_jobs[job_id] = job
+            persist_job(job_id)
+        threading.Thread(target=execute_workspace_agent, args=(job_id, body), daemon=True).start()
+        return job
 
     @app.get("/api/research/jobs")
     def research_jobs() -> list[dict[str, Any]]:

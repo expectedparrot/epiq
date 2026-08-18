@@ -1624,6 +1624,94 @@ def test_column_research_fans_out_into_independently_completing_cells(
     assert len(calls) == 3
 
 
+def test_workspace_agent_applies_schema_rows_and_launches_cell_research(
+    tmp_path: Path,
+) -> None:
+    captured = {}
+
+    def planner(goal, context, progress=None):
+        captured.update({"goal": goal, "context": context})
+        if progress:
+            progress("Designed an AI interviewer market workspace")
+        return {
+            "summary": "Created a startup market map with company facts and founders.",
+            "entity_kinds": ["Startup", "Founder"],
+            "entities": [
+                {"kind": "Startup", "name": "Listen Labs"},
+                {"kind": "Startup", "name": "Outset"},
+            ],
+            "questions": [
+                {
+                    "kind": "Startup",
+                    "name": "website",
+                    "value_type": "URL",
+                    "label": "Website",
+                    "cardinality": "one",
+                    "volatility": "slow",
+                    "freshness_days": 180,
+                    "research_guidance": "Use the company's official website.",
+                },
+                {
+                    "kind": "Startup",
+                    "name": "founders",
+                    "value_type": "Ref[Founder]",
+                    "label": "Founders",
+                    "cardinality": "many",
+                    "volatility": "stable",
+                    "freshness_days": None,
+                    "research_guidance": "Find named company founders.",
+                },
+            ],
+            "research": [
+                {
+                    "kind": "Startup",
+                    "question": "website",
+                    "entity_names": ["Listen Labs", "Outset"],
+                    "instructions": "Verify the official company website.",
+                }
+            ],
+        }
+
+    def researcher(_kind, _question, entities, progress=None):
+        return [
+            {
+                "entity_id": entities[0]["entity_id"],
+                "status": "not_found",
+                "notes": "Test runner intentionally did not search.",
+            }
+        ]
+
+    client = TestClient(
+        create_app(
+            tmp_path / "workspace-agent.sqlite",
+            tmp_path / "missing",
+            researcher,
+            workspace_agent_runner=planner,
+        )
+    )
+    client.post("/api/project", json={"name": "Market research"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Collect data on AI interviewer startups"},
+    )
+    assert launched.status_code == 202
+    parent = wait_for_job(client, launched.json()["job_id"])
+    assert parent["status"] == "completed"
+    assert parent["assistant_summary"].startswith("Created a startup")
+    assert len(parent["child_job_ids"]) == 2
+    for child_job_id in parent["child_job_ids"]:
+        assert wait_for_job(client, child_job_id)["status"] == "completed"
+
+    matrix = client.get("/api/matrix/Startup").json()
+    assert [row["name"] for row in matrix["rows"]] == ["Listen Labs", "Outset"]
+    assert {question["name"] for question in matrix["questions"]} == {
+        "website",
+        "founders",
+    }
+    assert captured["goal"] == "Collect data on AI interviewer startups"
+    assert captured["context"]["project"]["name"] == "Market research"
+
+
 def test_claim_proposal_review_and_bulk_api(tmp_path: Path) -> None:
     client = TestClient(create_app(tmp_path / "claims.sqlite", tmp_path / "missing"))
     client.post("/api/project", json={"name": "Claims"})

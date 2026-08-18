@@ -54,6 +54,17 @@ class FieldSuggestionRunner(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+class WorkspaceAgentRunner(Protocol):
+    """Plan bounded schema, entity, and research actions for a workspace goal."""
+
+    def __call__(
+        self,
+        goal: str,
+        context: dict[str, Any],
+        progress: Progress | None = None,
+    ) -> dict[str, Any]: ...
+
+
 OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -146,6 +157,72 @@ FIELD_SUGGESTION_SCHEMA = {
                 },
             },
         }
+    },
+}
+
+WORKSPACE_PLAN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "entity_kinds", "entities", "questions", "research"],
+    "properties": {
+        "summary": {"type": "string"},
+        "entity_kinds": {"type": "array", "items": {"type": "string"}},
+        "entities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["kind", "name"],
+                "properties": {
+                    "kind": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+            },
+        },
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "kind",
+                    "name",
+                    "value_type",
+                    "label",
+                    "cardinality",
+                    "volatility",
+                    "freshness_days",
+                    "research_guidance",
+                ],
+                "properties": {
+                    "kind": {"type": "string"},
+                    "name": {"type": "string"},
+                    "value_type": {"type": "string"},
+                    "label": {"type": "string"},
+                    "cardinality": {"type": "string", "enum": ["one", "many"]},
+                    "volatility": {
+                        "type": "string",
+                        "enum": ["stable", "slow", "dynamic"],
+                    },
+                    "freshness_days": {"type": ["integer", "null"]},
+                    "research_guidance": {"type": "string"},
+                },
+            },
+        },
+        "research": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["kind", "question", "entity_names", "instructions"],
+                "properties": {
+                    "kind": {"type": "string"},
+                    "question": {"type": "string"},
+                    "entity_names": {"type": "array", "items": {"type": "string"}},
+                    "instructions": {"type": "string"},
+                },
+            },
+        },
     },
 }
 
@@ -332,6 +409,99 @@ the relevant population and time; cite that source and explain the closed-world 
             if content.get("type") == "output_text"
         )
         return _parse_values(json.loads(text)["results"])
+
+
+class OpenAIWorkspaceAgentRunner(OpenAIResearchRunner):
+    """Turn a natural-language workspace goal into validated Epiq primitives."""
+
+    def __call__(
+        self,
+        goal: str,
+        context: dict[str, Any],
+        progress: Progress | None = None,
+    ) -> dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+        prompt = f"""Design the next concrete actions for an Epiq evidence-backed workspace.
+
+User direction: {goal}
+Current workspace: {json.dumps(context, sort_keys=True)}
+
+Return a small, useful plan that can be executed immediately. Epiq models durable things as entity
+rows, typed questions as columns, and one-to-many facts (funding rounds, press articles, writings,
+observations) as related entity tables rather than JSON arrays. Prefer one primary table plus only
+the related tables genuinely needed by the user's goal. Use Ref[Kind] questions for relationships.
+
+You may propose only additive operations: entity kinds, entities, questions, and research requests.
+Do not rename, delete, retire, supersede, or invent claims. Reuse existing schema and rows. Initial
+entities must be real, identifiable examples supported by web research; do not create placeholder
+rows. Keep the plan bounded to at most 6 entity kinds, 15 entities, 24 questions, and 40 requested
+research cells. Question names must be snake_case. Use Epiq value types such as String, Bool, Int,
+Float, Year, Date, URL, Probability, Enum[a,b], Quantity[USD], and Ref[Kind]. Put a concise label,
+cardinality, volatility, freshness_days when appropriate, and precise research_guidance in each
+definition. Research requests must refer to a proposed or existing question and row. For a
+relationship field, research can return provisional related rows for human review.
+
+The summary should tell the user what you chose to create and why. Do not imply that requested
+research is already complete.
+"""
+        payload = {
+            "model": self.model,
+            "input": prompt,
+            "tools": [{"type": "web_search"}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "epiq_workspace_plan",
+                    "strict": True,
+                    "schema": WORKSPACE_PLAN_SCHEMA,
+                }
+            },
+            "stream": True,
+        }
+        request = urllib.request.Request(
+            self.endpoint,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=900) as response:
+                result = None
+                if progress:
+                    progress(f"Connected to OpenAI · {self.model}")
+                for raw_line in response:
+                    line = raw_line.decode().strip()
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    event = json.loads(line[6:])
+                    event_type = str(event.get("type", ""))
+                    if "web_search_call" in event_type and event_type.endswith("in_progress"):
+                        if progress:
+                            progress("Finding representative entities and sources")
+                    elif "web_search_call" in event_type and event_type.endswith("completed"):
+                        if progress:
+                            progress("Web search completed; designing the workspace")
+                    elif event_type == "response.completed":
+                        result = event["response"]
+                        if progress:
+                            progress("Validating the proposed workspace plan")
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace")
+            raise RuntimeError(f"OpenAI API returned {error.code}: {detail[-2000:]}") from error
+        if result is None:
+            raise RuntimeError("OpenAI stream ended without a completed response")
+        text = next(
+            content["text"]
+            for output in result.get("output", [])
+            if output.get("type") == "message"
+            for content in output.get("content", [])
+            if content.get("type") == "output_text"
+        )
+        return json.loads(text)
 
 
 class OpenAIEntitySuggestionRunner(OpenAIResearchRunner):

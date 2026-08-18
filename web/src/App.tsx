@@ -301,6 +301,7 @@ export default function App() {
     missing: number;
   } | null>(null);
   const [showActivity, setShowActivity] = useState(false);
+  const [showWorkspaceAgent, setShowWorkspaceAgent] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [reviewItems, setReviewItems] = useState<{
     stale: DiagnosticCell[];
@@ -531,15 +532,20 @@ export default function App() {
               ["completed", "failed", "cancelled"].includes(job.status),
           );
           if (justFinished) {
+            if (justFinished.job_type === "workspace_agent") {
+              void loadOverview();
+            }
             const finalMessage = justFinished.messages.at(-1)?.message;
             const notice =
               justFinished.status === "failed"
-                ? `Research failed: ${justFinished.error ?? "unknown error"}`
+                ? `${justFinished.job_type === "workspace_agent" ? "Workspace agent" : "Research"} failed: ${justFinished.error ?? "unknown error"}`
                 : justFinished.status === "cancelled"
                   ? "Research cancelled"
                   : justFinished.outcome === "no_change"
                     ? (finalMessage ??
                       "Research finished: no new independent evidence was found")
+                    : justFinished.job_type === "workspace_agent"
+                      ? (justFinished.assistant_summary ?? "Workspace plan applied")
                     : justFinished.outcome === "proposals"
                       ? `Research prepared ${justFinished.relationship_suggestions?.length ?? 0} relationship proposals for review`
                       : `Research finished${justFinished.written ? `: ${justFinished.written} answer${justFinished.written === 1 ? "" : "s"} updated` : ""}`;
@@ -570,13 +576,21 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [needsInit, loadMatrix]);
+  }, [needsInit, loadMatrix, loadOverview]);
 
   const refresh = async () => {
     setSelection(null);
     await loadOverview();
     await loadMatrix();
     await loadReviewItems();
+  };
+  const directWorkspaceAgent = async (message: string) => {
+    const job = await post<ResearchJob>("/api/workspace-agent/jobs", {
+      message,
+    });
+    setJobs((current) => mergeJobs(current, [job]));
+    jobsRef.current = mergeJobs(jobsRef.current, [job]);
+    setShowWorkspaceAgent(true);
   };
   const inspectDiagnostic = (item: DiagnosticCell) => {
     const row = matrix?.rows.find(
@@ -1514,6 +1528,9 @@ export default function App() {
           </button>
         </div>
         <div className="header-actions">
+          <button className="agent-command-button" onClick={() => setShowWorkspaceAgent(true)}>
+            <span>✦ Ask Epiq</span>
+          </button>
           <button className="ghost" onClick={() => setShowActivity(true)}>
             <span>✦ Activity</span>
             {jobs.filter(
@@ -2637,6 +2654,14 @@ export default function App() {
             onAcceptSchemaAdaptation={acceptSchemaAdaptation}
             onCancel={cancelResearch}
             onRetry={retryResearch}
+          />
+        )}
+        {showWorkspaceAgent && (
+          <WorkspaceAgentPanel
+            jobs={jobs.filter((job) => job.job_type === "workspace_agent")}
+            onClose={() => setShowWorkspaceAgent(false)}
+            onSend={directWorkspaceAgent}
+            onCancel={cancelResearch}
           />
         )}
         {showReview && (
@@ -5075,6 +5100,115 @@ function ReviewPanel({
   );
 }
 
+function WorkspaceAgentPanel({
+  jobs,
+  onClose,
+  onSend,
+  onCancel,
+}: {
+  jobs: ResearchJob[];
+  onClose: () => void;
+  onSend: (message: string) => Promise<void>;
+  onCancel: (jobId: string) => Promise<void>;
+}) {
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+  const ordered = [...jobs].reverse();
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+  }, [jobs]);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const value = message.trim();
+    if (!value || sending) return;
+    setSending(true);
+    setSendError("");
+    try {
+      await onSend(value);
+      setMessage("");
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : "Request failed");
+    } finally {
+      setSending(false);
+    }
+  };
+  const examples = [
+    "Collect data on AI interviewer startups, their founders, funding, and press coverage.",
+    "Build a workspace for comparing Cape Cod towns, housing prices, and population.",
+    "Add the schema and initial rows needed to track papers by David Autor and their coauthors.",
+  ];
+  return (
+    <aside className="workspace-agent-panel">
+      <div className="drawer-head">
+        <div className="eyebrow">WORKSPACE AGENT</div>
+        <button className="close" onClick={onClose}>×</button>
+        <h2>What should Epiq build?</h2>
+        <p>Describe the outcome. The agent can add tables, fields, initial rows, and research jobs.</p>
+      </div>
+      <div className="agent-conversation" ref={listRef}>
+        {ordered.length === 0 && (
+          <div className="agent-welcome">
+            <b>Start with a research goal</b>
+            <p>Epiq will turn it into visible, typed database operations. It only adds data; it will not delete or rewrite existing work.</p>
+            <div className="agent-examples">
+              {examples.map((example) => (
+                <button key={example} onClick={() => setMessage(example)}>{example}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {ordered.map((job) => (
+          <div className="agent-exchange" key={job.job_id}>
+            <div className="agent-message user-message">{job.user_message ?? job.instructions}</div>
+            <div className={`agent-message assistant-message ${job.status}`}>
+              <div className="agent-message-status">
+                <span className={`job-status ${job.status}`}>{job.status}</span>
+                {job.status === "running" && <i className="agent-spinner" />}
+              </div>
+              {job.assistant_summary ? <p>{job.assistant_summary}</p> : (
+                <p>{job.messages.at(-1)?.message ?? "Preparing the workspace…"}</p>
+              )}
+              {job.workspace_plan && (
+                <div className="agent-plan-summary">
+                  <span>{job.workspace_plan.entity_kinds.length} tables</span>
+                  <span>{job.workspace_plan.entities.length} rows</span>
+                  <span>{job.workspace_plan.questions.length} fields</span>
+                  <span>{job.child_job_ids?.length ?? 0} research jobs</span>
+                </div>
+              )}
+              {job.error && <div className="form-error">{job.error}</div>}
+              {(job.status === "queued" || job.status === "running") && (
+                <button className="job-action" onClick={() => void onCancel(job.job_id)}>Cancel</button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <form className="agent-composer" onSubmit={submit}>
+        <textarea
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          placeholder="Create a database of…"
+          rows={3}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+        />
+        <div>
+          <small>Enter to send · Shift+Enter for a new line</small>
+          <button disabled={sending || !message.trim()}>{sending ? "Starting…" : "Send direction ✦"}</button>
+        </div>
+        {sendError && <div className="form-error">{sendError}</div>}
+      </form>
+    </aside>
+  );
+}
+
 function ActivityPanel({
   jobs,
   onClose,
@@ -5127,7 +5261,9 @@ function ActivityPanel({
             <div className="activity-job-head">
               <span className={`job-status ${job.status}`}>{job.status}</span>
               <code>
-                {job.mode === "suggest_entities" ||
+                {job.mode === "workspace_agent"
+                  ? "Workspace"
+                  : job.mode === "suggest_entities" ||
                 job.mode === "suggest_fields"
                   ? job.entity_kind
                   : job.question_id.replace(/^q_|_v\d+$/g, "")}
@@ -5138,6 +5274,8 @@ function ActivityPanel({
                 ? `Find ${job.entity_kind.toLowerCase()} rows`
                 : job.mode === "suggest_fields"
                   ? `Suggest fields for ${job.entity_kind}`
+                  : job.mode === "workspace_agent"
+                    ? "Build workspace"
                   : job.mode === "retry_not_found"
                     ? "Correct and retry NotFound"
                     : job.mode === "add_evidence"
@@ -5194,7 +5332,8 @@ function ActivityPanel({
                 Cancel
               </button>
             )}
-            {(job.status === "failed" || job.status === "cancelled") && (
+            {(job.status === "failed" || job.status === "cancelled") &&
+              job.mode !== "workspace_agent" && (
               <button
                 className="job-action"
                 onClick={() => void onRetry(job.job_id)}

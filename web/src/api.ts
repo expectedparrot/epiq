@@ -104,13 +104,18 @@ export interface ResearchJob {
   requested_entity_ids?: string[] | null;
   instructions?: string;
   scope?: "cell" | "row" | "column" | "table";
-  job_type?: "research" | "entity_suggestions" | "field_suggestions";
+  job_type?:
+    | "research"
+    | "entity_suggestions"
+    | "field_suggestions"
+    | "workspace_agent";
   mode:
     | "fill_missing"
     | "add_evidence"
     | "retry_not_found"
     | "suggest_entities"
-    | "suggest_fields";
+    | "suggest_fields"
+    | "workspace_agent";
   messages: Array<{ at: string; message: string }>;
   error?: string | null;
   outcome?: "changed" | "no_change" | "proposals" | "schema_proposal" | null;
@@ -122,6 +127,15 @@ export interface ResearchJob {
   relationship_suggestions?: RelationshipSuggestion[];
   schema_adaptation?: SchemaAdaptation | null;
   deduplicated?: boolean;
+  user_message?: string;
+  assistant_summary?: string;
+  workspace_plan?: {
+    entity_kinds: string[];
+    entities: Array<{ kind: string; name: string }>;
+    questions: Array<{ kind: string; name: string; label: string }>;
+    research: Array<{ kind: string; question: string; entity_names: string[] }>;
+  };
+  child_job_ids?: string[];
 }
 
 export interface SchemaAdaptation {
