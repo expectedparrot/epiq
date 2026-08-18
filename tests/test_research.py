@@ -1,6 +1,8 @@
 import json
 
-from epiq.research import OpenAIResearchRunner
+import pytest
+
+from epiq.research import OpenAIResearchRunner, _parse_values
 
 
 class _StreamingResponse:
@@ -75,3 +77,42 @@ def test_openai_research_prompt_supports_reference_object_example(monkeypatch) -
     assert captured["timeout"] == 900
     assert results[0]["entity_id"] == "co_acme"
     assert results[0]["status"] == "not_found"
+
+
+@pytest.mark.parametrize("value_json", ["", "   ", None])
+def test_not_found_research_normalizes_empty_value_json(value_json) -> None:
+    results = _parse_values(
+        [{"entity_id": "theater_savoy", "status": "not_found", "value_json": value_json}]
+    )
+
+    assert results[0]["value"] is None
+
+
+def test_answered_research_rejects_empty_value_json_with_context() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="theater_savoy has status answered but an empty value_json",
+    ):
+        _parse_values(
+            [{"entity_id": "theater_savoy", "status": "answered", "value_json": ""}]
+        )
+
+
+def test_research_rejects_malformed_value_json_with_context() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="Research result for theater_savoy has invalid value_json",
+    ):
+        _parse_values(
+            [{"entity_id": "theater_savoy", "status": "answered", "value_json": "not-json"}]
+        )
+
+
+def test_not_found_research_rejects_non_null_value() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="status not_found but a non-null value_json",
+    ):
+        _parse_values(
+            [{"entity_id": "theater_savoy", "status": "not_found", "value_json": "1891"}]
+        )

@@ -349,7 +349,8 @@ existing source. If no independent source can be found, return not_found rather 
 Treat definition.research_guidance as a binding interpretation rule, including distinctions the
 human has identified after reviewing earlier mistakes.
 Return exactly one result for every supplied entity_id. The value_json field must contain the
-conforming value encoded as JSON text. For any question with cardinality many, return a JSON array
+conforming value encoded as JSON text. For status not_found, value_json must be the literal JSON
+text "null"; never return an empty string. For any question with cardinality many, return a JSON array
 whose elements individually conform to value_type. For example, a many-valued String may return
 ["SaaS","Healthcare"], and a many-valued Enum[a,b,c] may return ["a","c"]. Epiq stores these as
 separate scalar claims in one cell. For a Ref[Type] question with cardinality many, return every
@@ -424,7 +425,16 @@ the relevant population and time; cite that source and explain the closed-world 
             for content in output.get("content", [])
             if content.get("type") == "output_text"
         )
-        return _parse_values(json.loads(text)["results"])
+        if not text.strip():
+            raise RuntimeError("OpenAI completed without structured research output")
+        try:
+            response_payload = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                "OpenAI returned invalid structured research JSON: "
+                f"{error.msg} at line {error.lineno} column {error.colno}"
+            ) from error
+        return _parse_values(response_payload["results"])
 
 
 class OpenAIWorkspaceAgentRunner(OpenAIResearchRunner):
@@ -695,6 +705,31 @@ def _parse_values(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized = []
     for result in results:
         item = dict(result)
-        item["value"] = json.loads(item.pop("value_json"))
+        entity_id = str(item.get("entity_id") or "unknown entity")
+        status = str(item.get("status") or "unknown")
+        raw_value = item.pop("value_json", None)
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            if status == "not_found":
+                item["value"] = None
+                normalized.append(item)
+                continue
+            raise RuntimeError(
+                f"Research result for {entity_id} has status {status} but an empty value_json"
+            )
+        if not isinstance(raw_value, str):
+            raise RuntimeError(
+                f"Research result for {entity_id} has a non-string value_json"
+            )
+        try:
+            item["value"] = json.loads(raw_value)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"Research result for {entity_id} has invalid value_json: "
+                f"{error.msg} at line {error.lineno} column {error.colno}"
+            ) from error
+        if status == "not_found" and item["value"] is not None:
+            raise RuntimeError(
+                f"Research result for {entity_id} has status not_found but a non-null value_json"
+            )
         normalized.append(item)
     return normalized
