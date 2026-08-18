@@ -1556,8 +1556,6 @@ export default function App() {
     );
   if (projectClosed) return <ProjectBrowser onReady={projectReady} />;
   if (needsInit) return <Welcome onReady={loadOverview} />;
-  if (overview && kinds.length === 0)
-    return <FirstTable onReady={loadOverview} />;
 
   return (
     <div className="app-shell">
@@ -1574,7 +1572,7 @@ export default function App() {
         <div className="project-title">
           <button onClick={() => setShowProjects(true)}>
             <span>{overview?.project.name ?? "Untitled project"}</span>
-            <small>/ {kind}</small>
+            {kind && <small>/ {kind}</small>}
             <i>⌄</i>
           </button>
         </div>
@@ -1616,25 +1614,29 @@ export default function App() {
           <details className="export-menu">
             <summary>↓ Export</summary>
             <div>
-              <b>Current {kind} table</b>
-              <a href={`/api/export/${encodeURIComponent(kind)}.xlsx`} download>
-                <span>Excel audit workbook</span>
-                <small>Table, evidence, gaps, schema, and event log</small>
-              </a>
-              <a
-                href={`/api/export/${encodeURIComponent(kind)}.scenario-list.ep`}
-                download
-              >
-                <span>EDSL ScenarioList</span>
-                <small>Native Git-backed .ep package</small>
-              </a>
-              <a
-                href={`/api/export/${encodeURIComponent(kind)}.agent-list.ep`}
-                download
-              >
-                <span>EDSL AgentList</span>
-                <small>Rows become named agents with typed traits</small>
-              </a>
+              {kind && (
+                <>
+                  <b>Current {kind} table</b>
+                  <a href={`/api/export/${encodeURIComponent(kind)}.xlsx`} download>
+                    <span>Excel audit workbook</span>
+                    <small>Table, evidence, gaps, schema, and event log</small>
+                  </a>
+                  <a
+                    href={`/api/export/${encodeURIComponent(kind)}.scenario-list.ep`}
+                    download
+                  >
+                    <span>EDSL ScenarioList</span>
+                    <small>Native Git-backed .ep package</small>
+                  </a>
+                  <a
+                    href={`/api/export/${encodeURIComponent(kind)}.agent-list.ep`}
+                    download
+                  >
+                    <span>EDSL AgentList</span>
+                    <small>Rows become named agents with typed traits</small>
+                  </a>
+                </>
+              )}
               <b>Whole project</b>
               <a href="/api/export/project.sqlite" download>
                 <span>SQLite database</span>
@@ -1707,6 +1709,20 @@ export default function App() {
           </div>
         </aside>
         <main>
+          {!kind ? (
+            <div className="blank-workspace">
+              <div className="blank-workspace-actions">
+                <button
+                  className="primary"
+                  onClick={() => setShowWorkspaceAgent(true)}
+                >
+                  ✦ Ask Epiq
+                </button>
+                <button onClick={() => setDialog("entityKind")}>＋ Add table</button>
+              </div>
+            </div>
+          ) : (
+            <>
           <div className="toolbar">
             <div>
               <h1>{kind}</h1>
@@ -2629,6 +2645,8 @@ export default function App() {
               </div>
             )}
           </div>
+            </>
+          )}
         </main>
         {selection && (
           <CellDrawer
@@ -3182,60 +3200,6 @@ function Welcome({ onReady }: { onReady: () => Promise<void> }) {
             Create workspace →
           </button>
         </form>
-      </div>
-    </div>
-  );
-}
-
-function FirstTable({ onReady }: { onReady: () => Promise<void> }) {
-  const [kind, setKind] = useState("");
-  const [error, setError] = useState("");
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    try {
-      await post("/api/entity-kinds", { kind });
-      await onReady();
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Could not create the first sheet",
-      );
-    }
-  };
-  return (
-    <div className="welcome">
-      <div className="welcome-card">
-        <span className="mark large">E</span>
-        <div className="eyebrow">CREATE YOUR FIRST SHEET</div>
-        <h1>
-          What does each row
-          <br />
-          represent?
-        </h1>
-        <p>
-          The row type becomes the identity column. No row is created until you
-          explicitly add one.
-        </p>
-        <form onSubmit={(event) => void submit(event)}>
-          <label>
-            Row type
-            <input
-              value={kind}
-              onChange={(event) => setKind(event.target.value)}
-              placeholder="Investor, Town, Product, Experiment…"
-              autoFocus
-              required
-            />
-          </label>
-          {error && <div className="form-error">{error}</div>}
-          <button className="primary" type="submit">
-            Create empty sheet →
-          </button>
-        </form>
-        <small className="onboarding-note">
-          Questions you add afterward become research columns.
-        </small>
       </div>
     </div>
   );

@@ -100,6 +100,20 @@ header {
   display: flex;
   height: calc(100vh - 64px);
 }
+.blank-workspace {
+  background:
+    linear-gradient(to right, #deddd5 1px, transparent 1px),
+    linear-gradient(to bottom, #deddd5 1px, transparent 1px),
+    var(--paper);
+  background-size: 180px 48px;
+  display: grid;
+  height: 100%;
+  place-items: center;
+}
+.blank-workspace-actions {
+  display: flex;
+  gap: 10px;
+}
 .sidebar {
   width: 230px;
   flex: none;
