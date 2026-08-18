@@ -740,6 +740,62 @@ button:hover {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+.entity-correction-section {
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding-top: 18px;
+}
+.entity-correction-section > div {
+  display: grid;
+  gap: 3px;
+}
+.entity-correction-section small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+.entity-correction-section button {
+  color: #9d4035;
+  white-space: nowrap;
+}
+.merge-preview {
+  align-items: center;
+  background: #f5f4ed;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr auto 1fr;
+  margin: 14px 0;
+  padding: 14px;
+}
+.merge-preview > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.merge-preview small,
+.merge-preview span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.merge-preview b {
+  overflow-wrap: anywhere;
+}
+.merge-explanation {
+  border-left: 3px solid #d29b45;
+  margin: 14px 0;
+  padding: 8px 12px;
+}
+.merge-explanation ul {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
 .outgoing-reference span {
   display: flex;
   gap: 10px;

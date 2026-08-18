@@ -119,6 +119,7 @@ type Dialog =
   | "schemaChallenge"
   | "editQuestion"
   | "retireQuestion"
+  | "mergeEntity"
   | "researchChallenge"
   | "paste"
   | "fill"
@@ -2686,6 +2687,7 @@ export default function App() {
           <EntityRelationshipsDrawer
             selection={entitySelection}
             onClose={() => setEntitySelection(null)}
+            onMerge={() => setDialog("mergeEntity")}
             onNavigate={(entity) => {
               setEntitySelection(null);
               setKind(entity.kind);
@@ -2900,6 +2902,22 @@ export default function App() {
           onSaved={async () => {
             setDialog(null);
             setRetireQuestion(null);
+            setSelection(null);
+            setActiveGridCell(null);
+            await loadOverview();
+            await loadMatrix();
+          }}
+        />
+      )}
+      {dialog === "mergeEntity" && entitySelection && matrix && (
+        <MergeEntityDialog
+          source={entitySelection}
+          rows={matrix.rows}
+          questions={matrix.questions}
+          onClose={() => setDialog(null)}
+          onSaved={async () => {
+            setDialog(null);
+            setEntitySelection(null);
             setSelection(null);
             setActiveGridCell(null);
             await loadOverview();
@@ -6444,10 +6462,12 @@ function SchemaReviewPanel({
 function EntityRelationshipsDrawer({
   selection,
   onClose,
+  onMerge,
   onNavigate,
 }: {
   selection: EntitySelection;
   onClose: () => void;
+  onMerge: () => void;
   onNavigate: (entity: RelatedEntity) => void;
 }) {
   const [graph, setGraph] = useState<RelationshipGraph | null>(null);
@@ -6575,10 +6595,126 @@ function EntityRelationshipsDrawer({
                 </button>
               ))}
             </section>
+            <section className="entity-correction-section">
+              <div>
+                <b>Row identity</b>
+                <small>Correct duplicate identities without erasing history.</small>
+              </div>
+              <button onClick={onMerge}>Merge duplicate…</button>
+            </section>
           </>
         )}
       </div>
     </aside>
+  );
+}
+
+function MergeEntityDialog({
+  source,
+  rows,
+  questions,
+  onClose,
+  onSaved,
+}: {
+  source: EntitySelection;
+  rows: Matrix["rows"];
+  questions: Question[];
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [destinationId, setDestinationId] = useState("");
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const sourceRow = rows.find((row) => row.entity_id === source.entityId);
+  const destination = rows.find((row) => row.entity_id === destinationId);
+  const populated = (row: Matrix["rows"][number] | undefined) =>
+    row
+      ? questions.filter((question) => row.cells[question.name]?.state !== "Unasked")
+          .length
+      : 0;
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!destinationId || !reason.trim() || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await post(`/api/entities/${encodeURIComponent(source.entityId)}/merge`, {
+        destination: destinationId,
+        reason,
+      });
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not merge rows");
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal
+      title={`Merge duplicate “${source.entityName}”`}
+      subtitle="Choose the row that represents the surviving identity. Epiq records the correction instead of deleting history."
+      onClose={onClose}
+    >
+      <form onSubmit={(event) => void submit(event)}>
+        <label>
+          Merge into
+          <select
+            value={destinationId}
+            onChange={(event) => setDestinationId(event.target.value)}
+            autoFocus
+            required
+          >
+            <option value="">Choose the surviving {source.entityKind} row…</option>
+            {rows
+              .filter((row) => row.entity_id !== source.entityId)
+              .map((row) => (
+                <option key={row.entity_id} value={row.entity_id}>
+                  {row.name}
+                </option>
+              ))}
+          </select>
+        </label>
+        {destination && (
+          <div className="merge-preview">
+            <div>
+              <small>Duplicate</small>
+              <b>{source.entityName}</b>
+              <span>{populated(sourceRow)} investigated field{populated(sourceRow) === 1 ? "" : "s"}</span>
+            </div>
+            <strong>→</strong>
+            <div>
+              <small>Surviving row</small>
+              <b>{destination.name}</b>
+              <span>{populated(destination)} investigated field{populated(destination) === 1 ? "" : "s"}</span>
+            </div>
+          </div>
+        )}
+        <div className="merge-explanation">
+          <b>What happens</b>
+          <ul>
+            <li>The duplicate row disappears from the current table.</li>
+            <li>Its claims, evidence, references, name, and ID resolve to the survivor.</li>
+            <li>Conflicting answers are retained and surfaced for review.</li>
+          </ul>
+        </div>
+        <label>
+          Why are these the same entity?
+          <textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder={`For example: “${source.entityName}” is an alternate name for the same theater.`}
+            required
+          />
+        </label>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+          <button className="danger-button" disabled={saving || !destinationId || !reason.trim()}>
+            {saving ? "Merging…" : "Merge rows"}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
