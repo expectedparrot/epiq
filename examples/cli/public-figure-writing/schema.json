@@ -1,24 +1,23 @@
 {
-  "project": {"name": "Public Figure and Writing"},
+  "project": {"name": "Paul Graham and His Writing"},
   "entity_kinds": ["Person", "Institution", "Publication", "Work"],
   "entities": [
     {"kind":"Person","name":"Paul Graham"},
     {"kind":"Institution","name":"Cornell University"},
     {"kind":"Institution","name":"Harvard University"},
     {"kind":"Publication","name":"paulgraham.com"},
-    {"kind":"Work","name":"Hackers and Painters"},
+    {"kind":"Work","name":"Hackers & Painters"},
     {"kind":"Work","name":"How to Start a Startup"},
     {"kind":"Work","name":"Maker's Schedule, Manager's Schedule"}
   ],
   "questions": [
-    {"name":"birth_date","subject_kind":"Person","value_type":"Date","definition":{"label":"Birth date"}},
-    {"name":"education","subject_kind":"Person","value_type":"Ref[Institution]","definition":{"label":"Education","cardinality":"many"}},
+    {"name":"educated_at","subject_kind":"Person","value_type":"Ref[Institution]","definition":{"label":"Education","cardinality":"many"}},
     {"name":"occupation","subject_kind":"Person","value_type":"String","definition":{"label":"Occupation","cardinality":"many"}},
-    {"name":"author","subject_kind":"Work","value_type":"Ref[Person]","definition":{"label":"Author"}},
-    {"name":"work_type","subject_kind":"Work","value_type":"Enum[book,essay,article,paper,newsletter,blog_post]","definition":{"label":"Work type"}},
-    {"name":"published_date","subject_kind":"Work","value_type":"Year","definition":{"label":"Publication date"}},
-    {"name":"publication","subject_kind":"Work","value_type":"Ref[Publication]","definition":{"label":"Publication"}},
+    {"name":"author","subject_kind":"Work","value_type":"Ref[Person]","definition":{"label":"Author","cardinality":"many"}},
+    {"name":"work_type","subject_kind":"Work","value_type":"Enum[book,essay]","definition":{"label":"Work type"}},
+    {"name":"published_year","subject_kind":"Work","value_type":"Year","definition":{"label":"Publication year"}},
+    {"name":"published_in","subject_kind":"Work","value_type":"Ref[Publication]","definition":{"label":"Publication"}},
     {"name":"topic","subject_kind":"Work","value_type":"String","definition":{"label":"Topic","cardinality":"many"}},
-    {"name":"canonical_url","subject_kind":"Work","value_type":"String","definition":{"label":"Canonical URL"}}
+    {"name":"canonical_url","subject_kind":"Work","value_type":"URL","definition":{"label":"Canonical URL"}}
   ]
 }

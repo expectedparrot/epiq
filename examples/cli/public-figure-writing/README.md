@@ -1,7 +1,7 @@
-# Tutorial: represent a person and their writing without a giant JSON cell
+# Tutorial: represent Paul Graham and his writing as related tables
 
-Suppose you want biographical details about a public figure and a list of their writings. Putting
-all writings in one `Person.writings` cell makes each work difficult to cite, query, date, or extend.
+Suppose you want biographical details about Paul Graham and a catalog of his writing. Putting all
+works in one `Person.writings` cell would make each work difficult to cite, query, date, or extend.
 Instead, model works as rows in their own table and connect them to the person.
 
 ```text
@@ -9,203 +9,214 @@ Person  <── author ──  Work  ── published_in ──>  Publication
   └──────────── educated_at ───────────────────>  Institution
 ```
 
-The source excerpts below are synthetic and use `example.test`; this teaches the structure rather
-than claiming to be a researched biography.
+This tutorial uses public pages on `paulgraham.com`. Epiq does not fetch them: the commands show
+how a human or research agent records the passages it inspected and the claims those passages
+support.
 
-## 1. Create several kinds of row
+## 1. Create the project and its rows
 
 ```bash
-epiq use /tmp/writing.sqlite
-epiq init --name "Public writing tutorial"
-epiq entity Person "Ada Example"
-epiq entity Work "Notes on Small Systems"
-epiq entity Work "Scaling Tiny Teams"
-epiq entity Publication "Example Review"
-epiq entity Institution "Example University"
+epiq use /tmp/paul-graham-writing.sqlite
+epiq init --name "Paul Graham and his writing"
+
+epiq entity Person "Paul Graham"
+epiq entity Institution "Cornell University"
+epiq entity Institution "Harvard University"
+epiq entity Publication "paulgraham.com"
+epiq entity Work "Hackers & Painters"
+epiq entity Work "How to Start a Startup"
+epiq entity Work "Maker's Schedule, Manager's Schedule"
 ```
 
 `epiq use` stores the active database selection for this workspace. `epiq db` shows what is
-selected, and an explicit `--db` can still override it for a single command.
+selected, and an explicit `--db` can still override it for one command.
 
-An entity kind is analogous to a table. The entities are its rows.
+An entity kind is analogous to a table. The entities are its rows. A book and two essays therefore
+become three independently researchable `Work` rows rather than an array hidden in the person row.
 
-## 2. Define relationship columns
+## 2. Define biographical and bibliographical fields
 
 ```bash
+epiq question educated_at --for Person --type 'Ref[Institution]' \
+  --definition '{"label":"Education","cardinality":"many"}'
+
+epiq question occupation --for Person --type String \
+  --definition '{"label":"Occupation","cardinality":"many"}'
+
 epiq question author --for Work --type 'Ref[Person]' \
   --definition '{"label":"Author","cardinality":"many"}'
 
-epiq question published_in --for Work \
-  --type 'Ref[Publication]' \
+epiq question published_in --for Work --type 'Ref[Publication]' \
   --definition '{"label":"Publication","cardinality":"one"}'
 
-epiq question published_date --for Work --type Date \
-  --definition '{"label":"Publication date","cardinality":"one"}'
+epiq question published_year --for Work --type Year \
+  --definition '{"label":"Publication year","cardinality":"one"}'
 
-epiq question educated_at --for Person \
-  --type 'Ref[Institution]' \
-  --definition '{"label":"Education","cardinality":"many"}'
+epiq question work_type --for Work --type 'Enum[essay,book]' \
+  --definition '{"label":"Work type","cardinality":"one"}'
+
+epiq question canonical_url --for Work --type URL \
+  --definition '{"label":"Canonical URL","cardinality":"one"}'
+
+epiq question topic --for Work --type String \
+  --definition '{"label":"Topic","cardinality":"many"}'
 ```
 
 `Ref[Person]` is not arbitrary text. Epiq validates that the target exists and is a `Person`, then
-stores its durable ID. `cardinality: many` allows a coauthored work or several institutions.
+stores its durable entity ID. `cardinality: many` allows coauthors, several institutions, or
+multiple topics without overwriting an earlier value.
 
-The two entity kinds project independently:
+At this point the tables contain rows and typed columns, but their cells remain `Unasked`:
 
 ```bash
 epiq matrix --kind Person
 epiq matrix --kind Work
 ```
 
-| Person | Education |
-| --- | --- |
-| Ada Example | Unasked |
+| Person | Education | Occupation |
+| --- | --- | --- |
+| Paul Graham | Unasked | Unasked |
 
-| Work | Author | Publication | Publication date |
-| --- | --- | --- | --- |
-| Notes on Small Systems | Unasked | Unasked | Unasked |
-| Scaling Tiny Teams | Unasked | Unasked | Unasked |
+| Work | Author | Publication | Publication year | Work type | Canonical URL | Topic |
+| --- | --- | --- | ---: | --- | --- | --- |
+| Hackers & Painters | Unasked | Unasked | Unasked | Unasked | Unasked | Unasked |
+| How to Start a Startup | Unasked | Unasked | Unasked | Unasked | Unasked | Unasked |
+| Maker's Schedule, Manager's Schedule | Unasked | Unasked | Unasked | Unasked | Unasked | Unasked |
 
-## 3. Source and connect one work
+## 3. Record biography evidence once and use it for several claims
+
+Paul Graham's official biography describes him as a programmer, writer, and investor and lists an
+AB from Cornell and a PhD in Computer Science from Harvard. One bounded passage can support all
+five claims atomically:
 
 ```bash
 epiq --actor agent:catalog record \
-  --subject "Notes on Small Systems" \
+  --subject "Paul Graham" \
   --source-type web \
-  --url "https://example.test/catalog/notes-small-systems" \
-  --source-title "Example Review catalog record" \
-  --retrieved-at 2026-08-17 \
-  --excerpt "Notes on Small Systems, by Ada Example, appeared in Example Review on 2024-05-03." \
-  --valid-from 2024-05-03 \
-  --answer author "Ada Example" \
-  --answer published_in "Example Review" \
-  --answer published_date 2024-05-03
+  --url "https://www.paulgraham.com/bio.html" \
+  --source-title "Paul Graham: Bio" \
+  --retrieved-at 2026-08-18 \
+  --excerpt "Paul Graham is a programmer, writer, and investor. He has an AB from Cornell and a PhD in Computer Science from Harvard." \
+  --valid-from 2026-08-18 \
+  --answer educated_at "Cornell University" \
+  --answer educated_at "Harvard University" \
+  --answer occupation "Programmer" \
+  --answer occupation "Writer" \
+  --answer occupation "Investor"
+```
 
+The evidence is stored once. Each answer is a separate typed claim, so one occupation or education
+claim can later be challenged without retracting the others.
+
+## 4. Source and connect the works
+
+The official book page identifies *Hackers & Painters* as a 2004 O'Reilly book. Record the source
+and every answer it supports in one transaction:
+
+```bash
 epiq --actor agent:catalog record \
-  --subject "Scaling Tiny Teams" \
+  --subject "Hackers & Painters" \
   --source-type web \
-  --url "https://example.test/catalog/scaling-tiny-teams" \
-  --source-title "Example Review catalog record" \
-  --retrieved-at 2026-08-17 \
-  --excerpt "Scaling Tiny Teams, by Ada Example, appeared in Example Review on 2025-02-12." \
-  --valid-from 2025-02-12 \
-  --answer author "Ada Example" \
-  --answer published_in "Example Review" \
-  --answer published_date 2025-02-12
+  --url "https://www.paulgraham.com/hackpaint.html" \
+  --source-title "Hackers & Painters" \
+  --retrieved-at 2026-08-18 \
+  --excerpt "Hackers & Painters, by Paul Graham. O'Reilly, 2004." \
+  --valid-from 2004-01-01 \
+  --answer author "Paul Graham" \
+  --answer work_type book \
+  --answer published_year 2004 \
+  --answer topic "Programming" \
+  --answer topic "Startups" \
+  --answer canonical_url "https://www.paulgraham.com/hackpaint.html"
 ```
 
-Each command returns `answer_count: 3`, one evidence ID, and three claim IDs. Each catalog passage
-supports three distinct claims that can later be corroborated, challenged, or superseded
-independently.
+The essay pages supply their own month and year:
 
 ```bash
-epiq matrix --kind Work
-```
-
-| Work | Author | Publication | Publication date |
-| --- | --- | --- | --- |
-| Notes on Small Systems | Ada Example | Example Review | 2024-05-03 |
-| Scaling Tiny Teams | Ada Example | Example Review | 2025-02-12 |
-
-## 4. Traverse the relationship in both directions
-
-```bash
-epiq dossier "Notes on Small Systems"
-epiq related "Ada Example" --via author --direction incoming
-epiq query --kind Work --where 'author=Ada Example'
-```
-
-`author` lives on each `Work`, so works are incoming relationships from the person's perspective.
-The query accepts a name; Epiq resolves it to the stable entity ID.
-
-The dossier lineage for the first work includes:
-
-| Field | Value | Actor | Evidence |
-| --- | --- | --- | --- |
-| Author | Ada Example | `agent:catalog` | Example Review catalog record |
-| Publication | Example Review | `agent:catalog` | Example Review catalog record |
-| Publication date | 2024-05-03 | `agent:catalog` | Example Review catalog record |
-
-`related` shows the inverse traversal (IDs abbreviated):
-
-```json
-{
-  "count": 2,
-  "direction": "incoming",
-  "entity": {"kind": "Person", "name": "Ada Example"},
-  "via": "author",
-  "edges": [
-    {"direction": "incoming", "question": "author", "from": {"kind": "Work", "name": "Notes on Small Systems"}},
-    {"direction": "incoming", "question": "author", "from": {"kind": "Work", "name": "Scaling Tiny Teams"}}
-  ]
-}
-```
-
-The query returns the same two Work rows and reports `"matched": 2`; unlike `related`, it also
-projects their other fields.
-
-## 5. See why rows are more extensible than an array cell
-
-You can now add fields that apply independently to every work:
-
-```bash
-epiq question work_type --for Work \
-  --type 'Enum[essay,book,talk,paper,other]' \
-  --definition '{"label":"Work type","cardinality":"one"}'
-
-epiq question topic --for Work --type String \
-  --definition '{"label":"Topic","cardinality":"many"}'
-
 epiq --actor agent:catalog record \
-  --subject "Notes on Small Systems" \
+  --subject "How to Start a Startup" \
   --source-type web \
-  --url "https://example.test/catalog/notes-small-systems" \
-  --source-title "Example Review catalog record" \
-  --retrieved-at 2026-08-17 \
-  --excerpt "Notes on Small Systems is an essay about software architecture and small teams." \
-  --valid-from 2024-05-03 \
+  --url "https://www.paulgraham.com/start.html" \
+  --source-title "How to Start a Startup" \
+  --retrieved-at 2026-08-18 \
+  --excerpt "How to Start a Startup, by Paul Graham. March 2005." \
+  --valid-from 2005-03-01 \
+  --answer author "Paul Graham" \
+  --answer published_in "paulgraham.com" \
+  --answer published_year 2005 \
   --answer work_type essay \
-  --answer topic "Software architecture" \
-  --answer topic "Small teams"
+  --answer topic "Startup formation" \
+  --answer canonical_url "https://www.paulgraham.com/start.html"
 
-epiq timeline --kind Work --question published_date
+epiq --actor agent:catalog record \
+  --subject "Maker's Schedule, Manager's Schedule" \
+  --source-type web \
+  --url "https://www.paulgraham.com/makersschedule.html" \
+  --source-title "Maker's Schedule, Manager's Schedule" \
+  --retrieved-at 2026-08-18 \
+  --excerpt "Maker's Schedule, Manager's Schedule, by Paul Graham. July 2009." \
+  --valid-from 2009-07-01 \
+  --answer author "Paul Graham" \
+  --answer published_in "paulgraham.com" \
+  --answer published_year 2009 \
+  --answer work_type essay \
+  --answer topic "Work and management" \
+  --answer canonical_url "https://www.paulgraham.com/makersschedule.html"
 ```
 
-The timeline output orders the two dated claims:
+Now the work table has independently sourced rows:
 
-```json
-{
-  "entity_kind": "Work",
-  "observations": [
-    {"entity_name": "Notes on Small Systems", "value": "2024-05-03", "as_of": "2024-05-03"},
-    {"entity_name": "Scaling Tiny Teams", "value": "2025-02-12", "as_of": "2025-02-12"}
-  ],
-  "question": "published_date"
-}
+```bash
+epiq --format table matrix --kind Work
 ```
 
-Each work can acquire its own topics, summary, citations, date, and challenge history without
-changing the `Person` record.
+| Work | Author | Publication | Year | Type | Topic |
+| --- | --- | --- | ---: | --- | --- |
+| Hackers & Painters | Paul Graham | Unasked | 2004 | book | Programming; Startups |
+| How to Start a Startup | Paul Graham | paulgraham.com | 2005 | essay | Startup formation |
+| Maker's Schedule, Manager's Schedule | Paul Graham | paulgraham.com | 2009 | essay | Work and management |
 
-## Finished fixture
+`Unasked` is meaningful: the book has a publisher, but this schema's `published_in` relationship
+points to a `Publication` row and no O'Reilly entity or relationship claim has been added yet. Epiq
+does not silently convert missing modeling work into a guessed value.
 
-The packaged version uses Paul Graham as a familiar structural example and contains several works:
+## 5. Traverse the one-to-many relationship
+
+```bash
+epiq dossier "How to Start a Startup"
+epiq related "Paul Graham" --via author --direction incoming
+epiq query --kind Work --where 'author=Paul Graham'
+epiq timeline --kind Work --question published_year
+```
+
+`author` lives on each `Work`, so works are incoming relationships from Paul Graham's perspective.
+Both `related` and `query` return three works; `query` also projects their remaining fields. The
+timeline orders the three publication claims as 2004, 2005, and 2009.
+
+This is why works deserve rows: each can gain its own topics, citations, summary, URL, evidence,
+and challenge history without changing or expanding the `Person` record.
+
+## Build the finished fixture
+
+The packaged fixture performs the same writes in a reproducible form:
 
 ```bash
 uv run examples/cli/public-figure-writing/build.sh /tmp/epiq-public-writing.sqlite
-uv run epiq --db /tmp/epiq-public-writing.sqlite matrix --kind Person
-uv run epiq --db /tmp/epiq-public-writing.sqlite matrix --kind Work
+uv run epiq --db /tmp/epiq-public-writing.sqlite --format table matrix --kind Person
+uv run epiq --db /tmp/epiq-public-writing.sqlite --format table matrix --kind Work
 uv run epiq --db /tmp/epiq-public-writing.sqlite related "Paul Graham" \
   --via author --direction incoming
 ```
 
 After learning the commands, compare them with [schema.json](schema.json) and
-[writeback.json](writeback.json). Those files make the same model convenient to reproduce or feed
-from an agent; they are not a different database abstraction.
+[writeback.json](writeback.json). Those files express the same model for repeatable imports and
+agent write-back; they are not a different database abstraction.
 
 <!-- epiq-example -->
 ```bash
 examples/cli/public-figure-writing/build.sh "$EPIQ_EXAMPLE_DB"
 epiq --db "$EPIQ_EXAMPLE_DB" --select count related "Paul Graham" \
   --via author --direction incoming
+epiq --db "$EPIQ_EXAMPLE_DB" --select query.matched query --kind Work \
+  --where 'author=Paul Graham'
 ```
