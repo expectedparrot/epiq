@@ -862,6 +862,37 @@ export default function App() {
       throw caught;
     }
   };
+  const rejectProvisionalRelationships = async (
+    suggestions: ProvisionalRelationship[],
+    scope: "cell" | "column" | "table",
+  ) => {
+    if (!suggestions.length) return;
+    const reason = window.prompt(
+      `Why are you rejecting ${suggestions.length} provisional entr${suggestions.length === 1 ? "y" : "ies"}?`,
+    );
+    if (!reason?.trim()) return;
+    try {
+      await post("/api/research/relationships/reject", {
+        scope,
+        entity_kind: scope === "table" ? kind : undefined,
+        question_id: scope !== "table" ? suggestions[0].question_id : undefined,
+        subject_entity_id:
+          scope === "cell" ? suggestions[0].subject_entity_id : undefined,
+        reason,
+      });
+      setJobs(await api<ResearchJob[]>("/api/research/jobs"));
+      setClipboardNotice(
+        `Rejected ${suggestions.length} provisional entr${suggestions.length === 1 ? "y" : "ies"}`,
+      );
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not reject provisional entries",
+      );
+      throw caught;
+    }
+  };
   const acceptSchemaAdaptation = async (questionId: string) => {
     try {
       await post(`/api/research/schema-adaptations/${questionId}/accept`, {});
@@ -2064,17 +2095,29 @@ export default function App() {
                                 Challenge schema
                               </button>
                               {pendingProvisional.length > 0 && (
-                                <button
-                                  onClick={() =>
-                                    void acceptProvisionalRelationships(
-                                      pendingProvisional,
-                                      "column",
-                                    )
-                                  }
-                                >
-                                  Accept all {pendingProvisional.length}{" "}
-                                  provisional
-                                </button>
+                                <>
+                                  <button
+                                    onClick={() =>
+                                      void acceptProvisionalRelationships(
+                                        pendingProvisional,
+                                        "column",
+                                      )
+                                    }
+                                  >
+                                    Accept all {pendingProvisional.length}{" "}
+                                    provisional
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      void rejectProvisionalRelationships(
+                                        pendingProvisional,
+                                        "column",
+                                      )
+                                    }
+                                  >
+                                    Reject all provisional
+                                  </button>
+                                </>
                               )}
                               <button onClick={() => hideColumn(question.name)}>
                                 Hide field
@@ -2459,6 +2502,9 @@ export default function App() {
             onAcceptAllProvisional={(suggestions) =>
               acceptProvisionalRelationships(suggestions, "cell")
             }
+            onRejectAllProvisional={(suggestions) =>
+              rejectProvisionalRelationships(suggestions, "cell")
+            }
             onChanged={refresh}
           />
         )}
@@ -2521,6 +2567,15 @@ export default function App() {
             }
             onAcceptAllProvisional={() =>
               acceptProvisionalRelationships(
+                tableProvisionalRelationships,
+                "table",
+              )
+            }
+            onRejectProvisional={(suggestions) =>
+              rejectProvisionalRelationships(suggestions, "cell")
+            }
+            onRejectAllProvisional={() =>
+              rejectProvisionalRelationships(
                 tableProvisionalRelationships,
                 "table",
               )
@@ -4644,6 +4699,8 @@ function ReviewPanel({
   onInspectProvisional,
   onAcceptProvisional,
   onAcceptAllProvisional,
+  onRejectProvisional,
+  onRejectAllProvisional,
 }: {
   stale: DiagnosticCell[];
   contradictions: DiagnosticCell[];
@@ -4655,6 +4712,8 @@ function ReviewPanel({
   onInspectProvisional: (item: ProvisionalRelationship) => void;
   onAcceptProvisional: (items: ProvisionalRelationship[]) => Promise<void>;
   onAcceptAllProvisional: () => Promise<void>;
+  onRejectProvisional: (items: ProvisionalRelationship[]) => Promise<void>;
+  onRejectAllProvisional: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<
     "provisional" | "contradictions" | "stale" | "calculations"
@@ -4715,22 +4774,30 @@ function ReviewPanel({
               {provisionalCells.length} cell
               {provisionalCells.length === 1 ? "" : "s"}
             </span>
-            <button
-              className="primary"
-              disabled={busy === "all-provisional"}
-              onClick={async () => {
-                setBusy("all-provisional");
-                try {
-                  await onAcceptAllProvisional();
-                } finally {
-                  setBusy("");
-                }
-              }}
-            >
-              {busy === "all-provisional"
-                ? "Accepting…"
-                : `Accept all ${provisionalRelationships.length}`}
-            </button>
+            <div>
+              <button
+                disabled={Boolean(busy)}
+                onClick={() => void onRejectAllProvisional()}
+              >
+                Reject all
+              </button>
+              <button
+                className="primary"
+                disabled={Boolean(busy)}
+                onClick={async () => {
+                  setBusy("all-provisional");
+                  try {
+                    await onAcceptAllProvisional();
+                  } finally {
+                    setBusy("");
+                  }
+                }}
+              >
+                {busy === "all-provisional"
+                  ? "Accepting…"
+                  : `Accept all ${provisionalRelationships.length}`}
+              </button>
+            </div>
           </div>
         )}
         {tab === "provisional" &&
@@ -4758,6 +4825,12 @@ function ReviewPanel({
                 <div className="review-card-actions">
                   <button onClick={() => onInspectProvisional(first)}>
                     Inspect
+                  </button>
+                  <button
+                    disabled={Boolean(busy)}
+                    onClick={() => void onRejectProvisional(items)}
+                  >
+                    Reject all
                   </button>
                   <button
                     className="primary"
@@ -6103,6 +6176,7 @@ function CellDrawer({
   onChallenge,
   onAcceptProvisional,
   onAcceptAllProvisional,
+  onRejectAllProvisional,
   onChanged,
 }: {
   selection: Selection;
@@ -6120,6 +6194,9 @@ function CellDrawer({
   onChallenge: (claimId: string) => void;
   onAcceptProvisional: (suggestion: ProvisionalRelationship) => Promise<void>;
   onAcceptAllProvisional: (
+    suggestions: ProvisionalRelationship[],
+  ) => Promise<void>;
+  onRejectAllProvisional: (
     suggestions: ProvisionalRelationship[],
   ) => Promise<void>;
   onChanged: () => Promise<void>;
@@ -6215,22 +6292,32 @@ function CellDrawer({
                   Agent findings—not part of the database until approved.
                 </small>
               </span>
-              <button
-                className="accept-all-provisional"
-                disabled={busy === "all"}
-                onClick={async () => {
-                  setBusy("all");
-                  try {
-                    await onAcceptAllProvisional(provisionalRelationships);
-                  } finally {
-                    setBusy("");
+              <div className="provisional-heading-actions">
+                <button
+                  disabled={Boolean(busy)}
+                  onClick={() =>
+                    void onRejectAllProvisional(provisionalRelationships)
                   }
-                }}
-              >
-                {busy === "all"
-                  ? "Accepting…"
-                  : `Accept all ${provisionalRelationships.length}`}
-              </button>
+                >
+                  Reject all
+                </button>
+                <button
+                  className="accept-all-provisional"
+                  disabled={Boolean(busy)}
+                  onClick={async () => {
+                    setBusy("all");
+                    try {
+                      await onAcceptAllProvisional(provisionalRelationships);
+                    } finally {
+                      setBusy("");
+                    }
+                  }}
+                >
+                  {busy === "all"
+                    ? "Accepting…"
+                    : `Accept all ${provisionalRelationships.length}`}
+                </button>
+              </div>
             </div>
             {provisionalRelationships.map((suggestion) => (
               <article

@@ -513,9 +513,8 @@ def test_relationship_review_previews_and_accepts_a_whole_column(tmp_path: Path)
             }
         ]
 
-    client = TestClient(
-        create_app(tmp_path / "column-review.sqlite", tmp_path / "missing", researcher)
-    )
+    database = tmp_path / "column-review.sqlite"
+    client = TestClient(create_app(database, tmp_path / "missing", researcher))
     client.post("/api/project", json={"name": "Column review"})
     for name in ["Paper One", "Paper Two"]:
         client.post("/api/entities", json={"kind": "Paper", "name": name})
@@ -564,6 +563,45 @@ def test_relationship_review_previews_and_accepts_a_whole_column(tmp_path: Path)
         for job in jobs
         for suggestion in job["relationship_suggestions"]
     )
+
+    paper_three = client.post(
+        "/api/entities", json={"kind": "Paper", "name": "Paper Three"}
+    ).json()["entity_id"]
+    launched = client.post(
+        "/api/research/jobs",
+        json={
+            "entity_kind": "Paper",
+            "question": question,
+            "entity_ids": [paper_three],
+            "scope": "cell",
+        },
+    ).json()
+    wait_for_job(client, launched["job_id"])
+    rejected = client.post(
+        "/api/research/relationships/reject",
+        json={
+            "scope": "cell",
+            "subject_entity_id": paper_three,
+            "question_id": question,
+            "review_id": "reject-cell",
+            "reason": "Wrong author",
+        },
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["count"] == 1
+    paper_three_cell = next(
+        row
+        for row in client.get("/api/matrix/Paper").json()["rows"]
+        if row["name"] == "Paper Three"
+    )["cells"]["authors"]
+    assert paper_three_cell["state"] == "Unasked"
+    rejected_job = next(
+        job
+        for job in client.get("/api/research/jobs").json()
+        if job["job_id"] == launched["job_id"]
+    )
+    assert rejected_job["relationship_suggestions"][0]["status"] == "dismissed"
+    assert Store(database).history()[-1]["event_type"] == "relationship.review_rejected"
 
 
 def test_relationship_cardinality_mismatches_are_bulk_approved(tmp_path: Path) -> None:

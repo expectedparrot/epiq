@@ -120,6 +120,26 @@ def test_relationship_findings_roll_back_the_whole_review(store: Store) -> None:
     assert "relationship.review_approved" not in {event["event_type"] for event in store.history()}
 
 
+def test_relationship_finding_rejection_is_audited_without_writes(store: Store) -> None:
+    before = len(store.history())
+    first = store.reject_relationship_findings(
+        ["suggestion-1", "suggestion-2"],
+        "reviewer",
+        "reject-1",
+        "Sources did not support the relationship",
+    )
+    retried = store.reject_relationship_findings(
+        ["suggestion-1", "suggestion-2"],
+        "reviewer",
+        "reject-1",
+        "Sources did not support the relationship",
+    )
+    assert first == retried
+    assert first["count"] == 2
+    assert len(store.history()) == before + 1
+    assert store.history()[-1]["event_type"] == "relationship.review_rejected"
+
+
 def test_retraction_changes_current_view_but_preserves_history(store: Store) -> None:
     game = store.add_entity("Game", "Game", {}, "test")
     question = store.add_question("result", "Game", "Enum[W,L]", {}, "test")

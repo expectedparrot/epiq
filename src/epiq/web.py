@@ -275,7 +275,7 @@ class RelationshipReviewScope(BaseModel):
     subject_entity_id: str | None = None
     question_id: str | None = None
     review_id: str = Field(default_factory=lambda: f"rrv_{uuid.uuid4().hex}")
-    reason: str = "Approved provisional relationship research"
+    reason: str = "Reviewed provisional relationship research"
     actor: str = "human:web"
 
 
@@ -1749,6 +1749,19 @@ def create_app(
                         suggestion["status"] = "accepted"
                 persist_job(job_id)
 
+    def mark_relationship_suggestions_rejected(
+        selected: list[tuple[str, dict[str, Any]]], result: dict[str, Any]
+    ) -> None:
+        rejected_ids = {str(item["suggestion_id"]) for item in result.get("rejected", [])}
+        touched_jobs = {job_id for job_id, _ in selected}
+        with app.state.research_lock:
+            for job_id in touched_jobs:
+                job = app.state.research_jobs[job_id]
+                for suggestion in job.get("relationship_suggestions", []):
+                    if str(suggestion["suggestion_id"]) in rejected_ids:
+                        suggestion["status"] = "dismissed"
+                persist_job(job_id)
+
     @app.post("/api/research/relationships/preview")
     def preview_relationship_review(body: RelationshipReviewScope) -> dict[str, Any]:
         selected = scoped_relationship_suggestions(body)
@@ -1775,6 +1788,18 @@ def create_app(
             findings, body.actor, body.review_id, body.reason
         )
         mark_relationship_suggestions_accepted(selected, result)
+        return {**result, "review_id": body.review_id, "scope": body.scope}
+
+    @app.post("/api/research/relationships/reject", status_code=200)
+    def reject_scoped_relationship_review(body: RelationshipReviewScope) -> dict[str, Any]:
+        selected = scoped_relationship_suggestions(body)
+        result = store().reject_relationship_findings(
+            [str(item["suggestion_id"]) for _, item in selected],
+            body.actor,
+            body.review_id,
+            body.reason,
+        )
+        mark_relationship_suggestions_rejected(selected, result)
         return {**result, "review_id": body.review_id, "scope": body.scope}
 
     @app.post("/api/research/jobs/{job_id}/relationships/accept", status_code=201)

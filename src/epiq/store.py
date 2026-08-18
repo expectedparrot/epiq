@@ -2098,6 +2098,48 @@ class Store:
             )
             return result
 
+    def reject_relationship_findings(
+        self,
+        suggestion_ids: list[str],
+        actor: str,
+        review_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Audit rejection of provisional findings without creating records."""
+        identifiers = list(dict.fromkeys(suggestion_ids))
+        if not identifiers:
+            raise EpiqError("empty_review", "Select at least one provisional relationship")
+        if not review_id.strip():
+            raise EpiqError("review_id_required", "A review ID is required")
+        if not reason.strip():
+            raise EpiqError("reason_required", "A review reason is required")
+        with self.transaction() as connection:
+            existing = connection.execute(
+                """SELECT payload_json FROM events
+                   WHERE event_type='relationship.review_rejected'
+                     AND json_extract(payload_json,'$.review_id')=?
+                   ORDER BY seq DESC LIMIT 1""",
+                (review_id,),
+            ).fetchone()
+            if existing:
+                return dict(json.loads(str(existing["payload_json"]))["result"])
+            result = {
+                "count": len(identifiers),
+                "rejected": [{"suggestion_id": item} for item in identifiers],
+            }
+            self._event(
+                connection,
+                "relationship.review_rejected",
+                actor,
+                {
+                    "review_id": review_id,
+                    "reason": reason.strip(),
+                    "suggestion_ids": identifiers,
+                    "result": result,
+                },
+            )
+            return result
+
     def write_batch(self, operations: list[dict[str, Any]], actor: str) -> list[dict[str, Any]]:
         """Atomically add evidence and dependent claims using batch-local evidence references."""
         if not operations:
