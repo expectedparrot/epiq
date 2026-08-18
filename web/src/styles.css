@@ -1931,34 +1931,38 @@ button:hover {
   bottom: 9px;
   display: flex;
   gap: 5px;
-  justify-content: flex-start;
-  left: 12px;
+  justify-content: flex-end;
+  left: auto;
   position: absolute;
   right: 10px;
 }
 .grid .field-header-row .agent-button {
-  flex: 0 1 auto;
-  font-size: 9px;
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 28px;
+  font-size: 12px;
+  height: 28px;
+  justify-content: center;
   line-height: 1;
-  max-width: 82px;
-  min-width: 0;
-  overflow: hidden;
-  padding: 5px 6px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 28px;
+  padding: 0;
+  width: 28px;
 }
 .grid .field-header-row .formula-button {
+  align-items: center;
   cursor: grab;
-  flex: 0 1 auto;
-  font-size: 9px;
+  display: inline-flex;
+  flex: 0 0 28px;
+  font-size: 12px;
+  height: 28px;
+  justify-content: center;
   line-height: 1;
-  max-width: 82px;
-  min-width: 0;
-  padding: 5px 6px;
+  min-width: 28px;
+  padding: 0;
+  width: 28px;
 }
 .grid .field-header-row .column-menu {
   flex: 0 0 auto;
-  margin-left: auto;
 }
 .grid .field-header-row .formula-button:active {
   cursor: grabbing;

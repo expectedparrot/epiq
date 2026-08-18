@@ -1878,6 +1878,7 @@ export default function App() {
                           {Boolean(question.definition.formula) ? (
                             <button
                               className="formula-button formula-fill-button"
+                              aria-label="Fill formula down"
                               title="Click to fill every row, or drag down the column"
                               draggable
                               onDragStart={(event) => {
@@ -1887,7 +1888,7 @@ export default function App() {
                               onDragEnd={() => setFormulaDragQuestion(null)}
                               onClick={() => void materializeFormula(question)}
                             >
-                              ƒ Fill down
+                              ƒ
                             </button>
                           ) : (
                             <button
@@ -1896,7 +1897,12 @@ export default function App() {
                               }
                               title={
                                 job
-                                  ? "Research in progress"
+                                  ? `Research in progress (${job.completed}/${job.total || "…"})`
+                                  : "Research this column"
+                              }
+                              aria-label={
+                                job
+                                  ? `Research in progress (${job.completed}/${job.total || "…"})`
                                   : "Research this column"
                               }
                               disabled={Boolean(job)}
@@ -1904,9 +1910,7 @@ export default function App() {
                                 openResearch(question, "fill_missing")
                               }
                             >
-                              {job
-                                ? `✦ ${job.completed}/${job.total || "…"}`
-                                : "✦ Research"}
+                              ✦
                             </button>
                           )}
                           <details className="column-menu">
