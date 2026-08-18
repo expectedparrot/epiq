@@ -34,8 +34,8 @@ uv run epiq --format table matrix --kind Finding
 | Study A manager subgroup | Remote Work Study A | productivity | manager subgroup | -0.03 | 90 | -0.18, 0.12 |
 | Study B productivity primary | Remote Work Study B | productivity | primary | -0.05 | 610 | -0.12, 0.02 |
 
-The first three rows come from one paper. This is the distinction the original version failed to
-show: “What did Study A find?” does not have one scalar answer.
+The first three rows come from one paper. They show why “What did Study A find?” does not have one
+scalar answer: the answer depends on which outcome, analysis, and population you mean.
 
 ## 2. Give every result a stable compound identity
 
@@ -102,7 +102,7 @@ That broader query reports `matched: 3`.
 
 ## 5. Aggregate carefully
 
-Epiq can calculate a descriptive mean over the two primary productivity rows:
+Suppose we group effect sizes by analysis type:
 
 ```bash
 uv run epiq --format table aggregate --kind Finding \
