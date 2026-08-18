@@ -392,6 +392,8 @@ edsl = [
     { name = "edsl" },
 ]
 test = [
+    { name = "fastapi" },
+    { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -408,7 +410,9 @@ web-test = [
 requires-dist = [
     { name = "edsl", marker = "extra == 'edsl'", git = "https://github.com/expectedparrot/edsl.git?rev=main" },
     { name = "edsl", marker = "extra == 'web'", git = "https://github.com/expectedparrot/edsl.git?rev=main" },
+    { name = "fastapi", marker = "extra == 'test'", specifier = ">=0.115" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'test'", specifier = ">=0.28" },
     { name = "httpx", marker = "extra == 'web-test'", specifier = ">=0.28" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.8" },
