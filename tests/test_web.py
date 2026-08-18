@@ -1740,6 +1740,9 @@ def test_workspace_agent_applies_schema_rows_and_launches_cell_research(
     }
     assert captured["goal"] == "Collect data on AI interviewer startups"
     assert captured["context"]["project"]["name"] == "Market research"
+    available = {item["operation"] for item in captured["context"]["available_operations"]}
+    assert {"entity", "question", "record", "derive.distribution"} <= available
+    assert "migrate" not in available
 
 
 def test_research_splits_many_valued_results_into_typed_scalar_claims(

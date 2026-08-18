@@ -22,8 +22,11 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from .cli import capabilities
+from .dsl import describe, parse
 from .edsl_export import write_edsl
 from .errors import EpiqError
+from .html import write_html
+from .operations import agent_operation_catalog
 from .research import (
     EntitySuggestionRunner,
     FieldSuggestionRunner,
@@ -330,6 +333,20 @@ class DeriveCreate(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     valid_from: str
     confidence: Literal["low", "medium", "high"] = "medium"
+
+
+class DistributionDeriveCreate(BaseModel):
+    subject: str
+    question: str
+    input_claim_ids: list[str] = Field(min_length=1)
+    weights: list[float] | None = None
+    valid_from: str
+    confidence: Literal["low", "medium", "high"] = "medium"
+    actor: str = "agent:api"
+
+
+class EpiQLCheckCreate(BaseModel):
+    source: str = Field(min_length=1)
     actor: str = "human:web"
 
 
@@ -702,6 +719,10 @@ def create_app(
             ],
         }
 
+    @app.post("/api/epiql/check")
+    def check_epiql(body: EpiQLCheckCreate) -> dict[str, Any]:
+        return {"ok": True, "program": describe(parse(body.source))}
+
     @app.get("/api/context")
     def context(
         entity_kind: str | None = None, budget: int = Query(default=4000, ge=100)
@@ -962,6 +983,12 @@ def create_app(
     def timeline(entity_kind: str, question: str) -> dict[str, Any]:
         return store().timeline(entity_kind, question)
 
+    @app.get("/api/reports/season-record/{season}")
+    def season_record(
+        season: str, known_at: str | None = None, valid_at: str | None = None
+    ) -> dict[str, Any]:
+        return store().season_record(season, known_at, valid_at)
+
     @app.post("/api/reports/delta")
     def delta_report(since_seq: int | None = None, actor: str = "human:web") -> dict[str, Any]:
         return store().delta_report(actor, since_seq)
@@ -979,6 +1006,28 @@ def create_app(
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             background=BackgroundTask(output.unlink, missing_ok=True),
         )
+
+    def html_export(entity_kind: str | None) -> FileResponse:
+        with NamedTemporaryFile(prefix="epiq-", suffix=".html", delete=False) as temporary:
+            output = Path(temporary.name)
+        write_html(store(), output, entity_kind)
+        safe_kind = (
+            re.sub(r"[^A-Za-z0-9_-]+", "-", entity_kind).strip("-") if entity_kind else "project"
+        )
+        return FileResponse(
+            output,
+            filename=f"{safe_kind or 'project'}.html",
+            media_type="text/html",
+            background=BackgroundTask(output.unlink, missing_ok=True),
+        )
+
+    @app.get("/api/export/project.html")
+    def export_project_html() -> FileResponse:
+        return html_export(None)
+
+    @app.get("/api/export/{entity_kind}.html")
+    def export_html(entity_kind: str) -> FileResponse:
+        return html_export(entity_kind)
 
     @app.get("/api/export/{entity_kind}.{object_type}.ep")
     def export_edsl(entity_kind: str, object_type: str) -> FileResponse:
@@ -1250,6 +1299,23 @@ def create_app(
             "operation": body.operation,
             "input_claim_ids": input_claims,
             "parameter_claim_ids": weight_claims,
+        }
+
+    @app.post("/api/derive-distribution", status_code=201)
+    def derive_distribution(body: DistributionDeriveCreate) -> dict[str, Any]:
+        claim_id = store().derive_distribution(
+            body.subject,
+            body.question,
+            body.input_claim_ids,
+            body.valid_from,
+            body.actor,
+            body.weights,
+            body.confidence,
+        )
+        return {
+            "ok": True,
+            "claim_id": claim_id,
+            "input_claim_ids": body.input_claim_ids,
         }
 
     @app.post("/api/materialize", status_code=201)
@@ -1856,6 +1922,7 @@ def create_app(
             overview = project.overview()
             context = {
                 "project": overview["project"],
+                "available_operations": agent_operation_catalog(),
                 "tables": [
                     {
                         "kind": item["kind"],

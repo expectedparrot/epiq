@@ -19,6 +19,7 @@ from .edsl_export import write_edsl
 from .errors import EpiqError
 from .html import write_html
 from .importers import import_cham_corpus
+from .operations import operation_catalog
 from .store import QUESTION_CHALLENGE_PROBLEMS, Store
 from .xlsx import write_xlsx
 
@@ -209,6 +210,9 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
                 }
             )
         commands.append(item)
+    catalog = operation_catalog()
+    if command:
+        catalog = [item for item in catalog if item["cli_command"] == command]
     return {
         "protocol": {"name": "epiq-cli", "version": 1, "epiq_version": __version__},
         "transport": {
@@ -283,6 +287,7 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
             ],
             "dependency_roles": ["operand", "parameter", "path"],
         },
+        "operation_catalog": catalog,
         "event_types": [
             "entity_kind.define",
             "entity.create",
