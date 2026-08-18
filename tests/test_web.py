@@ -21,6 +21,68 @@ def wait_for_job(client: TestClient, job_id: str) -> dict:
     raise AssertionError("Research job did not finish")
 
 
+def test_active_cell_research_launches_are_deduplicated(tmp_path: Path) -> None:
+    started = Event()
+    release = Event()
+    calls = 0
+
+    def researcher(_kind, _question, entities, progress=None):
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=2)
+        if not entities:
+            return []
+        return [
+            {
+                "entity_id": entities[0]["entity_id"],
+                "status": "not_found",
+                "notes": "No source found.",
+            }
+        ]
+
+    client = TestClient(
+        create_app(tmp_path / "deduplicated-research.sqlite", tmp_path / "missing", researcher)
+    )
+    client.post("/api/project", json={"name": "Deduplicated research"})
+    entity = client.post("/api/entities", json={"kind": "Company", "name": "Acme"}).json()[
+        "entity_id"
+    ]
+    client.post("/api/entities", json={"kind": "Company", "name": "Beta"})
+    question = client.post(
+        "/api/questions",
+        json={"name": "founded", "subject_kind": "Company", "value_type": "Year"},
+    ).json()["question_id"]
+    request = {
+        "entity_kind": "Company",
+        "question": question,
+        "entity_ids": [entity],
+        "scope": "cell",
+    }
+    first = client.post("/api/research/jobs", json=request).json()
+    assert started.wait(timeout=1)
+    duplicate = client.post("/api/research/jobs", json=request).json()
+    assert duplicate["job_id"] == first["job_id"]
+    assert duplicate["deduplicated"] is True
+    assert len(client.get("/api/research/jobs").json()) == 1
+    assert calls == 1
+    column = client.post(
+        "/api/research/column",
+        json={"entity_kind": "Company", "question": question, "scope": "column"},
+    ).json()
+    assert column["cells"] == 2
+    assert sum(bool(job["deduplicated"]) for job in column["jobs"]) == 1
+    assert len({job["job_id"] for job in column["jobs"]}) == 2
+    assert len(client.get("/api/research/jobs").json()) == 2
+    release.set()
+    for job in column["jobs"]:
+        wait_for_job(client, job["job_id"])
+
+    later = client.post("/api/research/jobs", json=request).json()
+    assert later["job_id"] != first["job_id"]
+    assert later["deduplicated"] is False
+
+
 def test_research_receives_project_table_and_entity_identity_context(tmp_path: Path) -> None:
     captured = {}
 

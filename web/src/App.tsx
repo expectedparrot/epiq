@@ -68,6 +68,27 @@ type PastedClaim = {
   value?: unknown;
   error?: string;
 };
+
+function mergeJobs(current: ResearchJob[], incoming: ResearchJob[]) {
+  const byId = new Map(current.map((job) => [job.job_id, job]));
+  incoming.forEach((job) => byId.set(job.job_id, job));
+  const incomingIds = new Set(incoming.map((job) => job.job_id));
+  return [
+    ...incoming.filter(
+      (job, index) =>
+        incoming.findIndex((candidate) => candidate.job_id === job.job_id) ===
+        index,
+    ),
+    ...current.filter((job) => !incomingIds.has(job.job_id)),
+  ].map((job) => byId.get(job.job_id)!);
+}
+
+function duplicateLaunchNotice(jobs: ResearchJob[]) {
+  const count = jobs.filter((job) => job.deduplicated).length;
+  return count
+    ? `${count} research ${count === 1 ? "job is" : "jobs are"} already running`
+    : "";
+}
 type Dialog =
   | "entity"
   | "entityKind"
@@ -639,13 +660,16 @@ export default function App() {
       };
       if (entityIds) {
         const job = await post<ResearchJob>("/api/research/jobs", request);
-        setJobs((current) => [job, ...current]);
+        setJobs((current) => mergeJobs(current, [job]));
+        if (job.deduplicated)
+          setJobNotice("Research is already running for this cell");
       } else {
         const result = await post<{ jobs: ResearchJob[] }>(
           "/api/research/column",
           request,
         );
-        setJobs((current) => [...result.jobs, ...current]);
+        setJobs((current) => mergeJobs(current, result.jobs));
+        setJobNotice(duplicateLaunchNotice(result.jobs));
       }
       setDialog(null);
     } catch (caught) {
@@ -670,7 +694,7 @@ export default function App() {
         `/api/research/jobs/${jobId}/retry`,
         {},
       );
-      setJobs((current) => [job, ...current]);
+      setJobs((current) => mergeJobs(current, [job]));
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not retry research",
@@ -721,7 +745,8 @@ export default function App() {
           entity_kind: kind,
         },
       );
-      setJobs((current) => [...result.jobs, ...current]);
+      setJobs((current) => mergeJobs(current, result.jobs));
+      setJobNotice(duplicateLaunchNotice(result.jobs));
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -738,7 +763,8 @@ export default function App() {
         entity_id: rowResearchTarget.entityId,
         instructions,
       });
-      setJobs((current) => [...result.jobs, ...current]);
+      setJobs((current) => mergeJobs(current, result.jobs));
+      setJobNotice(duplicateLaunchNotice(result.jobs));
       setDialog(null);
     } catch (caught) {
       setError(
@@ -755,7 +781,7 @@ export default function App() {
         count,
         instructions,
       });
-      setJobs((current) => [job, ...current]);
+      setJobs((current) => mergeJobs(current, [job]));
       setDialog(null);
       setShowActivity(true);
     } catch (caught) {
@@ -774,7 +800,7 @@ export default function App() {
         count,
         instructions,
       });
-      setJobs((current) => [job, ...current]);
+      setJobs((current) => mergeJobs(current, [job]));
       setDialog(null);
       setShowActivity(true);
     } catch (caught) {
@@ -1946,15 +1972,14 @@ export default function App() {
                             }
                             title={
                               job
-                                ? `Research in progress (${job.completed}/${job.total || "…"})`
+                                ? `Research is active; click to schedule any remaining cells (${job.completed}/${job.total || "…"})`
                                 : "Research this column"
                             }
                             aria-label={
                               job
-                                ? `Research in progress (${job.completed}/${job.total || "…"})`
+                                ? "Research active; schedule remaining cells in this column"
                                 : "Research this column"
                             }
-                            disabled={Boolean(job)}
                             onClick={() =>
                               openResearch(question, "fill_missing")
                             }
@@ -2691,7 +2716,7 @@ export default function App() {
           claimId={challengedClaimId}
           onClose={() => setDialog(null)}
           onSaved={async (job) => {
-            if (job) setJobs((current) => [job, ...current]);
+            if (job) setJobs((current) => mergeJobs(current, [job]));
             setDialog(null);
             await refresh();
           }}
@@ -2729,7 +2754,7 @@ export default function App() {
           selection={selection}
           onClose={() => setDialog(null)}
           onSaved={async (job) => {
-            setJobs((current) => [job, ...current]);
+            setJobs((current) => mergeJobs(current, [job]));
             setDialog(null);
             await refresh();
           }}

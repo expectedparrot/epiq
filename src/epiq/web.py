@@ -1597,31 +1597,50 @@ def create_app(
         projection = store().matrix(body.entity_kind)
         if not any(item["question_id"] == body.question for item in projection["questions"]):
             raise EpiqError("question_not_found", f"Question not found: {body.question}")
-        job_id = f"job_{uuid.uuid4().hex[:16]}"
-        job = {
-            "job_id": job_id,
-            "entity_kind": body.entity_kind,
-            "question_id": body.question,
-            "mode": body.mode,
-            "instructions": body.instructions,
-            "requested_entity_ids": body.entity_ids,
-            "scope": body.scope,
-            "status": "queued",
-            "total": 0,
-            "completed": 0,
-            "target_entity_ids": [],
-            "created_at": datetime.now(UTC).isoformat(),
-            "error": None,
-            "cancel_requested": False,
-            "written": 0,
-            "no_result": 0,
-            "rejected": 0,
-            "outcome": None,
-            "relationship_suggestions": [],
-            "schema_adaptation": None,
-            "messages": [{"at": datetime.now(UTC).isoformat(), "message": "Research job queued"}],
-        }
+        requested_ids = sorted(set(body.entity_ids or []))
         with app.state.research_lock:
+            existing = next(
+                (
+                    job
+                    for job in app.state.research_jobs.values()
+                    if job.get("status") in {"queued", "running"}
+                    and job.get("entity_kind") == body.entity_kind
+                    and job.get("question_id") == body.question
+                    and job.get("mode") == body.mode
+                    and sorted(set(job.get("requested_entity_ids") or [])) == requested_ids
+                ),
+                None,
+            )
+            if existing is not None:
+                return {**existing, "deduplicated": True}
+            job_id = f"job_{uuid.uuid4().hex[:16]}"
+            job = {
+                "job_id": job_id,
+                "job_type": "research",
+                "entity_kind": body.entity_kind,
+                "question_id": body.question,
+                "mode": body.mode,
+                "instructions": body.instructions,
+                "requested_entity_ids": requested_ids or None,
+                "scope": body.scope,
+                "status": "queued",
+                "total": 0,
+                "completed": 0,
+                "target_entity_ids": [],
+                "created_at": datetime.now(UTC).isoformat(),
+                "error": None,
+                "cancel_requested": False,
+                "written": 0,
+                "no_result": 0,
+                "rejected": 0,
+                "outcome": None,
+                "relationship_suggestions": [],
+                "schema_adaptation": None,
+                "messages": [
+                    {"at": datetime.now(UTC).isoformat(), "message": "Research job queued"}
+                ],
+                "deduplicated": False,
+            }
             app.state.research_jobs[job_id] = job
             persist_job(job_id)
         threading.Thread(target=execute_research, args=(job_id, body), daemon=True).start()

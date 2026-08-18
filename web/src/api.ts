@@ -121,6 +121,7 @@ export interface ResearchJob {
   field_suggestions?: FieldSuggestion[];
   relationship_suggestions?: RelationshipSuggestion[];
   schema_adaptation?: SchemaAdaptation | null;
+  deduplicated?: boolean;
 }
 
 export interface SchemaAdaptation {
@@ -203,9 +204,7 @@ export interface StaleDerivation {
     dependency_claim_id: string;
     role: "operand" | "parameter" | "path";
     reason:
-      | "dependency_stale"
-      | "dependency_inactive"
-      | "newer_claim_available";
+      "dependency_stale" | "dependency_inactive" | "newer_claim_available";
   }>;
 }
 
