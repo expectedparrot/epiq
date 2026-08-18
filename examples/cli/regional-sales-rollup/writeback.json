@@ -1,0 +1,19 @@
+[
+  {"op":"evidence.add","ref":"orders","url":"urn:epiq:report:sales-orders-2026-08-18","source_type":"report","title":"Order ledger","retrieved_at":"2026-08-18","excerpt":"Order 1001: North, 10 units at $100 with no discount. Order 1002: North, 5 units at $200 with a 10% discount. Order 1003: South, 20 units at $50 with a 5% discount. Order 1004: South, 4 units at $300 with a 25% discount."},
+  {"op":"claim.assert","subject":"Order 1001","question":"region","value":"North","valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1001","question":"units","value":10,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1001","question":"unit_price","value":100,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1001","question":"discount_rate","value":0,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1002","question":"region","value":"North","valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1002","question":"units","value":5,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1002","question":"unit_price","value":200,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1002","question":"discount_rate","value":0.1,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1003","question":"region","value":"South","valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1003","question":"units","value":20,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1003","question":"unit_price","value":50,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1003","question":"discount_rate","value":0.05,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1004","question":"region","value":"South","valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1004","question":"units","value":4,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1004","question":"unit_price","value":300,"valid_from":"2026-08-18","evidence_refs":["orders"]},
+  {"op":"claim.assert","subject":"Order 1004","question":"discount_rate","value":0.25,"valid_from":"2026-08-18","evidence_refs":["orders"]}
+]

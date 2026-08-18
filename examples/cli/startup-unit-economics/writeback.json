@@ -1,0 +1,13 @@
+[
+  {"op":"evidence.add","ref":"metrics","url":"urn:epiq:report:startup-metrics-2026-08","source_type":"report","title":"August operating metrics","retrieved_at":"2026-08-18","excerpt":"Acorn reports $120,000 MRR, 300 customers, 24 employees, and a 2020 founding year. Beacon reports $90,000 MRR, 120 customers, 15 employees, and a 2022 founding year. Cobalt reports $45,000 MRR and 10 employees; its customer count and founding year were not supplied."},
+  {"op":"claim.assert","subject":"Acorn Analytics","question":"monthly_recurring_revenue","value":120000,"valid_from":"2026-08-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Acorn Analytics","question":"customers","value":300,"valid_from":"2026-08-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Acorn Analytics","question":"employees","value":24,"valid_from":"2026-08-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Acorn Analytics","question":"founded_year","value":2020,"valid_from":"2020-01-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Beacon AI","question":"monthly_recurring_revenue","value":90000,"valid_from":"2026-08-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Beacon AI","question":"customers","value":120,"valid_from":"2026-08-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Beacon AI","question":"employees","value":15,"valid_from":"2026-08-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Beacon AI","question":"founded_year","value":2022,"valid_from":"2022-01-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Cobalt Systems","question":"monthly_recurring_revenue","value":45000,"valid_from":"2026-08-01","evidence_refs":["metrics"]},
+  {"op":"claim.assert","subject":"Cobalt Systems","question":"employees","value":10,"valid_from":"2026-08-01","evidence_refs":["metrics"]}
+]

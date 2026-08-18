@@ -1,0 +1,18 @@
+{
+  "project": {"name": "Synthetic Startup Unit Economics"},
+  "entity_kinds": ["Startup"],
+  "entities": [
+    {"kind": "Startup", "name": "Acorn Analytics"},
+    {"kind": "Startup", "name": "Beacon AI"},
+    {"kind": "Startup", "name": "Cobalt Systems"}
+  ],
+  "questions": [
+    {"name": "monthly_recurring_revenue", "subject_kind": "Startup", "value_type": "Float", "definition": {"label": "MRR (USD)"}},
+    {"name": "customers", "subject_kind": "Startup", "value_type": "Int", "definition": {"label": "Customers"}},
+    {"name": "employees", "subject_kind": "Startup", "value_type": "Int", "definition": {"label": "Employees"}},
+    {"name": "founded_year", "subject_kind": "Startup", "value_type": "Year", "definition": {"label": "Founded"}},
+    {"name": "revenue_per_customer", "subject_kind": "Startup", "value_type": "Float", "definition": {"label": "MRR per customer", "formula": {"operation": "expression", "inputs": ["monthly_recurring_revenue", "customers"], "parameters": {"expression": "x0/x1"}, "expression": "=B1/C1"}}},
+    {"name": "annualized_revenue_per_employee", "subject_kind": "Startup", "value_type": "Float", "definition": {"label": "ARR per employee", "formula": {"operation": "expression", "inputs": ["monthly_recurring_revenue", "employees"], "parameters": {"expression": "(x0*12)/x1"}, "expression": "=(B1*12)/D1"}}},
+    {"name": "company_age", "subject_kind": "Startup", "value_type": "Float", "definition": {"label": "Age in 2026", "formula": {"operation": "expression", "inputs": ["founded_year"], "parameters": {"expression": "2026-x0"}, "expression": "=2026-E1"}}}
+  ]
+}

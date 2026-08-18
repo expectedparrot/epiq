@@ -1,0 +1,17 @@
+{
+  "project": {"name": "Synthetic Regional Sales Rollup"},
+  "entity_kinds": ["Order"],
+  "entities": [
+    {"kind": "Order", "name": "Order 1001"},
+    {"kind": "Order", "name": "Order 1002"},
+    {"kind": "Order", "name": "Order 1003"},
+    {"kind": "Order", "name": "Order 1004"}
+  ],
+  "questions": [
+    {"name": "region", "subject_kind": "Order", "value_type": "Enum[North,South]", "definition": {"label": "Region"}},
+    {"name": "units", "subject_kind": "Order", "value_type": "Int", "definition": {"label": "Units"}},
+    {"name": "unit_price", "subject_kind": "Order", "value_type": "Float", "definition": {"label": "Unit price"}},
+    {"name": "discount_rate", "subject_kind": "Order", "value_type": "Probability", "definition": {"label": "Discount"}},
+    {"name": "net_revenue", "subject_kind": "Order", "value_type": "Float", "definition": {"label": "Net revenue", "formula": {"operation": "expression", "inputs": ["units", "unit_price", "discount_rate"], "parameters": {"expression": "x0*x1*(1-x2)"}, "expression": "=B1*C1*(1-D1)"}}}
+  ]
+}

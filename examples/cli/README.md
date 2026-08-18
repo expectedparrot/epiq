@@ -28,6 +28,10 @@ Then use the advanced tutorials to exercise combinations of those primitives:
     declarative table formulas, and landed-cost lineage.
 11. [Corporate ownership risk](corporate-ownership-risk/README.md) — multi-row evidence, recursive
     ownership paths, propagation, and path staleness.
+12. [Startup unit economics](startup-unit-economics/README.md) — spreadsheet-style expressions,
+    constants, parentheses, partial materialization, and dependency lineage.
+13. [Regional sales rollup](regional-sales-rollup/README.md) — persisted row formulas feeding a
+    read-only grouped summary table.
 
 If you are looking for one capability rather than a domain, use this map:
 
@@ -39,6 +43,8 @@ If you are looking for one capability rather than a domain, use this map:
 | One source supporting cells on multiple rows | SaaS pricing or corporate ownership |
 | Structured source locators and source entities | Literature or clinical evidence |
 | Declarative per-row formulas | Procurement normalization |
+| Arithmetic expressions, constants, and parentheses | Startup unit economics |
+| Read-only grouped derived tables | Regional sales rollup |
 | Claim-backed calculation parameters | Clinical evidence synthesis |
 | Recursive mixed-edge traversal and propagation | Supply-chain risk |
 | Dependency roles and stale derivations | Clinical, procurement, or ownership risk |
