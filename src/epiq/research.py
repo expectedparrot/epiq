@@ -344,8 +344,12 @@ conforming value encoded as JSON text. For any question with cardinality many, r
 whose elements individually conform to value_type. For example, a many-valued String may return
 ["SaaS","Healthcare"], and a many-valued Enum[a,b,c] may return ["a","c"]. Epiq stores these as
 separate scalar claims in one cell. For a Ref[Type] question with cardinality many, return every
-directly supported related entity name (for example, ["Ada Lovelace","Grace Hopper"]); Epiq will
-resolve existing entities and stage missing ones for human approval. For answered results, cite a
+directly supported related entity either as a name or as an object with a required "name" and
+additional keys matching fields on the referenced table. For example,
+[{"name":"Ada Lovelace","birth_year":1815}] can propose an Author row and populate its typed
+birth_year field after approval. Every additional value must conform to that referenced field's
+type; do not invent keys or enum choices. Epiq will resolve existing entities and stage missing
+ones for human approval. For answered results, cite a
 direct source URL, title, and a
 short excerpt that directly supports the value. Do not treat absence of evidence as a negative
 answer. Provide the source publication date and the date the claim was observed to hold when they

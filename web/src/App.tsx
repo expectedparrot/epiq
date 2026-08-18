@@ -5417,6 +5417,17 @@ function RelationshipSuggestionReview({
                 ? `link existing ${suggestion.target_kind}`
                 : `create ${suggestion.target_kind} + link`}
             </em>
+            {suggestion.proposed_fields &&
+              Object.keys(suggestion.proposed_fields).length > 0 && (
+                <dl className="relationship-field-preview">
+                  {Object.entries(suggestion.proposed_fields).map(([name, value]) => (
+                    <div key={name}>
+                      <dt>{name.replaceAll("_", " ")}</dt>
+                      <dd>{Array.isArray(value) ? value.join(", ") : String(value)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
             <blockquote>{suggestion.excerpt}</blockquote>
             {suggestion.source_url ? (
               <a href={suggestion.source_url} target="_blank" rel="noreferrer">

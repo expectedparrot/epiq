@@ -547,7 +547,14 @@ def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: 
             {
                 "entity_id": entities[0]["entity_id"],
                 "status": "answered",
-                "value": ["Ada", "Katherine Johnson"],
+                "value": [
+                    "Ada",
+                    {
+                        "name": "Katherine Johnson",
+                        "birth_year": 1918,
+                        "expertise": ["mathematics", "spaceflight"],
+                    },
+                ],
                 "source_type": "web",
                 "source_url": "https://example.test/title-page",
                 "source_title": "Paper title page",
@@ -565,6 +572,19 @@ def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: 
         "/api/entities", json={"kind": "Paper", "name": "Computing Markets"}
     ).json()["entity_id"]
     ada = client.post("/api/entities", json={"kind": "Author", "name": "Ada"}).json()["entity_id"]
+    client.post(
+        "/api/questions",
+        json={"name": "birth_year", "subject_kind": "Author", "value_type": "Year"},
+    )
+    client.post(
+        "/api/questions",
+        json={
+            "name": "expertise",
+            "subject_kind": "Author",
+            "value_type": "String",
+            "definition": {"cardinality": "many"},
+        },
+    )
     question = client.post(
         "/api/questions",
         json={
@@ -590,6 +610,11 @@ def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: 
         "link",
         "create_and_link",
     ]
+    assert job["relationship_suggestions"][1]["target_name"] == "Katherine Johnson"
+    assert job["relationship_suggestions"][1]["proposed_fields"] == {
+        "birth_year": 1918,
+        "expertise": ["mathematics", "spaceflight"],
+    }
     author_rows = client.get("/api/matrix/Author").json()["rows"]
     assert [(row["entity_id"], row["name"]) for row in author_rows] == [(ada, "Ada")]
     suggestion_ids = [item["suggestion_id"] for item in job["relationship_suggestions"]]
@@ -599,12 +624,17 @@ def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: 
     )
     assert accepted.status_code == 201
     assert accepted.json()["count"] == 2
+    assert len(accepted.json()["accepted"][1]["populated_claim_ids"]) == 3, accepted.json()
     assert {row["name"] for row in client.get("/api/matrix/Author").json()["rows"]} == {
         "Ada",
         "Katherine Johnson",
     }
     cell = client.get("/api/matrix/Paper").json()["rows"][0]["cells"]["authors"]
     assert {item["name"] for item in cell["references"]} == {"Ada", "Katherine Johnson"}
+    author_rows = client.get("/api/matrix/Author").json()["rows"]
+    katherine = next(row for row in author_rows if row["name"] == "Katherine Johnson")
+    assert katherine["cells"]["birth_year"]["value"] == 1918
+    assert set(katherine["cells"]["expertise"]["values"]) == {"mathematics", "spaceflight"}
 
 
 def test_relationship_review_previews_and_accepts_a_whole_column(tmp_path: Path) -> None:

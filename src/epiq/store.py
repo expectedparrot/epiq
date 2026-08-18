@@ -1931,11 +1931,22 @@ class Store:
                         else "unknown"
                     ),
                 )
+                populated_claim_ids, skipped_fields = self._populate_related_fields_tx(
+                    connection,
+                    target_id,
+                    target_kind,
+                    finding,
+                    evidence_id,
+                    valid_from,
+                    actor,
+                )
                 accepted.append(
                     {
                         "suggestion_id": str(finding["suggestion_id"]),
                         "target_entity_id": target_id,
                         "claim_id": claim_id,
+                        "populated_claim_ids": populated_claim_ids,
+                        "skipped_fields": skipped_fields,
                     }
                 )
             result = {
@@ -1950,6 +1961,89 @@ class Store:
                 {"change_set_id": change_set_id, "kind": change_set["kind"], "result": result},
             )
             return result
+
+    def _populate_related_fields_tx(
+        self,
+        connection: sqlite3.Connection,
+        target_id: str,
+        target_kind: str,
+        finding: dict[str, Any],
+        evidence_id: str,
+        valid_from: str,
+        actor: str,
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Expand a structured related-row proposal into typed claims."""
+        populated_claim_ids: list[str] = []
+        skipped_fields: list[dict[str, str]] = []
+        proposed_fields = finding.get("proposed_fields") or {}
+        if not isinstance(proposed_fields, dict):
+            raise EpiqError(
+                "invalid_relationship_fields",
+                "Structured relationship fields must be an object",
+            )
+        for field_name, raw_value in proposed_fields.items():
+            field = connection.execute(
+                """SELECT * FROM questions
+                   WHERE name=? AND subject_kind=?
+                   ORDER BY version DESC LIMIT 1""",
+                (str(field_name), target_kind),
+            ).fetchone()
+            if field is None:
+                skipped_fields.append({"field": str(field_name), "reason": "Unknown target field"})
+                continue
+            field_definition = json.loads(str(field["definition_json"]))
+            field_values = (
+                raw_value
+                if field_definition.get("cardinality", "one") == "many"
+                and isinstance(raw_value, list)
+                else [raw_value]
+            )
+            for field_value in field_values:
+                resolved_value = field_value
+                field_type = str(field["value_type"])
+                if field_type.startswith("Ref[") and field_type.endswith("]"):
+                    related_kind = field_type[4:-1].strip()
+                    related_name = str(field_value).strip()
+                    if not related_name:
+                        skipped_fields.append(
+                            {"field": str(field_name), "reason": "Empty reference name"}
+                        )
+                        continue
+                    related = self._find_entity_by_identity(connection, related_name, related_kind)
+                    resolved_value = (
+                        str(related["entity_id"])
+                        if related
+                        else self._add_entity_tx(
+                            connection,
+                            related_kind,
+                            related_name,
+                            {"suggested_by": "structured_relationship_research"},
+                            actor,
+                        )
+                    )
+                try:
+                    self._check_value_type(field_type, resolved_value)
+                    field_claim_id, _, _ = self._assert_claim_tx(
+                        connection,
+                        target_id,
+                        str(field["question_id"]),
+                        resolved_value,
+                        valid_from,
+                        evidence_id,
+                        actor,
+                        confidence=str(finding.get("confidence") or "medium"),
+                        temporal_basis=(
+                            "observed"
+                            if finding.get("observed_as_of")
+                            else "source"
+                            if finding.get("source_published_at")
+                            else "unknown"
+                        ),
+                    )
+                    populated_claim_ids.append(field_claim_id)
+                except EpiqError as error:
+                    skipped_fields.append({"field": str(field_name), "reason": error.message})
+        return populated_claim_ids, skipped_fields
 
     def approve_relationship_findings(
         self,
@@ -2077,11 +2171,22 @@ class Store:
                         else "unknown"
                     ),
                 )
+                populated_claim_ids, skipped_fields = self._populate_related_fields_tx(
+                    connection,
+                    target_id,
+                    target_kind,
+                    finding,
+                    evidence_id,
+                    valid_from,
+                    actor,
+                )
                 accepted.append(
                     {
                         "suggestion_id": str(finding["suggestion_id"]),
                         "target_entity_id": target_id,
                         "claim_id": claim_id,
+                        "populated_claim_ids": populated_claim_ids,
+                        "skipped_fields": skipped_fields,
                     }
                 )
             result = {"count": len(accepted), "accepted": accepted}

@@ -1557,7 +1557,14 @@ def create_app(
                     if question["definition"].get("cardinality", "one") == "one" and len(names) > 1:
                         cardinality_mismatch = True
                     for raw_name in names:
-                        name = str(raw_name).strip()
+                        proposed_fields = {}
+                        if isinstance(raw_name, dict):
+                            name = str(raw_name.get("name") or "").strip()
+                            proposed_fields = {
+                                str(key): value for key, value in raw_name.items() if key != "name"
+                            }
+                        else:
+                            name = str(raw_name).strip()
                         if not name:
                             continue
                         existing = related_by_name.get(name.casefold())
@@ -1574,6 +1581,7 @@ def create_app(
                                     str(existing["entity_id"]) if existing else None
                                 ),
                                 "action": "link" if existing else "create_and_link",
+                                "proposed_fields": proposed_fields,
                                 "source_type": str(finding.get("source_type") or "web"),
                                 "source_url": finding.get("source_url"),
                                 "source_title": str(finding.get("source_title") or "Source"),

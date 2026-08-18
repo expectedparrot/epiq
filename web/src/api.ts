@@ -159,6 +159,7 @@ export interface RelationshipSuggestion {
   target_name: string;
   target_entity_id?: string | null;
   action: "link" | "create_and_link";
+  proposed_fields?: Record<string, unknown>;
   source_title: string;
   source_url?: string | null;
   excerpt: string;
