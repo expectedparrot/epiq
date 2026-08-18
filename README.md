@@ -1444,8 +1444,8 @@ Epiq is an executable vertical slice, not yet a production database server. In p
 - the web server is intentionally loopback-oriented; there is no authentication or multi-tenancy,
   so it must not be exposed to an untrusted network;
 - spreadsheet interactions include keyboard navigation, rectangular selection, tab-separated
-  copying, and atomic provenance-aware paste; repeated-value bulk fill is not yet implemented, and
-  formula fields support row-level numeric operations but not arbitrary spreadsheet expressions;
+  copying, atomic provenance-aware paste, and typed repeated-value bulk fill; formula fields support
+  bounded row-level arithmetic rather than arbitrary spreadsheet functions;
 - there are no web searches, scrapers, or LLM calls inside the CLI;
 - question replacement migrations are not yet exposed as a full CLI workflow;
 - EpiQL implements only question declarations and a narrow count-over-filter derivation;

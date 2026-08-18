@@ -79,6 +79,7 @@ type Dialog =
   | "retireQuestion"
   | "researchChallenge"
   | "paste"
+  | "fill"
   | null;
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1548,6 +1549,14 @@ export default function App() {
               >
                 Inspect
               </button>
+              {selectedRange &&
+                selectedRange.firstColumn === selectedRange.lastColumn &&
+                selectedCellCount > 1 &&
+                !activeSelection.question.definition.formula && (
+                  <button onClick={() => setDialog("fill")}>
+                    Fill selection
+                  </button>
+                )}
             </div>
           )}
           <div className="grid-wrap">
@@ -2305,6 +2314,20 @@ export default function App() {
             setPastedClaims([]);
             setClipboardNotice(`Added ${pastedClaims.length} sourced values`);
             await refresh();
+          }}
+        />
+      )}
+      {dialog === "fill" && selectedRange && activeSelection && (
+        <FillSelectionDialog
+          rows={displayedRows.slice(
+            selectedRange.firstRow,
+            selectedRange.lastRow + 1,
+          )}
+          question={activeSelection.question}
+          onClose={() => setDialog(null)}
+          onContinue={(claims) => {
+            setPastedClaims(claims);
+            setDialog("paste");
           }}
         />
       )}
@@ -3566,6 +3589,108 @@ function ClaimDialog({
   );
 }
 
+function FillSelectionDialog({
+  rows,
+  question,
+  onClose,
+  onContinue,
+}: {
+  rows: Matrix["rows"];
+  question: Question;
+  onClose: () => void;
+  onContinue: (claims: PastedClaim[]) => void;
+}) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
+  const enumOptions = question.value_type.startsWith("Enum[")
+    ? question.value_type.slice(5, -1).split(",")
+    : [];
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      const parsed = parseValue(value, question.value_type);
+      onContinue(
+        rows.map((row) => ({
+          entityId: row.entity_id,
+          entityName: row.name,
+          question,
+          rawValue: value,
+          value: parsed,
+          existingState: row.cells[question.name].state,
+        })),
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Invalid value");
+    }
+  };
+  return (
+    <Modal
+      title={`Fill ${rows.length} selected cells`}
+      subtitle={`${String(question.definition.label ?? question.name)} · ${question.value_type}. Evidence is attached in the next step.`}
+      onClose={onClose}
+    >
+      <form onSubmit={submit}>
+        <label>
+          Value for every selected row
+          {question.value_type === "Bool" ? (
+            <select
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              autoFocus
+              required
+            >
+              <option value="">Choose…</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          ) : enumOptions.length ? (
+            <select
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              autoFocus
+              required
+            >
+              <option value="">Choose…</option>
+              {enumOptions.map((option) => (
+                <option key={option}>{option}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type={
+                question.value_type === "Date"
+                  ? "date"
+                  : question.value_type === "Year"
+                    ? "number"
+                    : "text"
+              }
+              min={question.value_type === "Year" ? 1 : undefined}
+              max={question.value_type === "Year" ? 9999 : undefined}
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              autoFocus
+              required
+            />
+          )}
+        </label>
+        <div className="fill-target-list">
+          {rows.slice(0, 6).map((row) => (
+            <span key={row.entity_id}>{row.name}</span>
+          ))}
+          {rows.length > 6 && <span>+{rows.length - 6} more</span>}
+        </div>
+        {error && <div className="form-error">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary">Continue to evidence →</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function PasteDialog({
   claims,
   onClose,
@@ -3576,7 +3701,7 @@ function PasteDialog({
   onSaved: () => Promise<void>;
 }) {
   const [sourceType, setSourceType] = useState("report");
-  const [title, setTitle] = useState("Pasted spreadsheet data");
+  const [title, setTitle] = useState("Spreadsheet batch entry");
   const [url, setUrl] = useState("");
   const [excerpt, setExcerpt] = useState("");
   const [confidence, setConfidence] = useState("high");
@@ -3632,7 +3757,7 @@ function PasteDialog({
   };
   return (
     <Modal
-      title={`Paste ${claims.length} sourced value${claims.length === 1 ? "" : "s"}`}
+      title={`Add ${claims.length} sourced value${claims.length === 1 ? "" : "s"}`}
       subtitle="Review type conversion and attach shared evidence. The entire paste commits atomically."
       onClose={onClose}
     >

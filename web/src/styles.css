@@ -713,6 +713,20 @@ button:hover {
   margin-bottom: 14px;
   padding: 10px 12px;
 }
+.fill-target-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 16px;
+}
+.fill-target-list span {
+  background: #edf4ef;
+  border: 1px solid #c9d8cf;
+  border-radius: 999px;
+  color: #28664e;
+  font-size: 10px;
+  padding: 4px 8px;
+}
 .data-cell.active-cell {
   box-shadow: inset 0 0 0 2px #247354;
   outline: 0;

@@ -76,8 +76,8 @@ tables.
 ## P3 — spreadsheet interaction
 
 - Keyboard navigation, filtering, frozen identity columns, saved views, rectangular TSV copying,
-  and atomic provenance-aware paste are implemented. Bulk fill and undo as compensating events
-  remain.
+  atomic provenance-aware paste, and typed bulk fill are implemented. Undo as compensating events
+  remains.
 - Spreadsheet review surfaces for the implemented claim queue and existing schema proposals.
 - Formula/derivation builder backed by a broader typed EpiQL rather than opaque spreadsheet formulas.
 - Resumable live job event stream (SSE or WebSocket) with polling as fallback.
