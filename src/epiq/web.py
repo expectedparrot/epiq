@@ -2434,7 +2434,9 @@ def create_app(
                 parent.setdefault("messages", []).append(
                     {
                         "at": datetime.now(UTC).isoformat(),
-                        "message": f"Replaced failed child job {job_id} with retry {replacement_id}",
+                        "message": (
+                            f"Replaced failed child job {job_id} with retry {replacement_id}"
+                        ),
                     }
                 )
                 persist_job(parent_id)

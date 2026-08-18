@@ -350,7 +350,8 @@ Treat definition.research_guidance as a binding interpretation rule, including d
 human has identified after reviewing earlier mistakes.
 Return exactly one result for every supplied entity_id. The value_json field must contain the
 conforming value encoded as JSON text. For status not_found, value_json must be the literal JSON
-text "null"; never return an empty string. For any question with cardinality many, return a JSON array
+text "null"; never return an empty string. For any question with cardinality many, return a JSON
+array
 whose elements individually conform to value_type. For example, a many-valued String may return
 ["SaaS","Healthcare"], and a many-valued Enum[a,b,c] may return ["a","c"]. Epiq stores these as
 separate scalar claims in one cell. For a Ref[Type] question with cardinality many, return every

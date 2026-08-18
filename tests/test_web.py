@@ -552,7 +552,8 @@ def test_duplicate_candidate_scan_proposes_qualified_and_descriptive_names(
         "Opera Comique Theatre",
         "Royalty Theatre",
     ]:
-        assert client.post("/api/entities", json={"kind": "Theater", "name": name}).status_code == 201
+        response = client.post("/api/entities", json={"kind": "Theater", "name": name})
+        assert response.status_code == 201
 
     response = client.get("/api/entities/duplicate-candidates", params={"kind": "Theater"})
 
