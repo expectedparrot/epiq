@@ -1123,6 +1123,8 @@ The application currently supports:
   `=C1/(2026-E1)`, filling
   them down by click or drag, and inspecting typed derivation lineage;
 - sorting any column, filtering rows by text or research status, and preserving view preferences;
+- setting non-destructive numeric display policies per field, including thousands separators and
+  decimal-place or significant-digit precision;
 - keyboard navigation with arrows/Tab, Enter or double-click inspection, and clipboard copy;
 - frozen headers and identity columns, draggable column order, resizable columns, and compact or
   wrapped row density; and

@@ -147,13 +147,41 @@ const display = (value: unknown) => {
     return integerFormat.format(value);
   return String(value);
 };
-const cellDisplay = (cell: Cell, valueType?: string) => {
+const formattedValue = (value: unknown, question?: Question | string) => {
+  const valueType =
+    typeof question === "string" ? question : question?.value_type;
+  const definition =
+    typeof question === "string" ? {} : (question?.definition ?? {});
+  const format = (definition.display_format ?? {}) as Record<string, unknown>;
+  const hasDisplayFormat = Boolean(definition.display_format);
+  if (valueType === "Year" && typeof value === "number") return String(value);
+  if (valueType === "Int" && typeof value === "number") {
+    return new Intl.NumberFormat("en-US", {
+      maximumFractionDigits: 0,
+      useGrouping: format.use_grouping !== false,
+    }).format(value);
+  }
+  if (
+    (valueType === "Float" || valueType === "Probability") &&
+    typeof value === "number" &&
+    hasDisplayFormat
+  ) {
+    const digits = Math.max(1, Math.min(12, Number(format.digits ?? 3)));
+    return new Intl.NumberFormat("en-US", {
+      useGrouping: format.use_grouping !== false,
+      ...(format.precision === "decimal"
+        ? { maximumFractionDigits: digits }
+        : { maximumSignificantDigits: digits }),
+    }).format(value);
+  }
+  return display(value);
+};
+const cellDisplay = (cell: Cell, question?: Question | string) => {
   if (cell.references?.length)
     return cell.references.map((item) => item.name).join(", ");
   if (cell.state === "Answered") {
     const value = cell.value ?? cell.values;
-    if (valueType === "Year" && typeof value === "number") return String(value);
-    return display(value);
+    return formattedValue(value, question);
   }
   if (cell.state === "Contested")
     return `${cell.values.length} competing answers`;
@@ -1107,12 +1135,12 @@ export default function App() {
                     selectedRange.lastColumn + 1,
                   )
                   .map((question) =>
-                    cellDisplay(row.cells[question.name], question.value_type),
+                    cellDisplay(row.cells[question.name], question),
                   )
                   .join("\t"),
               )
               .join("\n")
-          : cellDisplay(cell, displayedQuestions[columnIndex]?.value_type);
+          : cellDisplay(cell, displayedQuestions[columnIndex]);
         await navigator.clipboard.writeText(value);
         setClipboardNotice(
           selectedCellCount > 1
@@ -1532,10 +1560,8 @@ export default function App() {
                 <code>{selectedCellCount} cells selected</code>
               )}
               <span className="selection-value">
-                {cellDisplay(
-                  activeSelection.cell,
-                  activeSelection.question.value_type,
-                ) || "No value"}
+                {cellDisplay(activeSelection.cell, activeSelection.question) ||
+                  "No value"}
               </span>
               <button
                 onClick={() =>
@@ -1937,7 +1963,7 @@ export default function App() {
                                   {cell.value} ↗
                                 </a>
                               ) : (
-                                cellDisplay(cell, question.value_type)
+                                cellDisplay(cell, question)
                               )}
                             </div>
                             {provisional.length > 0 && (
@@ -2700,6 +2726,9 @@ function QuestionDialog({
   const [formulaOperation, setFormulaOperation] = useState("sum");
   const [formulaInputs, setFormulaInputs] = useState<string[]>([]);
   const [formulaExpression, setFormulaExpression] = useState("");
+  const [useGrouping, setUseGrouping] = useState(true);
+  const [precision, setPrecision] = useState("significant");
+  const [formatDigits, setFormatDigits] = useState("3");
   const [error, setError] = useState("");
   const freshness =
     volatility === "dynamic" ? 90 : volatility === "slow" ? 365 : null;
@@ -2765,6 +2794,15 @@ function QuestionDialog({
           cardinality: many ? "many" : "one",
           volatility,
           freshness_days: freshness,
+          ...(["Int", "Float", "Probability"].includes(valueType)
+            ? {
+                display_format: {
+                  use_grouping: useGrouping,
+                  precision,
+                  digits: Number(formatDigits),
+                },
+              }
+            : {}),
           ...(formula ? { formula } : {}),
         },
       });
@@ -2844,6 +2882,59 @@ function QuestionDialog({
             </select>
           </label>
         </div>
+        {["Int", "Float", "Probability"].includes(type) && (
+          <fieldset className="display-format-fields">
+            <legend>Display formatting</legend>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={useGrouping}
+                onChange={(event) => setUseGrouping(event.target.checked)}
+              />
+              Use thousands separators
+            </label>
+            {type !== "Int" && (
+              <div className="form-grid">
+                <label>
+                  Precision
+                  <select
+                    value={precision}
+                    onChange={(event) => setPrecision(event.target.value)}
+                  >
+                    <option value="significant">Significant digits</option>
+                    <option value="decimal">Decimal places</option>
+                  </select>
+                </label>
+                <label>
+                  Digits
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={formatDigits}
+                    onChange={(event) => setFormatDigits(event.target.value)}
+                    required
+                  />
+                </label>
+              </div>
+            )}
+            <span className="format-preview">
+              Preview:{" "}
+              {formattedValue(type === "Int" ? 1234567 : 12345.6789, {
+                question_id: "preview",
+                name: "preview",
+                value_type: type,
+                definition: {
+                  display_format: {
+                    use_grouping: useGrouping,
+                    precision,
+                    digits: Number(formatDigits || 3),
+                  },
+                },
+              })}
+            </span>
+          </fieldset>
+        )}
         {type === "Enum" && (
           <label>
             Allowed choices
@@ -3045,6 +3136,17 @@ function EditQuestionDialog({
   const [formulaExpression, setFormulaExpression] = useState(
     String(originalFormula?.expression ?? inferredExpression),
   );
+  const originalDisplayFormat = (question.definition.display_format ??
+    {}) as Record<string, unknown>;
+  const [useGrouping, setUseGrouping] = useState(
+    originalDisplayFormat.use_grouping !== false,
+  );
+  const [precision, setPrecision] = useState(
+    String(originalDisplayFormat.precision ?? "significant"),
+  );
+  const [formatDigits, setFormatDigits] = useState(
+    String(originalDisplayFormat.digits ?? 3),
+  );
   const [reason, setReason] = useState("");
   const [preview, setPreview] = useState<RevisionPreview | null>(null);
   const [error, setError] = useState("");
@@ -3095,6 +3197,13 @@ function EditQuestionDialog({
     freshness_days: freshnessDays ? Number(freshnessDays) : null,
     research_guidance: guidance.trim(),
     formula: revisedFormula,
+    display_format: ["Int", "Float", "Probability"].includes(valueType)
+      ? {
+          use_grouping: useGrouping,
+          precision,
+          digits: Number(formatDigits),
+        }
+      : undefined,
   };
   const body = { value_type: valueType, definition, reason };
   const review = async (event: FormEvent) => {
@@ -3183,6 +3292,59 @@ function EditQuestionDialog({
               required
             />
           </label>
+        )}
+        {["Int", "Float", "Probability"].includes(type) && (
+          <fieldset className="display-format-fields">
+            <legend>Display formatting</legend>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={useGrouping}
+                onChange={(event) => setUseGrouping(event.target.checked)}
+              />
+              Use thousands separators
+            </label>
+            {type !== "Int" && (
+              <div className="form-grid">
+                <label>
+                  Precision
+                  <select
+                    value={precision}
+                    onChange={(event) => setPrecision(event.target.value)}
+                  >
+                    <option value="significant">Significant digits</option>
+                    <option value="decimal">Decimal places</option>
+                  </select>
+                </label>
+                <label>
+                  Digits
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={formatDigits}
+                    onChange={(event) => setFormatDigits(event.target.value)}
+                    required
+                  />
+                </label>
+              </div>
+            )}
+            <span className="format-preview">
+              Preview:{" "}
+              {formattedValue(type === "Int" ? 1234567 : 12345.6789, {
+                question_id: "preview",
+                name: "preview",
+                value_type: type,
+                definition: {
+                  display_format: {
+                    use_grouping: useGrouping,
+                    precision,
+                    digits: Number(formatDigits || 3),
+                  },
+                },
+              })}
+            </span>
+          </fieldset>
         )}
         <div className="form-grid">
           <label>
@@ -5688,11 +5850,8 @@ function CellDrawer({
                     (reference) => reference.entity_id === claim.value,
                   )?.name ?? claim.value}
                 </span>
-              ) : question.value_type === "Year" &&
-                typeof claim.value === "number" ? (
-                String(claim.value)
               ) : (
-                display(claim.value)
+                formattedValue(claim.value, question)
               )}
             </div>
             {claim.as_of && (
