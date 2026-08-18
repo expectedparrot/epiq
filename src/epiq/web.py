@@ -2010,10 +2010,91 @@ def create_app(
                 "agent:workspace",
             )
 
-            question_types = {
-                (str(item["kind"]), str(question["name"])): str(question["value_type"])
+            projections = {
+                str(item["kind"]): project.matrix(str(item["kind"]))
                 for item in project.overview()["entity_kinds"]
-                for question in project.matrix(str(item["kind"]))["questions"]
+            }
+            normalized_research = []
+            skipped_research = 0
+            for request in research:
+                requested_kind = str(request["kind"]).strip()
+                requested_names = {
+                    str(name).strip().casefold()
+                    for name in request["entity_names"]
+                    if str(name).strip()
+                }
+                kind = requested_kind
+                if kind not in projections:
+                    candidate_kinds = [
+                        candidate_kind
+                        for candidate_kind, candidate_projection in projections.items()
+                        if requested_names
+                        and requested_names
+                        <= {str(row["name"]).casefold() for row in candidate_projection["rows"]}
+                    ]
+                    if len(candidate_kinds) != 1:
+                        skipped_research += 1
+                        progress(
+                            f"Could not resolve research table {requested_kind!r} "
+                            "from its requested rows"
+                        )
+                        continue
+                    kind = candidate_kinds[0]
+                    progress(f"Resolved research table {requested_kind!r} to {kind}")
+                projection = projections[kind]
+                available_questions = {
+                    str(question["name"]): question for question in projection["questions"]
+                }
+                requested_question = str(request["question"]).strip()
+                selected_questions = []
+                if requested_question in available_questions:
+                    selected_questions = [requested_question]
+                else:
+                    task_text = f"{requested_question}\n{request['instructions']}"
+                    selected_questions = [
+                        name
+                        for name in available_questions
+                        if re.search(
+                            rf"(?<![a-zA-Z0-9_]){re.escape(name)}(?![a-zA-Z0-9_])",
+                            task_text,
+                        )
+                    ]
+                if not selected_questions:
+                    skipped_research += 1
+                    progress(
+                        f"Could not resolve research field {requested_kind}.{requested_question}"
+                    )
+                    continue
+                if selected_questions != [requested_question]:
+                    progress(
+                        f"Expanded research task for {kind} into {len(selected_questions)} fields"
+                    )
+                normalized_research.extend(
+                    {
+                        **request,
+                        "kind": kind,
+                        "question": question_name,
+                        "instructions": (
+                            f"{requested_question}\n\n{request['instructions']}"
+                        ).strip(),
+                    }
+                    for question_name in selected_questions
+                )
+            if research and not normalized_research:
+                raise EpiqError(
+                    "invalid_workspace_research_plan",
+                    "The workspace agent proposed research but none of its table or field "
+                    "references could be resolved",
+                    "Retry the direction; research.kind must name a table and "
+                    "research.question must name one field.",
+                )
+            if skipped_research:
+                progress(f"Skipped {skipped_research} unresolvable research tasks")
+            research = normalized_research
+            question_types = {
+                (kind, str(question["name"])): str(question["value_type"])
+                for kind, projection in projections.items()
+                for question in projection["questions"]
             }
             research.sort(
                 key=lambda item: (

@@ -1745,6 +1745,71 @@ def test_workspace_agent_applies_schema_rows_and_launches_cell_research(
     assert "migrate" not in available
 
 
+def test_workspace_agent_repairs_misplaced_research_table_and_field_names(
+    tmp_path: Path,
+) -> None:
+    researched = []
+
+    def planner(_goal, _context, progress=None):
+        return {
+            "summary": "Verify the seeded action row.",
+            "entity_kinds": [],
+            "entities": [],
+            "questions": [],
+            "research": [
+                {
+                    "kind": "primary_source_verification",
+                    "question": "Find an official source and verify action_date and title.",
+                    "entity_names": ["Prediction Markets Act introduction"],
+                    "instructions": "Target existing Actions questions: action_date, title.",
+                }
+            ],
+        }
+
+    def researcher(_kind, question, entities, progress=None):
+        researched.append((question["name"], entities[0]["name"]))
+        return [
+            {
+                "entity_id": entities[0]["entity_id"],
+                "status": "not_found",
+                "notes": "Test runner did not search.",
+            }
+        ]
+
+    client = TestClient(
+        create_app(
+            tmp_path / "repair-workspace.sqlite",
+            tmp_path / "missing",
+            researcher,
+            workspace_agent_runner=planner,
+        )
+    )
+    client.post("/api/project", json={"name": "Prediction markets"})
+    client.post(
+        "/api/entities",
+        json={"kind": "Actions", "name": "Prediction Markets Act introduction"},
+    )
+    for name, value_type in (("action_date", "Date"), ("title", "String")):
+        client.post(
+            "/api/questions",
+            json={"name": name, "subject_kind": "Actions", "value_type": value_type},
+        )
+
+    launched = client.post(
+        "/api/workspace-agent/jobs", json={"message": "Verify the existing action"}
+    ).json()
+    parent = wait_for_job(client, launched["job_id"])
+    assert parent["status"] == "completed"
+    assert len(parent["child_job_ids"]) == 2
+    for child_job_id in parent["child_job_ids"]:
+        assert wait_for_job(client, child_job_id)["status"] == "completed"
+    assert set(researched) == {
+        ("action_date", "Prediction Markets Act introduction"),
+        ("title", "Prediction Markets Act introduction"),
+    }
+    assert any("Resolved research table" in message["message"] for message in parent["messages"])
+
+
 def test_research_splits_many_valued_results_into_typed_scalar_claims(
     tmp_path: Path,
 ) -> None:

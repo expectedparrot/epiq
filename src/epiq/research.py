@@ -216,10 +216,19 @@ WORKSPACE_PLAN_SCHEMA = {
                 "additionalProperties": False,
                 "required": ["kind", "question", "entity_names", "instructions"],
                 "properties": {
-                    "kind": {"type": "string"},
-                    "question": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "description": "Exact existing or proposed entity-kind identifier.",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "Exact existing or proposed question name; never prose.",
+                    },
                     "entity_names": {"type": "array", "items": {"type": "string"}},
-                    "instructions": {"type": "string"},
+                    "instructions": {
+                        "type": "string",
+                        "description": "Natural-language source and interpretation instructions.",
+                    },
                 },
             },
         },
@@ -449,6 +458,11 @@ Float, Year, Date, URL, Probability, Enum[a,b], Quantity[USD], and Ref[Kind]. Pu
 cardinality, volatility, freshness_days when appropriate, and precise research_guidance in each
 definition. Research requests must refer to a proposed or existing question and row. For a
 relationship field, research can return provisional related rows for human review.
+
+For every research request, kind MUST be the exact entity-kind identifier from the workspace and
+question MUST be one exact snake_case field name on that table. Put search prose only in
+instructions. To verify several fields, emit one research request per field; never invent task
+categories such as "primary_source_verification" as a kind or put a search query in question.
 
 The summary should tell the user what you chose to create and why. Do not imply that requested
 research is already complete.
