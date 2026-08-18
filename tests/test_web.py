@@ -540,6 +540,31 @@ def test_web_api_creates_tables_and_many_relationships(tmp_path: Path) -> None:
     assert back_references["edges"][0]["question"] == "authors"
 
 
+def test_duplicate_candidate_scan_proposes_qualified_and_descriptive_names(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(tmp_path / "duplicates.sqlite", tmp_path / "missing"))
+    client.post("/api/project", json={"name": "Duplicate review"})
+    for name in [
+        "Gaiety Theatre",
+        "Gaiety Theatre (London, England)",
+        "Opera Comique",
+        "Opera Comique Theatre",
+        "Royalty Theatre",
+    ]:
+        assert client.post("/api/entities", json={"kind": "Theater", "name": name}).status_code == 201
+
+    response = client.get("/api/entities/duplicate-candidates", params={"kind": "Theater"})
+
+    assert response.status_code == 200
+    candidates = response.json()["candidates"]
+    pairs = {(item["duplicate"]["name"], item["survivor"]["name"]) for item in candidates}
+    assert ("Gaiety Theatre", "Gaiety Theatre (London, England)") in pairs
+    assert ("Opera Comique", "Opera Comique Theatre") in pairs
+    assert all("Royalty Theatre" not in pair for pair in pairs)
+    assert all(item["score"] >= 0.92 for item in candidates)
+
+
 def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: Path) -> None:
     def researcher(_kind, question, entities, progress=None):
         assert question["value_type"] == "Ref[Author]"

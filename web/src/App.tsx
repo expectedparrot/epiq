@@ -120,6 +120,7 @@ type Dialog =
   | "editQuestion"
   | "retireQuestion"
   | "mergeEntity"
+  | "findDuplicates"
   | "researchChallenge"
   | "paste"
   | "fill"
@@ -1740,6 +1741,11 @@ export default function App() {
                     <span>✦ Research whole table</span>
                     <small>Fill every unanswered research cell</small>
                   </button>
+                  <b>Rows</b>
+                  <button onClick={() => setDialog("findDuplicates")}>
+                    <span>Find and merge duplicates</span>
+                    <small>Scan names and answers, then review every proposed merge</small>
+                  </button>
                   {activeResearchJobs.length > 0 && (
                     <button
                       className="destructive-menu-action"
@@ -2920,6 +2926,16 @@ export default function App() {
             setEntitySelection(null);
             setSelection(null);
             setActiveGridCell(null);
+            await loadOverview();
+            await loadMatrix();
+          }}
+        />
+      )}
+      {dialog === "findDuplicates" && (
+        <DuplicateReviewDialog
+          kind={kind}
+          onClose={() => setDialog(null)}
+          onChanged={async () => {
             await loadOverview();
             await loadMatrix();
           }}
@@ -6714,6 +6730,107 @@ function MergeEntityDialog({
           </button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+type DuplicateCandidate = {
+  candidate_id: string;
+  score: number;
+  duplicate: { entity_id: string; name: string; investigated_fields: number };
+  survivor: { entity_id: string; name: string; investigated_fields: number };
+  reasons: string[];
+  conflicting_fields: number;
+};
+
+function DuplicateReviewDialog({
+  kind,
+  onClose,
+  onChanged,
+}: {
+  kind: string;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [candidates, setCandidates] = useState<DuplicateCandidate[] | null>(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<{ candidates: DuplicateCandidate[] }>(
+      `/api/entities/duplicate-candidates?kind=${encodeURIComponent(kind)}`,
+    )
+      .then((result) => setCandidates(result.candidates))
+      .catch((caught) =>
+        setError(caught instanceof Error ? caught.message : "Could not scan for duplicates"),
+      );
+  }, [kind]);
+  const dismiss = (candidateId: string) =>
+    setCandidates((current) => current?.filter((item) => item.candidate_id !== candidateId) ?? []);
+  const swap = (candidateId: string) =>
+    setCandidates((current) =>
+      current?.map((item) =>
+        item.candidate_id === candidateId
+          ? { ...item, duplicate: item.survivor, survivor: item.duplicate }
+          : item,
+      ) ?? [],
+    );
+  const merge = async (candidate: DuplicateCandidate) => {
+    setBusy(candidate.candidate_id);
+    setError("");
+    try {
+      await post(
+        `/api/entities/${encodeURIComponent(candidate.duplicate.entity_id)}/merge`,
+        {
+          destination: candidate.survivor.entity_id,
+          reason: `Human-reviewed duplicate: “${candidate.duplicate.name}” and “${candidate.survivor.name}” represent the same ${kind} entity.`,
+        },
+      );
+      setCandidates((current) =>
+        current?.filter(
+          (item) =>
+            item.candidate_id !== candidate.candidate_id &&
+            item.duplicate.entity_id !== candidate.duplicate.entity_id &&
+            item.survivor.entity_id !== candidate.duplicate.entity_id,
+        ) ?? [],
+      );
+      await onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not merge duplicate");
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <Modal
+      title={`Find duplicate ${kind} rows`}
+      subtitle="Epiq compares row names and investigated values. Nothing is merged without your confirmation."
+      onClose={onClose}
+    >
+      {!candidates && !error && <div className="center"><span className="spinner" />Scanning rows…</div>}
+      {error && <div className="form-error">{error}</div>}
+      {candidates?.length === 0 && (
+        <div className="duplicate-empty"><b>No more likely duplicates</b><p>The automatic scan found no additional high-similarity pairs.</p></div>
+      )}
+      <div className="duplicate-review-list">
+        {candidates?.map((candidate) => (
+          <article key={candidate.candidate_id} className="duplicate-review-card">
+            <div className="duplicate-score">{Math.round(candidate.score * 100)}% match</div>
+            <div className="duplicate-pair">
+              <div><small>Merge duplicate</small><b>{candidate.duplicate.name}</b><span>{candidate.duplicate.investigated_fields} investigated fields</span></div>
+              <strong>→</strong>
+              <div><small>Into survivor</small><b>{candidate.survivor.name}</b><span>{candidate.survivor.investigated_fields} investigated fields</span></div>
+            </div>
+            <ul>{candidate.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            {candidate.conflicting_fields > 0 && <p className="duplicate-conflict">⚠ {candidate.conflicting_fields} field{candidate.conflicting_fields === 1 ? "" : "s"} conflict and will be retained for review.</p>}
+            <div className="duplicate-review-actions">
+              <button onClick={() => dismiss(candidate.candidate_id)}>Not duplicates</button>
+              <button onClick={() => swap(candidate.candidate_id)}>Swap survivor</button>
+              <button className="primary" disabled={busy === candidate.candidate_id} onClick={() => void merge(candidate)}>{busy === candidate.candidate_id ? "Merging…" : "Confirm merge"}</button>
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="modal-actions"><button className="primary" onClick={onClose}>Done</button></div>
     </Modal>
   );
 }

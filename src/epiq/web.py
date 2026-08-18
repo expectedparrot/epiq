@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -1055,6 +1056,87 @@ def create_app(
     @app.post("/api/entities/{entity_id}/aliases", status_code=201)
     def add_entity_alias(entity_id: str, body: EntityAliasCreate) -> dict[str, str]:
         return {"alias_id": store().add_entity_alias(entity_id, body.alias, body.actor)}
+
+    @app.get("/api/entities/duplicate-candidates")
+    def duplicate_entity_candidates(kind: str = Query(min_length=1)) -> dict[str, Any]:
+        projection = store().matrix(kind)
+        rows = projection["rows"]
+
+        def name_parts(name: str) -> tuple[str, str, list[str]]:
+            normalized = re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
+            base = re.split(r"\s*[,(]", name, maxsplit=1)[0]
+            base = re.sub(r"[^a-z0-9]+", " ", base.casefold()).strip()
+            tokens = base.split()
+            return normalized, base, tokens
+
+        def investigated(row: dict[str, Any]) -> int:
+            return sum(cell.get("state") != "Unasked" for cell in row["cells"].values())
+
+        candidates: list[dict[str, Any]] = []
+        for left_index, left in enumerate(rows):
+            left_full, left_base, left_tokens = name_parts(str(left["name"]))
+            for right in rows[left_index + 1 :]:
+                right_full, right_base, right_tokens = name_parts(str(right["name"]))
+                reasons: list[str] = []
+                if left_base == right_base:
+                    score = 0.99
+                    reasons.append("Names differ only by a location or qualifier")
+                else:
+                    ratio = SequenceMatcher(None, left_base, right_base).ratio()
+                    shorter, longer = sorted((left_tokens, right_tokens), key=len)
+                    containment = bool(shorter) and longer[: len(shorter)] == shorter
+                    if containment and len(longer) - len(shorter) <= 1:
+                        score = max(0.92, ratio)
+                        reasons.append("One name adds a single descriptive word")
+                    elif ratio >= 0.86:
+                        score = ratio
+                        reasons.append("Names are strongly similar")
+                    else:
+                        continue
+                shared = 0
+                conflicts = 0
+                for question in projection["questions"]:
+                    left_cell = left["cells"][question["name"]]
+                    right_cell = right["cells"][question["name"]]
+                    if left_cell.get("state") == "Unasked" or right_cell.get("state") == "Unasked":
+                        continue
+                    left_values = left_cell.get("values") or [left_cell.get("value")]
+                    right_values = right_cell.get("values") or [right_cell.get("value")]
+                    if json.dumps(left_values, sort_keys=True) == json.dumps(
+                        right_values, sort_keys=True
+                    ):
+                        shared += 1
+                    else:
+                        conflicts += 1
+                if shared:
+                    reasons.append(
+                        f"{shared} investigated field{'s' if shared != 1 else ''} agree"
+                    )
+                    score = min(1.0, score + min(shared, 3) * 0.01)
+                left_specificity = len(left_full) + investigated(left) * 2
+                right_specificity = len(right_full) + investigated(right) * 2
+                survivor = right if right_specificity > left_specificity else left
+                duplicate = left if survivor is right else right
+                candidates.append(
+                    {
+                        "candidate_id": f"dup_{left['entity_id']}_{right['entity_id']}",
+                        "score": round(score, 3),
+                        "duplicate": {
+                            "entity_id": duplicate["entity_id"],
+                            "name": duplicate["name"],
+                            "investigated_fields": investigated(duplicate),
+                        },
+                        "survivor": {
+                            "entity_id": survivor["entity_id"],
+                            "name": survivor["name"],
+                            "investigated_fields": investigated(survivor),
+                        },
+                        "reasons": reasons,
+                        "conflicting_fields": conflicts,
+                    }
+                )
+        candidates.sort(key=lambda item: (-item["score"], item["survivor"]["name"]))
+        return {"kind": kind, "candidates": candidates[:100]}
 
     @app.post("/api/entities/{entity_id}/merge")
     def merge_entity(entity_id: str, body: EntityMergeCreate) -> dict[str, str]:
