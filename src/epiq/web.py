@@ -2338,7 +2338,25 @@ def create_app(
                 entity_ids=job.get("requested_entity_ids"),
                 scope=str(job.get("scope") or "column"),
             )
-        return launch_research(request)
+        replacement = launch_research(request)
+        replacement_id = str(replacement["job_id"])
+        with app.state.research_lock:
+            for parent_id, parent in app.state.research_jobs.items():
+                child_ids = parent.get("child_job_ids")
+                if not isinstance(child_ids, list) or job_id not in child_ids:
+                    continue
+                parent["child_job_ids"] = [
+                    replacement_id if child_id == job_id else child_id
+                    for child_id in child_ids
+                ]
+                parent.setdefault("messages", []).append(
+                    {
+                        "at": datetime.now(UTC).isoformat(),
+                        "message": f"Replaced failed child job {job_id} with retry {replacement_id}",
+                    }
+                )
+                persist_job(parent_id)
+        return replacement
 
     def scoped_relationship_suggestions(
         body: RelationshipReviewScope,
