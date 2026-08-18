@@ -2918,6 +2918,7 @@ function ProjectList({ onReady }: { onReady: () => Promise<void> }) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [importing, setImporting] = useState(false);
   useEffect(() => {
     void api<ProjectInfo[]>("/api/projects")
       .then(setProjects)
@@ -2946,6 +2947,28 @@ function ProjectList({ onReady }: { onReady: () => Promise<void> }) {
       setError(
         caught instanceof Error ? caught.message : "Could not open project",
       );
+    }
+  };
+  const importProject = async (file: File | undefined) => {
+    if (!file) return;
+    setImporting(true);
+    setError("");
+    try {
+      await api<ProjectInfo>(
+        `/api/projects/import?filename=${encodeURIComponent(file.name)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/vnd.sqlite3" },
+          body: file,
+        },
+      );
+      await onReady();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not import project",
+      );
+    } finally {
+      setImporting(false);
     }
   };
   return (
@@ -2981,6 +3004,27 @@ function ProjectList({ onReady }: { onReady: () => Promise<void> }) {
         </label>
         <button className="primary">Create project</button>
       </form>
+      <div className="import-project">
+        <div>
+          <b>Import an Epiq project</b>
+          <small>
+            Upload a portable SQLite database. Epiq opens a managed copy; your
+            original file is unchanged.
+          </small>
+        </div>
+        <label className={importing ? "button-like disabled" : "button-like"}>
+          {importing ? "Importing…" : "Choose SQLite file"}
+          <input
+            type="file"
+            accept=".sqlite,.sqlite3,.db,application/vnd.sqlite3"
+            disabled={importing}
+            onChange={(event) => {
+              void importProject(event.target.files?.[0]);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+      </div>
       {error && <div className="form-error">{error}</div>}
     </div>
   );

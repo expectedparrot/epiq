@@ -3073,6 +3073,45 @@ button:hover {
 .new-project-form button {
   height: 38px;
 }
+.import-project {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.import-project > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.import-project small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+.button-like {
+  flex: 0 0 auto;
+  border: 1px solid var(--line-dark);
+  border-radius: 7px;
+  padding: 10px 14px;
+  color: var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+  font-weight: 650;
+}
+.button-like:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+.button-like.disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.button-like input {
+  display: none;
+}
 .project-browser-card {
   max-width: 680px;
 }

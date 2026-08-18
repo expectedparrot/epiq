@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -31,7 +32,7 @@ from .research import (
     OpenAIResearchRunner,
     ResearchRunner,
 )
-from .store import Store
+from .store import LATEST_SCHEMA_VERSION, Store
 from .xlsx import write_xlsx
 
 
@@ -524,6 +525,123 @@ def create_app(
         with app.state.research_lock:
             load_persisted_jobs()
         return next(item for item in available_projects() if item["active"])
+
+    @app.post("/api/projects/import", status_code=201)
+    async def import_project(
+        request: Request, filename: str = Query(min_length=1)
+    ) -> dict[str, Any]:
+        """Import an uploaded Epiq SQLite database into managed project storage."""
+        if active_jobs():
+            raise EpiqError("research_active", "Wait for active research before switching projects")
+        source_name = Path(filename).name
+        if Path(source_name).suffix.lower() not in {".sqlite", ".sqlite3", ".db"}:
+            raise EpiqError(
+                "invalid_project_file",
+                "Select a SQLite database ending in .sqlite, .sqlite3, or .db",
+            )
+        maximum_bytes = int(os.environ.get("EPIQ_IMPORT_MAX_BYTES", str(100 * 1024 * 1024)))
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                declared_size = int(content_length)
+            except ValueError as error:
+                raise EpiqError("invalid_request", "Content-Length must be an integer") from error
+            if declared_size > maximum_bytes:
+                raise EpiqError(
+                    "project_too_large",
+                    f"Project exceeds the {maximum_bytes // (1024 * 1024)} MB import limit",
+                )
+        app.state.projects_path.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(
+            prefix=".epiq-import-",
+            suffix=".sqlite",
+            dir=app.state.projects_path,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            size = 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > maximum_bytes:
+                    temporary_path.unlink(missing_ok=True)
+                    raise EpiqError(
+                        "project_too_large",
+                        f"Project exceeds the {maximum_bytes // (1024 * 1024)} MB import limit",
+                    )
+                temporary.write(chunk)
+        try:
+            with temporary_path.open("rb") as uploaded:
+                signature = uploaded.read(16)
+            if size < 100 or signature != b"SQLite format 3\x00":
+                raise EpiqError(
+                    "invalid_project_file", "The selected file is not a SQLite database"
+                )
+            try:
+                connection = sqlite3.connect(f"file:{temporary_path}?mode=ro", uri=True)
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA query_only = ON")
+                integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
+                tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                if integrity != "ok":
+                    raise EpiqError(
+                        "invalid_project_file", f"SQLite integrity check failed: {integrity}"
+                    )
+                required = {"meta", "events", "entities", "questions", "claims"}
+                if not required.issubset(tables):
+                    raise EpiqError(
+                        "not_epiq_project",
+                        "The SQLite database is valid but is not an initialized Epiq project",
+                    )
+                metadata = {
+                    str(row["key"]): str(row["value"])
+                    for row in connection.execute("SELECT key, value FROM meta")
+                }
+                if not {"project_id", "name", "schema_version"}.issubset(metadata):
+                    raise EpiqError(
+                        "not_epiq_project", "The database is missing Epiq project metadata"
+                    )
+                try:
+                    schema_version = int(metadata["schema_version"])
+                except ValueError as error:
+                    raise EpiqError(
+                        "invalid_project_file", "The Epiq schema version is invalid"
+                    ) from error
+                if schema_version > LATEST_SCHEMA_VERSION:
+                    raise EpiqError(
+                        "schema_too_new",
+                        f"Database schema v{schema_version} is newer than supported "
+                        f"v{LATEST_SCHEMA_VERSION}",
+                        "Upgrade Epiq before importing this project.",
+                    )
+            except sqlite3.DatabaseError as error:
+                raise EpiqError(
+                    "invalid_project_file", f"Could not read the SQLite database: {error}"
+                ) from error
+            finally:
+                if "connection" in locals():
+                    connection.close()
+
+            slug = re.sub(r"[^a-z0-9]+", "-", metadata["name"].lower()).strip("-")
+            slug = slug or re.sub(r"[^a-z0-9]+", "-", Path(source_name).stem.lower()).strip("-")
+            path = app.state.projects_path / f"{slug or 'imported-project'}.sqlite"
+            suffix = 2
+            while path.exists():
+                path = app.state.projects_path / f"{slug or 'imported-project'}-{suffix}.sqlite"
+                suffix += 1
+            os.replace(temporary_path, path)
+            app.state.database = path.resolve()
+            # Opening the managed copy applies any supported forward-only schema migrations.
+            Store(app.state.database).overview()
+            with app.state.research_lock:
+                load_persisted_jobs()
+            return next(item for item in available_projects() if item["active"])
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     @app.post("/api/projects/open")
     def open_project(body: ProjectOpen) -> dict[str, Any]:

@@ -1095,6 +1095,10 @@ second source of truth.
 The application currently supports:
 
 - creating a workspace;
+- importing an existing `.sqlite`, `.sqlite3`, or `.db` Epiq project through the browser into
+  managed project storage, with file-signature, SQLite integrity, Epiq metadata, schema-version,
+  and upload-size validation;
+- downloading a transactionally consistent SQLite snapshot of the active project;
 - adding multiple entity tables from the sidebar and switching between them;
 - adding entity rows and typed question columns on the fly;
 - defining one-to-one or one-to-many relationship fields that reference rows in another table;
@@ -1129,6 +1133,11 @@ The application currently supports:
 - frozen headers and identity columns, draggable column order, resizable columns, and compact or
   wrapped row density; and
 - exporting the visible research domain to Excel or downloading a consistent project backup.
+
+Import deliberately creates and opens a managed copy. A hosted web server cannot edit a file in a
+user's local filesystem after the browser uploads it. The local file therefore remains unchanged;
+download a new SQLite snapshot to carry the hosted project elsewhere. This is the same project-file
+model used locally and in a future hosted deployment.
 
 Single-click selects a cell without changing the sheet layout. Use the arrow keys or Tab to move,
 Enter (or double-click) to open its evidence inspector, Escape to clear selection, and

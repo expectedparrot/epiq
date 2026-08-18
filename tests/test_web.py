@@ -1,4 +1,5 @@
 import importlib.util
+import sqlite3
 from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
@@ -1036,6 +1037,73 @@ def test_project_lifecycle_and_excel_download(tmp_path: Path) -> None:
     opened = client.post("/api/projects/open", json={"project_id": original_id})
     assert opened.status_code == 200
     assert client.get("/api/project").json()["project"]["name"] == "Current research"
+
+
+def test_project_sqlite_import_creates_and_opens_managed_copy(tmp_path: Path) -> None:
+    source = tmp_path / "paul-graham.sqlite"
+    source_store = Store(source)
+    source_store.initialize("Paul Graham and his writing")
+    source_store.add_entity("Person", "Paul Graham", {}, "test")
+    portable = tmp_path / "paul-graham-portable.sqlite"
+    source_store.backup(portable)
+    original_bytes = portable.read_bytes()
+
+    projects = tmp_path / "projects"
+    client = TestClient(
+        create_app(tmp_path / "current.sqlite", tmp_path / "missing", projects_directory=projects)
+    )
+    response = client.post(
+        "/api/projects/import?filename=paul-graham.sqlite",
+        content=original_bytes,
+        headers={"Content-Type": "application/vnd.sqlite3"},
+    )
+
+    assert response.status_code == 201
+    imported = response.json()
+    assert imported["name"] == "Paul Graham and his writing"
+    assert imported["active"] is True
+    assert Path(imported["path"]).parent == projects
+    assert Path(imported["path"]) != portable
+    assert portable.read_bytes() == original_bytes
+    assert client.get("/api/project").json()["entity_kinds"] == [
+        {"kind": "Person", "entities": 1, "questions": 0}
+    ]
+    downloaded = client.get("/api/export/project.sqlite")
+    assert downloaded.status_code == 200
+    restored = tmp_path / "downloaded.sqlite"
+    restored.write_bytes(downloaded.content)
+    assert Store(restored).overview()["project"]["name"] == "Paul Graham and his writing"
+
+
+def test_project_sqlite_import_rejects_invalid_and_non_epiq_files(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(
+            tmp_path / "current.sqlite",
+            tmp_path / "missing",
+            projects_directory=tmp_path / "projects",
+        )
+    )
+    invalid = client.post(
+        "/api/projects/import?filename=notes.sqlite",
+        content=b"this is not sqlite",
+        headers={"Content-Type": "application/vnd.sqlite3"},
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["error"]["code"] == "invalid_project_file"
+
+    ordinary = tmp_path / "ordinary.sqlite"
+    connection = sqlite3.connect(ordinary)
+    connection.execute("CREATE TABLE notes (body TEXT)")
+    connection.commit()
+    connection.close()
+    not_epiq = client.post(
+        "/api/projects/import?filename=ordinary.sqlite",
+        content=ordinary.read_bytes(),
+        headers={"Content-Type": "application/vnd.sqlite3"},
+    )
+    assert not_epiq.status_code == 400
+    assert not_epiq.json()["error"]["code"] == "not_epiq_project"
+    assert list((tmp_path / "projects").glob("*.sqlite")) == []
 
 
 def test_web_api_supports_the_spreadsheet_claim_lifecycle(tmp_path: Path) -> None:
