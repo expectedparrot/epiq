@@ -1491,7 +1491,11 @@ def create_app(
                             "name": row["name"],
                             "aliases": row.get("aliases", []),
                             "attributes": row.get("attributes", {}),
-                            "existing_value": cell.get("value", cell.get("values")),
+                            "existing_value": (
+                                cell.get("values")
+                                if question["definition"].get("cardinality", "one") == "many"
+                                else cell.get("value")
+                            ),
                             "existing_valid_from": first.get("as_of"),
                             "claim_id": first["claim_id"],
                             "primary_evidence_id": first["evidence_id"],
@@ -1645,6 +1649,20 @@ def create_app(
                     if finding.get("notes"):
                         result_message += f": {str(finding['notes']).strip()[:500]}"
                 elif finding["status"] == "answered":
+                    value = finding["value"]
+                    cardinality = question["definition"].get("cardinality", "one")
+                    values = value if cardinality == "many" and isinstance(value, list) else [value]
+                    if not values:
+                        with app.state.research_lock:
+                            jobs[job_id]["no_result"] += 1
+                            jobs[job_id]["completed"] += 1
+                            persist_job(job_id)
+                        progress(
+                            f"No supported values found for {targets_by_id[entity_id]['name']}"
+                        )
+                        continue
+                    for candidate in values:
+                        Store._check_value_type(value_type, candidate)
                     source_type = str(finding.get("source_type") or "web")
                     source_url = finding.get("source_url") or f"urn:epiq:{source_type}"
                     if body.mode == "add_evidence":
@@ -1673,7 +1691,6 @@ def create_app(
                         source_type,
                     )
                     evidence: str | list[str] = evidence_id
-                    value = finding["value"]
                     if body.mode == "add_evidence":
                         target = targets_by_id[entity_id]
                         if value == target["existing_value"]:
@@ -1691,22 +1708,23 @@ def create_app(
                         )
                         or datetime.now(UTC).date().isoformat()
                     )
-                    project.assert_claim(
-                        entity_id,
-                        question["question_id"],
-                        value,
-                        valid_from,
-                        evidence,
-                        "agent:codex",
-                        confidence=str(finding["confidence"]),
-                        temporal_basis=(
-                            "observed"
-                            if finding.get("observed_as_of")
-                            else "source"
-                            if finding.get("source_published_at")
-                            else "unknown"
-                        ),
-                    )
+                    for candidate in values:
+                        project.assert_claim(
+                            entity_id,
+                            question["question_id"],
+                            candidate,
+                            valid_from,
+                            evidence,
+                            "agent:codex",
+                            confidence=str(finding["confidence"]),
+                            temporal_basis=(
+                                "observed"
+                                if finding.get("observed_as_of")
+                                else "source"
+                                if finding.get("source_published_at")
+                                else "unknown"
+                            ),
+                        )
                     with app.state.research_lock:
                         jobs[job_id]["written"] += 1
                 with app.state.research_lock:
@@ -1857,11 +1875,6 @@ def create_app(
                     "workspace_plan_too_large",
                     "Workspace agent exceeded the bounded schema plan",
                 )
-            if len(research) > 40:
-                raise EpiqError(
-                    "workspace_plan_too_large",
-                    "Workspace agent requested more than 40 research groups",
-                )
             if jobs[job_id].get("cancel_requested"):
                 raise EpiqError("workspace_cancelled", "Workspace agent was cancelled")
 
@@ -1922,6 +1935,18 @@ def create_app(
                 "agent:workspace",
             )
 
+            question_types = {
+                (str(item["kind"]), str(question["name"])): str(question["value_type"])
+                for item in project.overview()["entity_kinds"]
+                for question in project.matrix(str(item["kind"]))["questions"]
+            }
+            research.sort(
+                key=lambda item: (
+                    not question_types.get(
+                        (str(item["kind"]), str(item["question"])), ""
+                    ).startswith("Ref["),
+                )
+            )
             child_job_ids = []
             requested_cells = 0
             for request in research:
@@ -1945,8 +1970,6 @@ def create_app(
                     if not requested_names or str(row["name"]).casefold() in requested_names
                 ]
                 for row in targets:
-                    if requested_cells >= 40:
-                        break
                     child = launch_research(
                         ResearchCreate(
                             entity_kind=kind,

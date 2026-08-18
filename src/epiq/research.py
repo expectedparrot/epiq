@@ -340,10 +340,13 @@ existing source. If no independent source can be found, return not_found rather 
 Treat definition.research_guidance as a binding interpretation rule, including distinctions the
 human has identified after reviewing earlier mistakes.
 Return exactly one result for every supplied entity_id. The value_json field must contain the
-conforming value encoded as JSON text. For a Ref[Type] question with cardinality many, return a
-JSON array containing every directly supported related entity name (for example,
-["Ada Lovelace","Grace Hopper"]); Epiq will resolve existing entities and stage missing ones for
-human approval. For answered results, cite a direct source URL, title, and a
+conforming value encoded as JSON text. For any question with cardinality many, return a JSON array
+whose elements individually conform to value_type. For example, a many-valued String may return
+["SaaS","Healthcare"], and a many-valued Enum[a,b,c] may return ["a","c"]. Epiq stores these as
+separate scalar claims in one cell. For a Ref[Type] question with cardinality many, return every
+directly supported related entity name (for example, ["Ada Lovelace","Grace Hopper"]); Epiq will
+resolve existing entities and stage missing ones for human approval. For answered results, cite a
+direct source URL, title, and a
 short excerpt that directly supports the value. Do not treat absence of evidence as a negative
 answer. Provide the source publication date and the date the claim was observed to hold when they
 can be established; do not substitute today's date for an unknown historical date. Use not_found
@@ -435,8 +438,9 @@ the related tables genuinely needed by the user's goal. Use Ref[Kind] questions 
 You may propose only additive operations: entity kinds, entities, questions, and research requests.
 Do not rename, delete, retire, supersede, or invent claims. Reuse existing schema and rows. Initial
 entities must be real, identifiable examples supported by web research; do not create placeholder
-rows. Keep the plan bounded to at most 6 entity kinds, 15 entities, 24 questions, and 40 requested
-research cells. Question names must be snake_case. Use Epiq value types such as String, Bool, Int,
+rows. Keep the plan bounded to at most 6 entity kinds, 15 entities, and 24 questions. Research only
+the cells needed to make the initial workspace useful. Question names must be snake_case. Use Epiq
+value types such as String, Bool, Int,
 Float, Year, Date, URL, Probability, Enum[a,b], Quantity[USD], and Ref[Kind]. Put a concise label,
 cardinality, volatility, freshness_days when appropriate, and precise research_guidance in each
 definition. Research requests must refer to a proposed or existing question and row. For a

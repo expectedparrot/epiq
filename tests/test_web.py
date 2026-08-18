@@ -1712,6 +1712,69 @@ def test_workspace_agent_applies_schema_rows_and_launches_cell_research(
     assert captured["context"]["project"]["name"] == "Market research"
 
 
+def test_research_splits_many_valued_results_into_typed_scalar_claims(
+    tmp_path: Path,
+) -> None:
+    def researcher(_kind, question, entities, progress=None):
+        values = (
+            ["Healthcare", "SaaS"]
+            if question["name"] == "verticals"
+            else ["roleplay", "call_analysis"]
+        )
+        return [
+            {
+                "entity_id": entities[0]["entity_id"],
+                "status": "answered",
+                "value": values,
+                "source_type": "web",
+                "source_url": f"https://example.test/{question['name']}",
+                "source_title": "Product overview",
+                "excerpt": "The product overview supports each listed value.",
+                "confidence": "high",
+                "notes": "",
+            }
+        ]
+
+    client = TestClient(
+        create_app(tmp_path / "many-values.sqlite", tmp_path / "missing", researcher)
+    )
+    client.post("/api/project", json={"name": "Many-valued research"})
+    entity_id = client.post("/api/entities", json={"kind": "Startup", "name": "Acme"}).json()[
+        "entity_id"
+    ]
+    questions = {}
+    for name, value_type in (
+        ("verticals", "String"),
+        ("workflows", "Enum[roleplay,call_analysis,deal_coaching]"),
+    ):
+        questions[name] = client.post(
+            "/api/questions",
+            json={
+                "name": name,
+                "subject_kind": "Startup",
+                "value_type": value_type,
+                "definition": {"cardinality": "many"},
+            },
+        ).json()["question_id"]
+        launched = client.post(
+            "/api/research/jobs",
+            json={
+                "entity_kind": "Startup",
+                "question": questions[name],
+                "entity_ids": [entity_id],
+                "scope": "cell",
+            },
+        ).json()
+        completed = wait_for_job(client, launched["job_id"])
+        assert completed["status"] == "completed"
+        assert completed["written"] == 1
+
+    cells = client.get("/api/matrix/Startup").json()["rows"][0]["cells"]
+    assert set(cells["verticals"]["values"]) == {"Healthcare", "SaaS"}
+    assert set(cells["workflows"]["values"]) == {"roleplay", "call_analysis"}
+    assert len(cells["verticals"]["lineage"]) == 2
+
+
 def test_claim_proposal_review_and_bulk_api(tmp_path: Path) -> None:
     client = TestClient(create_app(tmp_path / "claims.sqlite", tmp_path / "missing"))
     client.post("/api/project", json={"name": "Claims"})
