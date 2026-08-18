@@ -245,6 +245,51 @@ button:hover {
   min-height: 46px;
   padding: 6px 12px;
 }
+.sheet-format-toolbar {
+  align-items: center;
+  background: #f7f8f5;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 4px;
+  min-height: 42px;
+  padding: 5px 12px;
+}
+.sheet-format-toolbar button,
+.sheet-format-toolbar select {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 11px;
+  height: 30px;
+  padding: 4px 8px;
+}
+.sheet-format-toolbar select {
+  min-width: 145px;
+}
+.sheet-format-toolbar button:hover:not(:disabled),
+.sheet-format-toolbar select:hover:not(:disabled),
+.sheet-format-toolbar .active {
+  background: #e8f1eb;
+  border-color: #b9ccbf;
+}
+.sheet-format-toolbar :disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+.toolbar-divider {
+  background: var(--line);
+  height: 22px;
+  margin: 0 3px;
+  width: 1px;
+}
+.toolbar-selection-hint {
+  color: var(--muted);
+  font-size: 10px;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .table-search {
   align-items: center;
   background: white;
@@ -358,6 +403,36 @@ button:hover {
   gap: 10px;
   min-height: 42px;
   padding: 6px 12px;
+}
+.formula-bar {
+  background: white;
+  gap: 0;
+  min-height: 38px;
+  padding: 4px 12px;
+}
+.formula-bar .cell-address {
+  background: transparent;
+  border-radius: 0;
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 10px;
+  min-width: 56px;
+  padding: 4px 12px 4px 2px;
+}
+.formula-symbol {
+  color: #6c716b;
+  font-family: Georgia, serif;
+  font-size: 14px;
+  font-style: italic;
+  padding: 0 12px;
+}
+.formula-bar .selection-value {
+  border-left: 1px solid var(--line);
+  color: var(--ink);
+  padding: 4px 10px;
+}
+.formula-bar .selection-state {
+  margin: 0 8px;
 }
 .selection-state {
   background: #9ba19c;

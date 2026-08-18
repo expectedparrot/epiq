@@ -988,6 +988,18 @@ export default function App() {
     ? (selectedRange.lastRow - selectedRange.firstRow + 1) *
       (selectedRange.lastColumn - selectedRange.firstColumn + 1)
     : 0;
+  const activeCellAddress = activeSelection
+    ? `${spreadsheetColumn(
+        displayedQuestions.findIndex(
+          (question) =>
+            question.question_id === activeSelection.question.question_id,
+        ) + 1,
+      )}${
+        displayedRows.findIndex(
+          (row) => row.entity_id === activeSelection.row.entity_id,
+        ) + 2
+      }`
+    : "—";
   const saveLayout = (
     nextWrapText: boolean,
     nextOrder: string[],
@@ -1517,6 +1529,116 @@ export default function App() {
               </details>
             </div>
           </div>
+          <div
+            className="sheet-format-toolbar"
+            aria-label="Spreadsheet formatting"
+          >
+            <select
+              aria-label="Number format"
+              disabled={
+                !activeSelection ||
+                !["Float", "Probability"].includes(
+                  activeSelection.question.value_type,
+                )
+              }
+              value={
+                activeSelection
+                  ? getColumnFormat(activeSelection.question).precision
+                  : "significant"
+              }
+              onChange={(event) =>
+                activeSelection &&
+                updateColumnFormat(activeSelection.question, {
+                  precision: event.target.value as "decimal" | "significant",
+                })
+              }
+            >
+              <option value="significant">123 · significant</option>
+              <option value="decimal">0.00 · decimal</option>
+            </select>
+            <button
+              className={
+                activeSelection &&
+                ["Int", "Float", "Probability"].includes(
+                  activeSelection.question.value_type,
+                ) &&
+                getColumnFormat(activeSelection.question).use_grouping
+                  ? "toolbar-icon active"
+                  : "toolbar-icon"
+              }
+              title="Thousands separator"
+              disabled={
+                !activeSelection ||
+                !["Int", "Float", "Probability"].includes(
+                  activeSelection.question.value_type,
+                )
+              }
+              onClick={() =>
+                activeSelection &&
+                updateColumnFormat(activeSelection.question, {
+                  use_grouping: !getColumnFormat(activeSelection.question)
+                    .use_grouping,
+                })
+              }
+            >
+              ,
+            </button>
+            <button
+              className="toolbar-icon"
+              title="Decrease decimal places or significant digits"
+              disabled={
+                !activeSelection ||
+                !["Float", "Probability"].includes(
+                  activeSelection.question.value_type,
+                )
+              }
+              onClick={() =>
+                activeSelection &&
+                updateColumnFormat(activeSelection.question, {
+                  digits: Math.max(
+                    1,
+                    getColumnFormat(activeSelection.question).digits - 1,
+                  ),
+                })
+              }
+            >
+              .0←
+            </button>
+            <button
+              className="toolbar-icon"
+              title="Increase decimal places or significant digits"
+              disabled={
+                !activeSelection ||
+                !["Float", "Probability"].includes(
+                  activeSelection.question.value_type,
+                )
+              }
+              onClick={() =>
+                activeSelection &&
+                updateColumnFormat(activeSelection.question, {
+                  digits: Math.min(
+                    12,
+                    getColumnFormat(activeSelection.question).digits + 1,
+                  ),
+                })
+              }
+            >
+              .00→
+            </button>
+            <span className="toolbar-divider" />
+            <button
+              className={wrapText ? "toolbar-text active" : "toolbar-text"}
+              onClick={toggleRows}
+              title="Toggle text wrapping"
+            >
+              ↵ Wrap
+            </button>
+            <span className="toolbar-selection-hint">
+              {activeSelection
+                ? `${String(activeSelection.question.definition.label ?? activeSelection.question.name)} · ${activeSelection.question.value_type}`
+                : "Select a cell to format"}
+            </span>
+          </div>
           <div className="view-toolbar" aria-label="Table view controls">
             <label className="table-search">
               <span>⌕</span>
@@ -1609,22 +1731,12 @@ export default function App() {
             </span>
           </div>
           {activeSelection && (
-            <div className="selection-bar" aria-label="Current cell selection">
-              <span
-                className={`selection-state state-${activeSelection.cell.state.toLowerCase()}`}
-              />
-              <div>
-                <small>SELECTED CELL</small>
-                <b>{activeSelection.row.name}</b>
-                <i>·</i>
-                <span>
-                  {String(
-                    activeSelection.question.definition.label ??
-                      activeSelection.question.name,
-                  )}
-                </span>
-              </div>
-              <code>{activeSelection.cell.state}</code>
+            <div
+              className="selection-bar formula-bar"
+              aria-label="Current cell selection"
+            >
+              <code className="cell-address">{activeCellAddress}</code>
+              <span className="formula-symbol">fx</span>
               {selectedCellCount > 1 && (
                 <code>{selectedCellCount} cells selected</code>
               )}
@@ -1635,78 +1747,10 @@ export default function App() {
                   columnFormats[activeSelection.question.name],
                 ) || "No value"}
               </span>
-              {["Int", "Float", "Probability"].includes(
-                activeSelection.question.value_type,
-              ) && (
-                <div
-                  className="number-format-toolbar"
-                  aria-label="Number formatting"
-                >
-                  <button
-                    title="Toggle thousands separators"
-                    className={
-                      getColumnFormat(activeSelection.question).use_grouping
-                        ? "active"
-                        : ""
-                    }
-                    onClick={() =>
-                      updateColumnFormat(activeSelection.question, {
-                        use_grouping: !getColumnFormat(activeSelection.question)
-                          .use_grouping,
-                      })
-                    }
-                  >
-                    1,000
-                  </button>
-                  {activeSelection.question.value_type !== "Int" && (
-                    <>
-                      <select
-                        aria-label="Precision style"
-                        value={
-                          getColumnFormat(activeSelection.question).precision
-                        }
-                        onChange={(event) =>
-                          updateColumnFormat(activeSelection.question, {
-                            precision: event.target.value as
-                              "decimal" | "significant",
-                          })
-                        }
-                      >
-                        <option value="decimal">0.00</option>
-                        <option value="significant">3 sig</option>
-                      </select>
-                      <button
-                        title="Decrease precision"
-                        onClick={() =>
-                          updateColumnFormat(activeSelection.question, {
-                            digits: Math.max(
-                              1,
-                              getColumnFormat(activeSelection.question).digits -
-                                1,
-                            ),
-                          })
-                        }
-                      >
-                        .0←
-                      </button>
-                      <button
-                        title="Increase precision"
-                        onClick={() =>
-                          updateColumnFormat(activeSelection.question, {
-                            digits: Math.min(
-                              12,
-                              getColumnFormat(activeSelection.question).digits +
-                                1,
-                            ),
-                          })
-                        }
-                      >
-                        .00→
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
+              <span
+                className={`selection-state state-${activeSelection.cell.state.toLowerCase()}`}
+              />
+              <code>{activeSelection.cell.state}</code>
               <button
                 onClick={() =>
                   setSelection({
