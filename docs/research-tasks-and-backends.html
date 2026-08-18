@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Epiq research tasks and backends</title>
+  <style>
+    :root{--ink:#17221c;--muted:#687169;--paper:#fbfaf6;--panel:#fff;--line:#d9d8cf;--green:#155a43;--mint:#e8f3ed;--gold:#a56b12;--code:#18231e;--red:#a74638}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.62 Inter,ui-sans-serif,system-ui,-apple-system,sans-serif}
+    a{color:var(--green)}header{border-bottom:1px solid var(--line);padding:64px max(24px,calc((100vw - 1120px)/2));background:linear-gradient(135deg,#eef4ee,#fbfaf6 55%)}
+    header small,.eyebrow{font:700 12px/1.2 ui-monospace,SFMono-Regular,monospace;letter-spacing:.15em;text-transform:uppercase;color:var(--green)}
+    h1{font-size:clamp(38px,6vw,70px);line-height:1.02;letter-spacing:-.045em;max-width:850px;margin:18px 0}header p{font-size:20px;color:var(--muted);max-width:790px}
+    .layout{max-width:1120px;margin:auto;display:grid;grid-template-columns:230px minmax(0,1fr);gap:44px;padding:42px 24px 100px}nav{position:sticky;top:22px;align-self:start;border:1px solid var(--line);background:#ffffffcc;padding:16px;border-radius:12px;backdrop-filter:blur(8px)}nav a{display:block;text-decoration:none;padding:6px 7px;border-radius:6px;font-size:13px}nav a:hover{background:var(--mint)}
+    main{min-width:0}section{scroll-margin-top:24px;margin-bottom:70px}h2{font-size:31px;letter-spacing:-.03em;margin:0 0 12px}h3{font-size:20px;margin:30px 0 8px}p{margin:9px 0;color:#354239}.lead{font-size:19px}.callout{border-left:4px solid var(--green);background:var(--mint);padding:14px 18px;margin:20px 0}.warning{border-left-color:var(--gold);background:#fff5df}.gap{border-left-color:var(--red);background:#fff0ec}
+    .flow{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:24px 0}.step{border:1px solid var(--line);background:var(--panel);padding:13px;border-radius:9px;min-height:122px}.step i{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--green);color:white;font:12px ui-monospace,monospace}.step b{display:block;margin:10px 0 3px;font-size:13px}.step span{font-size:11px;color:var(--muted)}
+    .cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:18px}.card h3{margin:0 0 6px}.card code{font-size:12px}.tag{display:inline-block;border-radius:99px;background:var(--mint);color:var(--green);font:700 10px ui-monospace,monospace;padding:4px 8px;margin:3px}
+    .code-wrap{position:relative;margin:14px 0 22px}.copy{position:absolute;right:8px;top:8px;border:1px solid #526159;background:#26342d;color:#fff;border-radius:6px;padding:5px 9px;font-size:11px;cursor:pointer}.copy:hover{background:#355044}pre{overflow:auto;background:var(--code);color:#eaf2ed;padding:20px;border-radius:10px;font:12px/1.58 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    table{width:100%;border-collapse:collapse;background:var(--panel);font-size:13px;margin:16px 0}th,td{text-align:left;vertical-align:top;border:1px solid var(--line);padding:10px}th{background:#f0f1eb}td code{font-size:11px}.state{font-weight:700;color:var(--green)}
+    .equation{font:15px/1.8 ui-monospace,SFMono-Regular,monospace;background:#f0f1eb;border:1px solid var(--line);border-radius:9px;padding:14px 18px;overflow:auto}.footer{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:20px}
+    @media(max-width:850px){.layout{grid-template-columns:1fr}nav{position:static}.flow{grid-template-columns:1fr 1fr}.cards{grid-template-columns:1fr}}@media(max-width:520px){.flow{grid-template-columns:1fr}header{padding-top:40px}}
+  </style>
+</head>
+<body>
+<header>
+  <small>Epiq implementation tutorial · current as of August 2026</small>
+  <h1>Research tasks, parsing, and replaceable backends</h1>
+  <p>A detailed tour of what happens between clicking “Research” and committing an evidence-backed claim—and exactly where another agent, model, crawler, or human workflow can be substituted.</p>
+</header>
+<div class="layout">
+  <nav>
+    <div class="eyebrow">Contents</div>
+    <a href="#mental-model">1. Mental model</a><a href="#request">2. Request structure</a><a href="#prepare">3. Task preparation</a><a href="#backend">4. Backend contract</a><a href="#output">5. Finding schema</a><a href="#parse">6. Parsing and validation</a><a href="#writeback">7. Write-back</a><a href="#modes">8. Modes and fan-out</a><a href="#jobs">9. Jobs and persistence</a><a href="#substitute">10. Substitute a backend</a><a href="#gaps">11. Design gaps</a><a href="#formalize">12. Proposed formal core</a>
+  </nav>
+  <main>
+    <section id="mental-model">
+      <div class="eyebrow">01 · Mental model</div><h2>Research is an orchestration pipeline</h2>
+      <p class="lead">Epiq does not currently hand a backend a database or permission to mutate it. The web layer prepares a bounded task, the backend returns proposed findings, and Epiq alone validates and writes durable facts.</p>
+      <div class="flow"><div class="step"><i>1</i><b>Request</b><span>Pydantic parses an API command.</span></div><div class="step"><i>2</i><b>Prepare</b><span>Epiq resolves schema, rows, state, and context.</span></div><div class="step"><i>3</i><b>Run</b><span>A replaceable runner returns findings.</span></div><div class="step"><i>4</i><b>Validate</b><span>Identity, status, JSON, and value type are checked.</span></div><div class="step"><i>5</i><b>Commit</b><span>Epiq writes evidence, claims, proposals, or NotFound.</span></div></div>
+      <div class="equation">Request → Prepare(DB, Request) → Backend(Task) → Parse(Output) → Commit(DB, Findings)</div>
+      <div class="callout"><b>The security boundary:</b> the backend proposes; Epiq commits. This is the most important property to retain when adding other backends.</div>
+    </section>
+
+    <section id="request">
+      <div class="eyebrow">02 · Request</div><h2>The public research request</h2>
+      <p>The core API model is <code>ResearchCreate</code> in <code>src/epiq/web.py</code>. It identifies a table, one versioned question, a mode, optional row IDs, and a UI scope.</p>
+      <div class="code-wrap"><button class="copy">Copy</button><pre><code>{
+  "entity_kind": "survey_platform",
+  "question": "q_has_api_v1",
+  "mode": "fill_missing",
+  "instructions": "Prefer official API documentation.",
+  "entity_ids": ["ent_qualtrics"],
+  "scope": "cell"
+}</code></pre></div>
+      <table><thead><tr><th>Field</th><th>Meaning</th><th>Important behavior</th></tr></thead><tbody>
+        <tr><td><code>entity_kind</code></td><td>Exact table identifier.</td><td>The matrix projection must exist.</td></tr>
+        <tr><td><code>question</code></td><td>Exact versioned question ID.</td><td>Resolved before a background thread starts.</td></tr>
+        <tr><td><code>mode</code></td><td><code>fill_missing</code>, <code>add_evidence</code>, or <code>retry_not_found</code>.</td><td>Controls eligible cell states and write-back semantics.</td></tr>
+        <tr><td><code>instructions</code></td><td>Human source or interpretation direction.</td><td>Inserted into the backend’s question object.</td></tr>
+        <tr><td><code>entity_ids</code></td><td>Optional exact row subset.</td><td>Absent means all eligible rows.</td></tr>
+        <tr><td><code>scope</code></td><td>Cell, row, column, or table.</td><td>Operational metadata for UI/cancellation; it does not change epistemic semantics.</td></tr>
+      </tbody></table>
+      <p>Row and table endpoints are convenience fan-out commands. They eventually create ordinary cell/column research requests.</p>
+    </section>
+
+    <section id="prepare">
+      <div class="eyebrow">03 · Preparation</div><h2>Epiq enriches the task before dispatch</h2>
+      <p><code>execute_research</code> projects the current table, resolves the question, and selects targets according to mode. Each target contains stable identity information—not merely a display name.</p>
+      <div class="code-wrap"><button class="copy">Copy</button><pre><code>{
+  "entity_id": "ent_qualtrics",
+  "name": "Qualtrics",
+  "aliases": ["Qualtrics XM"],
+  "attributes": {},
+  "existing_value": true,
+  "existing_valid_from": "2026-08-18",
+  "existing_evidence": [
+    {
+      "evidence_id": "ev_123",
+      "source_url": "https://www.qualtrics.com/support/api/",
+      "source_title": "Qualtrics API documentation",
+      "excerpt": "…"
+    }
+  ]
+}</code></pre></div>
+      <p>The question is also augmented with <code>task_mode</code>, human <code>instructions</code>, and <code>research_context</code>. That context contains project identity, table identity, peer rows, aliases, and row attributes. It exists to prevent errors such as researching Orleans, France in a Cape Cod table.</p>
+      <div class="callout warning"><b>Mode affects the payload.</b> Existing values and evidence are included only for <code>add_evidence</code>, where the backend must find an independent source and is allowed to disagree.</div>
+    </section>
+
+    <section id="backend">
+      <div class="eyebrow">04 · Backend seam</div><h2>The callable protocol</h2>
+      <p>The replaceable contract is a Python structural protocol. A backend needs no inheritance and no knowledge of FastAPI or SQLite.</p>
+      <div class="code-wrap"><button class="copy">Copy</button><pre><code>class ResearchRunner(Protocol):
+    def __call__(
+        self,
+        entity_kind: str,
+        question: dict[str, Any],
+        entities: list[dict[str, Any]],
+        progress: Callable[[str], None] | None = None,
+    ) -> list[dict[str, Any]]: ...</code></pre></div>
+      <div class="cards">
+        <div class="card"><h3>OpenAIResearchRunner</h3><p>Calls the Responses API with hosted web search, strict JSON Schema output, and streamed progress events.</p><span class="tag">default</span><span class="tag">web search</span><span class="tag">streaming</span></div>
+        <div class="card"><h3>CodexResearchRunner</h3><p>Runs <code>codex exec</code> in an ephemeral read-only sandbox, passing a schema file and reading the last message from a temporary file.</p><span class="tag">local adapter</span><span class="tag">read-only</span></div>
+      </div>
+      <p>Separate protocols exist for entity suggestions, field suggestions, and workspace planning. They are related capabilities, but they are not the same interface as cell research.</p>
+    </section>
+
+    <section id="output">
+      <div class="eyebrow">05 · Output</div><h2>A backend returns findings, not claims</h2>
+      <p>Each target row must produce one result. <code>value_json</code> is deliberately JSON encoded inside the structured envelope so one strict schema can carry every Epiq value type.</p>
+      <div class="code-wrap"><button class="copy">Copy</button><pre><code>{
+  "entity_id": "ent_qualtrics",
+  "status": "answered",
+  "value_json": "true",
+  "source_type": "web",
+  "source_url": "https://www.qualtrics.com/support/api/",
+  "source_published_at": null,
+  "observed_as_of": "2026-08-18",
+  "source_title": "Qualtrics API documentation",
+  "excerpt": "Qualtrics provides a public REST API…",
+  "confidence": "high",
+  "notes": "Official documentation for the intended platform."
+}</code></pre></div>
+      <p>For a failed bounded search, the contract is <code>status: "not_found"</code> and <code>value_json: "null"</code>. This is not the same as a negative boolean claim.</p>
+      <table><thead><tr><th>Status</th><th>Meaning</th><th>Durable result</th></tr></thead><tbody><tr><td class="state">answered</td><td>The source supports a typed value.</td><td>Evidence plus one or more claims.</td></tr><tr><td class="state">not_found</td><td>The bounded search did not find sufficient evidence.</td><td>A <code>research.not_found</code> event/task, except in add-evidence mode.</td></tr></tbody></table>
+    </section>
+
+    <section id="parse">
+      <div class="eyebrow">06 · Parsing</div><h2>Validation happens in layers</h2>
+      <ol>
+        <li><b>Request parsing:</b> Pydantic validates modes, scopes, lengths, and required fields.</li>
+        <li><b>Schema resolution:</b> Epiq verifies the table and exact question ID.</li>
+        <li><b>Transport parsing:</b> the OpenAI adapter reads server-sent events until <code>response.completed</code>.</li>
+        <li><b>Envelope parsing:</b> JSON text must conform to <code>OUTPUT_SCHEMA</code>.</li>
+        <li><b>Value parsing:</b> <code>_parse_values</code> decodes <code>value_json</code>; empty values are accepted only for <code>not_found</code>.</li>
+        <li><b>Identity validation:</b> findings for entity IDs outside the prepared target set are ignored.</li>
+        <li><b>Type validation:</b> <code>Store._check_value_type</code> validates every scalar before any claim is written.</li>
+      </ol>
+      <div class="callout"><b>Cardinality:</b> a many-valued result is returned as a JSON array, validated element by element, and stored as separate scalar claims in the same cell.</div>
+    </section>
+
+    <section id="writeback">
+      <div class="eyebrow">07 · Write-back</div><h2>Epiq owns database effects</h2>
+      <p>Ordinary answered findings become an immutable source/evidence fragment and typed claim. The actor is currently recorded as <code>agent:codex</code> even when the default runner is OpenAI—one sign that backend identity should become explicit.</p>
+      <div class="flow"><div class="step"><i>A</i><b>Canonicalize source</b><span>Create/deduplicate source and evidence.</span></div><div class="step"><i>B</i><b>Validate value</b><span>Check Epiq type and cardinality.</span></div><div class="step"><i>C</i><b>Choose time</b><span>Observed date, source date, or unknown basis.</span></div><div class="step"><i>D</i><b>Assert claim</b><span>Append evidence-backed claim events.</span></div><div class="step"><i>E</i><b>Reproject</b><span>UI observes the new current cell.</span></div></div>
+      <p>Reference-valued findings are different: unknown related entities become provisional relationship proposals. Human approval creates and links those rows. This prevents an agent from silently expanding relational tables.</p>
+    </section>
+
+    <section id="modes">
+      <div class="eyebrow">08 · Modes</div><h2>One runner, three epistemic intentions</h2>
+      <table><thead><tr><th>Mode</th><th>Eligible state</th><th>Purpose</th><th>Special rules</th></tr></thead><tbody>
+        <tr><td><code>fill_missing</code></td><td>Unasked</td><td>Find an initial answer.</td><td>NotFound is recorded when evidence is insufficient.</td></tr>
+        <tr><td><code>retry_not_found</code></td><td>NotFound</td><td>Retry after human correction or guidance.</td><td>Closed-world negative inference requires an authoritative exhaustive source.</td></tr>
+        <tr><td><code>add_evidence</code></td><td>Answered</td><td>Find another independent observation.</td><td>Existing sources are supplied and duplicate URLs rejected; conflicting values are retained.</td></tr>
+      </tbody></table>
+      <p>Column research fans out into one job per eligible cell. Row research fans out across unanswered questions. Table research fans out across both. This is why results can appear incrementally and why a backend contract can remain cell-oriented.</p>
+    </section>
+
+    <section id="jobs">
+      <div class="eyebrow">09 · Jobs</div><h2>Operational jobs are not epistemic records</h2>
+      <p>A background job is mutable execution state stored in <code>agent_jobs.payload_json</code>: queued/running/completed status, progress messages, counters, cancellation flags, errors, and provisional suggestions. It survives server restarts, but it is not the source of truth for claims.</p>
+      <div class="callout warning"><b>There are currently three “task-like” structures:</b><br>1. <code>ResearchCreate</code>, the command intent;<br>2. the agent job JSON, operational execution state;<br>3. <code>research_tasks</code>, currently used primarily for durable NotFound outcomes and feedback.</div>
+      <p>This division works, but it means there is not yet one canonical, serializable research task that can be queued, exported, routed to arbitrary workers, replayed, or evaluated independently.</p>
+    </section>
+
+    <section id="substitute">
+      <div class="eyebrow">10 · Substitution</div><h2>How to plug in another backend today</h2>
+      <p><code>create_app</code> accepts a <code>research_runner</code>. A custom adapter receives prepared objects and returns normalized findings.</p>
+      <div class="code-wrap"><button class="copy">Copy</button><pre><code>class InternalSearchBackend:
+    def __init__(self, client):
+        self.client = client
+
+    def __call__(self, entity_kind, question, entities, progress=None):
+        results = []
+        for entity in entities:
+            if progress:
+                progress(f"Searching internal index for {entity['name']}")
+            hit = self.client.answer(
+                entity=entity,
+                question=question,
+                project=question["research_context"]["project"],
+            )
+            results.append({
+                "entity_id": entity["entity_id"],
+                "status": "answered" if hit else "not_found",
+                "value": hit.value if hit else None,
+                "source_type": "report",
+                "source_url": hit.url if hit else None,
+                "source_title": hit.title if hit else "",
+                "source_published_at": hit.published_at if hit else None,
+                "observed_as_of": hit.observed_as_of if hit else None,
+                "excerpt": hit.excerpt if hit else "",
+                "confidence": hit.confidence if hit else "low",
+                "notes": hit.notes,
+            })
+        return results
+
+app = create_app(
+    database="research.sqlite",
+    research_runner=InternalSearchBackend(client),
+)</code></pre></div>
+      <p>Tests already use this seam extensively with small Python functions. What does not yet exist is a user-facing backend registry, configuration file, per-task backend selection, capability negotiation, or backend provenance in claim actors.</p>
+    </section>
+
+    <section id="gaps">
+      <div class="eyebrow">11 · Design gaps</div><h2>What should be formalized next</h2>
+      <div class="cards">
+        <div class="card"><h3>Canonical task envelope</h3><p>Move preparation output into a versioned, serializable <code>ResearchTask</code> with stable IDs, policy, budget, context, and expected output schema.</p></div>
+        <div class="card"><h3>Backend identity</h3><p>Record backend name, model, version, tool policy, and run ID. Stop hard-coding <code>agent:codex</code>.</p></div>
+        <div class="card"><h3>Capabilities</h3><p>Declare whether a backend supports web search, private corpora, citations, streaming, cancellation, batch execution, and relationship proposals.</p></div>
+        <div class="card"><h3>Result versus commit</h3><p>Persist the raw normalized result before applying it, enabling review, replay, evaluation, and alternative commit policies.</p></div>
+        <div class="card"><h3>Backend selection</h3><p>Allow a project default and per-task override rather than choosing one runner when constructing the server.</p></div>
+        <div class="card"><h3>Evaluation</h3><p>Store latency, cost, searched sources, parser failures, and acceptance outcomes so backends can be compared empirically.</p></div>
+      </div>
+    </section>
+
+    <section id="formalize">
+      <div class="eyebrow">12 · Proposed formal core</div><h2>A cleaner backend-neutral model</h2>
+      <div class="equation">Task T = ⟨id, subject-set, question-version, mode, context, policy, budget, output-schema⟩<br>Run U = ⟨task-id, backend-id, started, progress*, raw-output, normalized-findings, metrics⟩<br>Decision D = Validate(T, U.findings, DB)<br>Effects E = Commit(D) ∈ {claims, evidence, proposals, not-found, rejection}</div>
+      <p>This separates four things currently interleaved in <code>execute_research</code>: task compilation, backend execution, result normalization, and database effects. A backend would implement only:</p>
+      <div class="code-wrap"><button class="copy">Copy</button><pre><code>class ResearchBackend(Protocol):
+    backend_id: str
+    capabilities: BackendCapabilities
+
+    def run(
+        self,
+        task: ResearchTask,
+        emit: Callable[[ProgressEvent], None],
+        cancelled: Callable[[], bool],
+    ) -> ResearchRunResult: ...</code></pre></div>
+      <div class="callout"><b>Recommended next artifact:</b> specify <code>ResearchTask</code>, <code>ResearchFinding</code>, <code>ResearchRun</code>, and <code>BackendCapabilities</code> as versioned Pydantic models, then adapt the existing OpenAI and Codex runners to them without changing database semantics.</div>
+    </section>
+    <div class="footer">Generated from the current Epiq implementation: <code>src/epiq/research.py</code>, <code>src/epiq/web.py</code>, and <code>src/epiq/store.py</code>.</div>
+  </main>
+</div>
+<script>
+document.querySelectorAll('.copy').forEach(button=>button.addEventListener('click',async()=>{const text=button.nextElementSibling.innerText;await navigator.clipboard.writeText(text);const old=button.textContent;button.textContent='Copied';setTimeout(()=>button.textContent=old,1200)}));
+</script>
+</body>
+</html>
