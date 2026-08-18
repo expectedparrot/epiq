@@ -2783,6 +2783,7 @@ def create_app(
                         "entity_id": None,
                     }
                 )
+            progress(f"Prepared {len(suggestions[: body.count])} suggestions for review")
             with app.state.research_lock:
                 jobs[job_id]["suggestions"] = suggestions[: body.count]
                 jobs[job_id]["total"] = len(suggestions[: body.count])
@@ -2790,7 +2791,6 @@ def create_app(
                 jobs[job_id]["status"] = "completed"
                 jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
                 persist_job(job_id)
-            progress(f"Prepared {len(suggestions[: body.count])} suggestions for review")
         except Exception as error:
             with app.state.research_lock:
                 jobs[job_id]["status"] = "failed"
@@ -2941,6 +2941,7 @@ def create_app(
                     }
                 )
             selected = suggestions[: body.count]
+            progress(f"Prepared {len(selected)} field suggestions for review")
             with app.state.research_lock:
                 jobs[job_id]["field_suggestions"] = selected
                 jobs[job_id]["total"] = len(selected)
@@ -2948,7 +2949,6 @@ def create_app(
                 jobs[job_id]["status"] = "completed"
                 jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
                 persist_job(job_id)
-            progress(f"Prepared {len(selected)} field suggestions for review")
         except Exception as error:
             with app.state.research_lock:
                 jobs[job_id]["status"] = "failed"
