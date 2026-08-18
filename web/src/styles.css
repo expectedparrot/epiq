@@ -625,7 +625,7 @@ button:hover {
 .grid thead {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 4;
 }
 .grid tbody {
   position: relative;
