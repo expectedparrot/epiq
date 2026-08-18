@@ -819,22 +819,31 @@ export default function App() {
   };
   const acceptProvisionalRelationships = async (
     suggestions: ProvisionalRelationship[],
+    requestedScope?: "cell" | "column" | "table",
   ) => {
-    const byJob = new Map<string, string[]>();
-    suggestions.forEach((suggestion) => {
-      const ids = byJob.get(suggestion.jobId) ?? [];
-      ids.push(suggestion.suggestion_id);
-      byJob.set(suggestion.jobId, ids);
-    });
-    if (!byJob.size) return;
+    if (!suggestions.length) return;
+    const questionIds = new Set(
+      suggestions.map((suggestion) => suggestion.question_id),
+    );
+    const subjectIds = new Set(
+      suggestions.map((suggestion) => suggestion.subject_entity_id),
+    );
+    const scope =
+      requestedScope ??
+      (questionIds.size === 1 && subjectIds.size === 1
+        ? "cell"
+        : questionIds.size === 1
+          ? "column"
+          : "table");
     try {
-      await Promise.all(
-        [...byJob].map(([jobId, suggestionIds]) =>
-          post(`/api/research/jobs/${jobId}/relationships/accept`, {
-            suggestion_ids: suggestionIds,
-          }),
-        ),
-      );
+      await post("/api/research/relationships/accept", {
+        scope,
+        question_id:
+          questionIds.size === 1 ? suggestions[0].question_id : undefined,
+        subject_entity_id:
+          subjectIds.size === 1 ? suggestions[0].subject_entity_id : undefined,
+        reason: `Approved all provisional relationships in ${scope} review`,
+      });
       await loadOverview();
       await loadMatrix();
       setJobs(await api<ResearchJob[]>("/api/research/jobs"));
@@ -2025,6 +2034,7 @@ export default function App() {
                                   onClick={() =>
                                     void acceptProvisionalRelationships(
                                       pendingProvisional,
+                                      "column",
                                     )
                                   }
                                 >
@@ -2405,7 +2415,9 @@ export default function App() {
                 suggestion.suggestion_id,
               ]);
             }}
-            onAcceptAllProvisional={acceptProvisionalRelationships}
+            onAcceptAllProvisional={(suggestions) =>
+              acceptProvisionalRelationships(suggestions, "cell")
+            }
             onChanged={refresh}
           />
         )}

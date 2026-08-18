@@ -73,13 +73,10 @@ def test_research_receives_project_table_and_entity_identity_context(tmp_path: P
 
     assert captured["question"]["research_context"]["project"]["name"] == "Cape Cod Towns"
     peer_names = {
-        row["name"]
-        for row in captured["question"]["research_context"]["table"]["peer_rows"]
+        row["name"] for row in captured["question"]["research_context"]["table"]["peer_rows"]
     }
     assert peer_names == {"Orleans", "Wellfleet"}
-    assert captured["targets"][0]["attributes"] == {
-        "region": "Cape Cod, Massachusetts"
-    }
+    assert captured["targets"][0]["attributes"] == {"region": "Cape Cod, Massachusetts"}
 
 
 def test_research_jobs_can_be_cancelled_without_writing_late_results(tmp_path: Path) -> None:
@@ -498,6 +495,77 @@ def test_relationship_research_stages_entities_and_links_for_approval(tmp_path: 
     assert {item["name"] for item in cell["references"]} == {"Ada", "Katherine Johnson"}
 
 
+def test_relationship_review_previews_and_accepts_a_whole_column(tmp_path: Path) -> None:
+    def researcher(_kind, _question, entities, progress=None):
+        paper = entities[0]
+        author = "Ada" if paper["name"] == "Paper One" else "Grace"
+        return [
+            {
+                "entity_id": paper["entity_id"],
+                "status": "answered",
+                "value": [author],
+                "source_type": "web",
+                "source_url": f"https://example.test/{author.lower()}",
+                "source_title": f"{paper['name']} title page",
+                "excerpt": f"{paper['name']} was written by {author}.",
+                "confidence": "high",
+                "notes": "",
+            }
+        ]
+
+    client = TestClient(
+        create_app(tmp_path / "column-review.sqlite", tmp_path / "missing", researcher)
+    )
+    client.post("/api/project", json={"name": "Column review"})
+    for name in ["Paper One", "Paper Two"]:
+        client.post("/api/entities", json={"kind": "Paper", "name": name})
+    question = client.post(
+        "/api/questions",
+        json={
+            "name": "authors",
+            "subject_kind": "Paper",
+            "value_type": "Ref[Author]",
+            "definition": {"cardinality": "many"},
+        },
+    ).json()["question_id"]
+    launched = client.post(
+        "/api/research/column",
+        json={"entity_kind": "Paper", "question": question, "scope": "column"},
+    ).json()
+    for job in launched["jobs"]:
+        wait_for_job(client, job["job_id"])
+
+    scope = {"scope": "column", "question_id": question, "review_id": "review-column"}
+    preview = client.post("/api/research/relationships/preview", json=scope)
+    assert preview.status_code == 200
+    preview_data = preview.json()
+    assert len(preview_data.pop("suggestion_ids")) == 2
+    assert preview_data == {
+        "review_id": "review-column",
+        "scope": "column",
+        "count": 2,
+        "jobs": 2,
+        "subjects": 2,
+        "questions": 1,
+        "creates": 2,
+        "links": 0,
+    }
+    accepted = client.post("/api/research/relationships/accept", json=scope)
+    assert accepted.status_code == 201
+    assert accepted.json()["count"] == 2
+    rows = client.get("/api/matrix/Paper").json()["rows"]
+    assert {row["name"]: row["cells"]["authors"]["references"][0]["name"] for row in rows} == {
+        "Paper One": "Ada",
+        "Paper Two": "Grace",
+    }
+    jobs = client.get("/api/research/jobs").json()
+    assert all(
+        suggestion["status"] == "accepted"
+        for job in jobs
+        for suggestion in job["relationship_suggestions"]
+    )
+
+
 def test_relationship_cardinality_mismatches_are_bulk_approved(tmp_path: Path) -> None:
     def researcher(_kind, _question, entities, progress=None):
         name = entities[0]["name"]
@@ -547,8 +615,7 @@ def test_relationship_cardinality_mismatches_are_bulk_approved(tmp_path: Path) -
     matrix = client.get("/api/matrix/Paper").json()
     assert matrix["questions"][0]["definition"]["cardinality"] == "many"
     assert [
-        {item["name"] for item in row["cells"]["authors"]["references"]}
-        for row in matrix["rows"]
+        {item["name"] for item in row["cells"]["authors"]["references"]} for row in matrix["rows"]
     ] == [{"Ada", "Grace"}, {"Grace", "Katherine"}]
     refreshed = client.get("/api/research/jobs").json()
     assert all(job["schema_adaptation"]["status"] == "applied" for job in refreshed)

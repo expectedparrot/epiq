@@ -51,6 +51,75 @@ def test_claim_is_idempotent(store: Store) -> None:
     assert [event["event_type"] for event in store.history()].count("claim.assert") == 1
 
 
+def test_relationship_findings_approve_atomically_and_are_idempotent(store: Store) -> None:
+    paper = store.add_entity("Paper", "Market Design", {}, "test")
+    question = store.add_question(
+        "authors", "Paper", "Ref[Author]", {"cardinality": "many"}, "test"
+    )
+    findings = [
+        {
+            "suggestion_id": f"suggestion-{index}",
+            "subject_entity_id": paper,
+            "question_id": question,
+            "target_name": name,
+            "source_type": "web",
+            "source_url": f"https://example.test/{name.lower()}",
+            "source_title": "Title page",
+            "excerpt": f"Written by {name}.",
+            "retrieved_at": "2026-08-17",
+            "confidence": "high",
+        }
+        for index, name in enumerate(["Ada", "Grace"])
+    ]
+    first = store.approve_relationship_findings(
+        findings, "reviewer", "review-1", "Verified title page"
+    )
+    retried = store.approve_relationship_findings(
+        findings, "reviewer", "review-1", "Verified title page"
+    )
+    assert first == retried
+    assert first["count"] == 2
+    assert {
+        item["name"] for item in store.matrix("Paper")["rows"][0]["cells"]["authors"]["references"]
+    } == {"Ada", "Grace"}
+    assert [event["event_type"] for event in store.history()].count(
+        "relationship.review_approved"
+    ) == 1
+
+
+def test_relationship_findings_roll_back_the_whole_review(store: Store) -> None:
+    paper = store.add_entity("Paper", "Market Design", {}, "test")
+    question = store.add_question("author", "Paper", "Ref[Author]", {"cardinality": "many"}, "test")
+    findings = [
+        {
+            "suggestion_id": "valid",
+            "subject_entity_id": paper,
+            "question_id": question,
+            "target_name": "Ada",
+            "source_type": "web",
+            "source_url": "https://example.test/ada",
+            "source_title": "Title page",
+            "excerpt": "Written by Ada.",
+            "retrieved_at": "2026-08-17",
+        },
+        {
+            "suggestion_id": "invalid",
+            "subject_entity_id": paper,
+            "question_id": question,
+            "target_name": "Grace",
+            "source_type": "unsupported",
+            "source_title": "Bad source",
+            "excerpt": "Written by Grace.",
+            "retrieved_at": "2026-08-17",
+        },
+    ]
+    with pytest.raises(EpiqError, match="Unknown evidence source type"):
+        store.approve_relationship_findings(findings, "reviewer", "review-invalid", "Test rollback")
+    assert store.matrix("Author")["rows"] == []
+    assert store.matrix("Paper")["rows"][0]["cells"]["author"]["state"] == "Unasked"
+    assert "relationship.review_approved" not in {event["event_type"] for event in store.history()}
+
+
 def test_retraction_changes_current_view_but_preserves_history(store: Store) -> None:
     game = store.add_entity("Game", "Game", {}, "test")
     question = store.add_question("result", "Game", "Enum[W,L]", {}, "test")
@@ -567,9 +636,7 @@ def test_arithmetic_expression_formula_supports_constants_and_parentheses(store:
 
     cell = store.matrix("Startup")["rows"][0]["cells"]["funding_per_year"]
     assert cell["value"] == 30.0
-    assert cell["lineage"][0]["derivation"]["parameters"] == {
-        "expression": "x0/(2026-x1)"
-    }
+    assert cell["lineage"][0]["derivation"]["parameters"] == {"expression": "x0/(2026-x1)"}
 
 
 def test_arithmetic_expression_rejects_unsafe_syntax_and_zero_division() -> None:
@@ -868,9 +935,7 @@ def test_bulk_claim_assertion_rolls_back_entire_batch_on_late_error(store: Store
 
 def test_relationship_change_set_is_atomic_and_idempotent(store: Store) -> None:
     paper = store.add_entity("Paper", "Markets", {}, "test")
-    question = store.add_question(
-        "authors", "Paper", "Ref[Author]", {"cardinality": "one"}, "test"
-    )
+    question = store.add_question("authors", "Paper", "Ref[Author]", {"cardinality": "one"}, "test")
     finding = {
         "suggestion_id": "rel_ada",
         "subject_entity_id": paper,
@@ -903,9 +968,7 @@ def test_relationship_change_set_rolls_back_schema_and_writes_on_late_error(
     store: Store,
 ) -> None:
     paper = store.add_entity("Paper", "Markets", {}, "test")
-    question = store.add_question(
-        "authors", "Paper", "Ref[Author]", {"cardinality": "one"}, "test"
-    )
+    question = store.add_question("authors", "Paper", "Ref[Author]", {"cardinality": "one"}, "test")
     before = len(store.history())
     change_set = {
         "change_set_id": "cs_broken_authors",

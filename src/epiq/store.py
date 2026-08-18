@@ -82,6 +82,7 @@ def _evaluate_arithmetic_expression(expression: str, values: list[int | float]) 
         raise EpiqError("invalid_formula", "Formula result must be finite")
     return result
 
+
 LATEST_SCHEMA_VERSION = 13
 MIGRATION_DESCRIPTIONS = {
     2: "multi-evidence claims and derivation lineage",
@@ -1950,6 +1951,153 @@ class Store:
             )
             return result
 
+    def approve_relationship_findings(
+        self,
+        findings: list[dict[str, Any]],
+        actor: str,
+        review_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Validate and approve relationship findings in one transaction."""
+        if not findings:
+            raise EpiqError("empty_review", "Select at least one provisional relationship")
+        if not review_id.strip():
+            raise EpiqError("review_id_required", "A review ID is required")
+        if not reason.strip():
+            raise EpiqError("reason_required", "A review reason is required")
+        with self.transaction() as connection:
+            existing = connection.execute(
+                """SELECT payload_json FROM events
+                   WHERE event_type='relationship.review_approved'
+                     AND json_extract(payload_json,'$.review_id')=?
+                   ORDER BY seq DESC LIMIT 1""",
+                (review_id,),
+            ).fetchone()
+            if existing:
+                return dict(json.loads(str(existing["payload_json"]))["result"])
+
+            grouped_targets: dict[tuple[str, str], set[str]] = {}
+            resolved_questions: dict[str, sqlite3.Row] = {}
+            for finding in findings:
+                question_id = str(finding["question_id"])
+                question = resolved_questions.setdefault(
+                    question_id, self._resolve_question(connection, question_id)
+                )
+                value_type = str(question["value_type"])
+                if not (value_type.startswith("Ref[") and value_type.endswith("]")):
+                    raise EpiqError(
+                        "invalid_relationship_question",
+                        f"Field {question['name']} is not a relationship field",
+                    )
+                subject = self._resolve_entity(connection, str(finding["subject_entity_id"]))
+                if str(subject["kind"]) != str(question["subject_kind"]):
+                    raise EpiqError(
+                        "subject_type_mismatch",
+                        f"Field {question['name']} applies to {question['subject_kind']}, "
+                        f"not {subject['kind']}",
+                    )
+                target_key = str(
+                    finding.get("target_entity_id") or finding.get("target_name") or ""
+                ).casefold()
+                grouped_targets.setdefault((str(subject["entity_id"]), question_id), set()).add(
+                    target_key
+                )
+
+            for (subject_id, question_id), targets in grouped_targets.items():
+                question = resolved_questions[question_id]
+                definition = json.loads(str(question["definition_json"]))
+                if definition.get("cardinality", "one") == "one" and len(targets) > 1:
+                    raise EpiqError(
+                        "cardinality_mismatch",
+                        f"Field {question['name']} allows one value, but this review contains "
+                        f"{len(targets)} values for {subject_id}",
+                        "Revise the field to cardinality many before approving these findings.",
+                    )
+
+            accepted: list[dict[str, Any]] = []
+            retrieved_at = _now()[:10]
+            for finding in findings:
+                question = resolved_questions[str(finding["question_id"])]
+                target_kind = str(question["value_type"])[4:-1].strip()
+                target_id = finding.get("target_entity_id")
+                if target_id:
+                    target = self._resolve_entity(connection, str(target_id))
+                    if str(target["kind"]) != target_kind:
+                        raise EpiqError(
+                            "reference_type_mismatch",
+                            f"Expected reference to {target_kind}, not {target['kind']}",
+                        )
+                    target_id = str(target["entity_id"])
+                else:
+                    target = self._find_entity_by_identity(
+                        connection, str(finding["target_name"]), target_kind
+                    )
+                    target_id = (
+                        str(target["entity_id"])
+                        if target
+                        else self._add_entity_tx(
+                            connection,
+                            target_kind,
+                            str(finding["target_name"]),
+                            {"suggested_by": "relationship_research"},
+                            actor,
+                        )
+                    )
+                source_type = str(finding.get("source_type") or "web")
+                _, evidence_id = self._add_evidence_tx(
+                    connection,
+                    str(finding.get("source_url") or f"urn:epiq:{source_type}"),
+                    str(finding.get("source_title") or "Source"),
+                    str(finding.get("retrieved_at") or retrieved_at),
+                    str(finding["excerpt"]),
+                    actor,
+                    finding.get("source_published_at"),
+                    source_type,
+                )
+                valid_from = str(
+                    finding.get("observed_as_of")
+                    or finding.get("source_published_at")
+                    or finding.get("retrieved_at")
+                    or retrieved_at
+                )
+                claim_id, _, _ = self._assert_claim_tx(
+                    connection,
+                    str(finding["subject_entity_id"]),
+                    str(question["question_id"]),
+                    target_id,
+                    valid_from,
+                    evidence_id,
+                    actor,
+                    confidence=str(finding.get("confidence") or "medium"),
+                    temporal_basis=(
+                        "observed"
+                        if finding.get("observed_as_of")
+                        else "source"
+                        if finding.get("source_published_at")
+                        else "unknown"
+                    ),
+                )
+                accepted.append(
+                    {
+                        "suggestion_id": str(finding["suggestion_id"]),
+                        "target_entity_id": target_id,
+                        "claim_id": claim_id,
+                    }
+                )
+            result = {"count": len(accepted), "accepted": accepted}
+            self._event(
+                connection,
+                "relationship.review_approved",
+                actor,
+                {
+                    "review_id": review_id,
+                    "reason": reason.strip(),
+                    "suggestion_ids": [item["suggestion_id"] for item in accepted],
+                    "result": result,
+                },
+            )
+            return result
+
     def write_batch(self, operations: list[dict[str, Any]], actor: str) -> list[dict[str, Any]]:
         """Atomically add evidence and dependent claims using batch-local evidence references."""
         if not operations:
@@ -2738,9 +2886,7 @@ class Store:
                             "invalid_derivation_parameters", "divide requires two inputs"
                         )
                     if values[1] == 0:
-                        raise EpiqError(
-                            "division_by_zero", "Cannot divide by a zero-valued claim"
-                        )
+                        raise EpiqError("division_by_zero", "Cannot divide by a zero-valued claim")
                     result = values[0] / values[1]
                 elif operation == "expression":
                     expression = params.get("expression")
@@ -3673,9 +3819,7 @@ class Store:
                         "name": question["name"],
                         "label": question["definition"].get("label", question["name"]),
                         "value_type": question["value_type"],
-                        "research_guidance": question["definition"].get(
-                            "research_guidance", ""
-                        ),
+                        "research_guidance": question["definition"].get("research_guidance", ""),
                     }
                     for question in projection["questions"]
                 ],

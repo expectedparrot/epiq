@@ -269,6 +269,15 @@ class AcceptRelationshipSuggestionsCreate(BaseModel):
     actor: str = "human:web"
 
 
+class RelationshipReviewScope(BaseModel):
+    scope: Literal["cell", "column", "table"]
+    subject_entity_id: str | None = None
+    question_id: str | None = None
+    review_id: str = Field(default_factory=lambda: f"rrv_{uuid.uuid4().hex}")
+    reason: str = "Approved provisional relationship research"
+    actor: str = "human:web"
+
+
 class SuggestFieldsCreate(BaseModel):
     entity_kind: str = Field(min_length=1)
     count: int = Field(default=5, ge=1, le=20)
@@ -1407,10 +1416,7 @@ def create_app(
                         continue
                     values = finding["value"]
                     names = values if isinstance(values, list) else [values]
-                    if (
-                        question["definition"].get("cardinality", "one") == "one"
-                        and len(names) > 1
-                    ):
+                    if question["definition"].get("cardinality", "one") == "one" and len(names) > 1:
                         cardinality_mismatch = True
                     for raw_name in names:
                         name = str(raw_name).strip()
@@ -1697,6 +1703,77 @@ def create_app(
             )
         return launch_research(request)
 
+    def scoped_relationship_suggestions(
+        body: RelationshipReviewScope,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        if body.scope == "cell" and (not body.subject_entity_id or not body.question_id):
+            raise EpiqError(
+                "invalid_review_scope",
+                "Cell review requires subject_entity_id and question_id",
+            )
+        if body.scope == "column" and not body.question_id:
+            raise EpiqError("invalid_review_scope", "Column review requires question_id")
+        selected: list[tuple[str, dict[str, Any]]] = []
+        with app.state.research_lock:
+            for job_id, job in app.state.research_jobs.items():
+                for item in job.get("relationship_suggestions", []):
+                    if item.get("status") != "pending":
+                        continue
+                    if body.question_id and item.get("question_id") != body.question_id:
+                        continue
+                    if (
+                        body.subject_entity_id
+                        and item.get("subject_entity_id") != body.subject_entity_id
+                    ):
+                        continue
+                    selected.append((job_id, dict(item)))
+        if not selected:
+            raise EpiqError("empty_review", "No pending provisional relationships match this scope")
+        return selected
+
+    def mark_relationship_suggestions_accepted(
+        selected: list[tuple[str, dict[str, Any]]], result: dict[str, Any]
+    ) -> None:
+        accepted_by_id = {str(item["suggestion_id"]): item for item in result.get("accepted", [])}
+        touched_jobs = {job_id for job_id, _ in selected}
+        with app.state.research_lock:
+            for job_id in touched_jobs:
+                job = app.state.research_jobs[job_id]
+                for suggestion in job.get("relationship_suggestions", []):
+                    accepted = accepted_by_id.get(str(suggestion["suggestion_id"]))
+                    if accepted:
+                        suggestion.update(accepted)
+                        suggestion["status"] = "accepted"
+                persist_job(job_id)
+
+    @app.post("/api/research/relationships/preview")
+    def preview_relationship_review(body: RelationshipReviewScope) -> dict[str, Any]:
+        selected = scoped_relationship_suggestions(body)
+        findings = [item for _, item in selected]
+        return {
+            "review_id": body.review_id,
+            "scope": body.scope,
+            "count": len(findings),
+            "jobs": len({job_id for job_id, _ in selected}),
+            "subjects": len({str(item["subject_entity_id"]) for item in findings}),
+            "questions": len({str(item["question_id"]) for item in findings}),
+            "creates": sum(1 for item in findings if not item.get("target_entity_id")),
+            "links": sum(1 for item in findings if item.get("target_entity_id")),
+            "suggestion_ids": [str(item["suggestion_id"]) for item in findings],
+        }
+
+    @app.post("/api/research/relationships/accept", status_code=201)
+    def accept_scoped_relationship_review(body: RelationshipReviewScope) -> dict[str, Any]:
+        selected = scoped_relationship_suggestions(body)
+        findings = [
+            {**item, "retrieved_at": datetime.now(UTC).date().isoformat()} for _, item in selected
+        ]
+        result = store().approve_relationship_findings(
+            findings, body.actor, body.review_id, body.reason
+        )
+        mark_relationship_suggestions_accepted(selected, result)
+        return {**result, "review_id": body.review_id, "scope": body.scope}
+
     @app.post("/api/research/jobs/{job_id}/relationships/accept", status_code=201)
     def accept_relationship_suggestions(
         job_id: str, body: AcceptRelationshipSuggestionsCreate
@@ -1715,77 +1792,19 @@ def create_app(
                 "relationship_suggestion_not_found",
                 "One or more relationship suggestions are unavailable or already reviewed",
             )
-        project = store()
-        accepted = []
-        for suggestion in selected:
-            target_id = suggestion.get("target_entity_id")
-            if not target_id:
-                rows = project.matrix(str(suggestion["target_kind"]))["rows"]
-                existing = next(
-                    (
-                        row
-                        for row in rows
-                        if str(row["name"]).casefold() == str(suggestion["target_name"]).casefold()
-                    ),
-                    None,
-                )
-                target_id = (
-                    str(existing["entity_id"])
-                    if existing
-                    else project.add_entity(
-                        str(suggestion["target_kind"]),
-                        str(suggestion["target_name"]),
-                        {"suggested_by": "relationship_research"},
-                        body.actor,
-                    )
-                )
-            source_type = str(suggestion["source_type"])
-            source_url = suggestion.get("source_url") or f"urn:epiq:{source_type}"
-            _, evidence_id = project.add_evidence(
-                str(source_url),
-                str(suggestion["source_title"]),
-                datetime.now(UTC).date().isoformat(),
-                str(suggestion["excerpt"]),
-                body.actor,
-                suggestion.get("source_published_at"),
-                source_type,
-            )
-            claim_id = project.assert_claim(
-                str(suggestion["subject_entity_id"]),
-                str(suggestion["question_id"]),
-                target_id,
-                str(
-                    suggestion.get("observed_as_of")
-                    or suggestion.get("source_published_at")
-                    or datetime.now(UTC).date().isoformat()
-                ),
-                evidence_id,
-                body.actor,
-                confidence=str(suggestion["confidence"]),
-                temporal_basis=(
-                    "observed"
-                    if suggestion.get("observed_as_of")
-                    else "source"
-                    if suggestion.get("source_published_at")
-                    else "unknown"
-                ),
-            )
-            accepted.append(
-                {
-                    "suggestion_id": suggestion["suggestion_id"],
-                    "target_entity_id": target_id,
-                    "claim_id": claim_id,
-                }
-            )
-        with app.state.research_lock:
-            by_id = {item["suggestion_id"]: item for item in accepted}
-            for suggestion in job.get("relationship_suggestions", []):
-                result = by_id.get(suggestion["suggestion_id"])
-                if result:
-                    suggestion.update(result)
-                    suggestion["status"] = "accepted"
-            persist_job(job_id)
-        return {"count": len(accepted), "accepted": accepted}
+        findings = [
+            {**item, "retrieved_at": datetime.now(UTC).date().isoformat()} for item in selected
+        ]
+        suggestion_key = ",".join(sorted(str(item["suggestion_id"]) for item in selected))
+        review_id = f"rrv_job_{sha256(f'{job_id}:{suggestion_key}'.encode()).hexdigest()[:20]}"
+        result = store().approve_relationship_findings(
+            findings,
+            body.actor,
+            review_id,
+            "Approved selected relationship research findings",
+        )
+        mark_relationship_suggestions_accepted([(job_id, item) for item in selected], result)
+        return result
 
     @app.post("/api/research/schema-adaptations/{question_id}/accept", status_code=201)
     def accept_schema_adaptation(
@@ -1796,8 +1815,7 @@ def create_app(
                 (job_id, job)
                 for job_id, job in app.state.research_jobs.items()
                 if (job.get("schema_adaptation") or {}).get("question_id") == question_id
-                and (job.get("schema_adaptation") or {}).get("status")
-                in {"pending", "applying"}
+                and (job.get("schema_adaptation") or {}).get("status") in {"pending", "applying"}
             ]
         if not matching:
             raise EpiqError(
@@ -1825,9 +1843,7 @@ def create_app(
             },
             body.actor,
         )
-        accepted_by_id = {
-            item["suggestion_id"]: item for item in result.get("accepted", [])
-        }
+        accepted_by_id = {item["suggestion_id"]: item for item in result.get("accepted", [])}
         with app.state.research_lock:
             for job_id, job in matching:
                 job["question_id"] = result["question_id"]
