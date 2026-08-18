@@ -89,6 +89,21 @@ function duplicateLaunchNotice(jobs: ResearchJob[]) {
     ? `${count} research ${count === 1 ? "job is" : "jobs are"} already running`
     : "";
 }
+
+function jobRevision(jobs: ResearchJob[]) {
+  return JSON.stringify(
+    jobs.map((job) => [
+      job.job_id,
+      job.status,
+      job.completed,
+      job.written,
+      job.messages.at(-1)?.at,
+      job.child_job_ids?.length ?? 0,
+      job.relationship_suggestions?.filter((item) => item.status === "pending")
+        .length ?? 0,
+    ]),
+  );
+}
 type Dialog =
   | "entity"
   | "entityKind"
@@ -350,6 +365,7 @@ export default function App() {
   const [clipboardNotice, setClipboardNotice] = useState("");
   const [jobNotice, setJobNotice] = useState("");
   const jobsRef = useRef<ResearchJob[]>([]);
+  const jobsRevisionRef = useRef("");
   const [staleDerivations, setStaleDerivations] = useState<StaleDerivation[]>(
     [],
   );
@@ -556,13 +572,22 @@ export default function App() {
           const hasActive = next.some(
             (job) => job.status === "queued" || job.status === "running",
           );
+          const nextRevision = jobRevision(next);
+          const progressChanged = nextRevision !== jobsRevisionRef.current;
+          jobsRevisionRef.current = nextRevision;
           setJobs((current) => {
             const hadActive = current.some(
               (job) => job.status === "queued" || job.status === "running",
             );
             // Research jobs persist claims independently. Re-project while work is
             // active so completed cells appear without waiting for sibling jobs.
-            if (hasActive || hadActive) void loadMatrix();
+            if (progressChanged || hasActive || hadActive) void loadMatrix();
+            if (
+              progressChanged &&
+              next.some((job) => job.job_type === "workspace_agent")
+            ) {
+              void loadOverview();
+            }
             return next;
           });
         }
@@ -571,12 +596,22 @@ export default function App() {
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 1500);
+    const timer = window.setInterval(() => void poll(), 750);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, [needsInit, loadMatrix, loadOverview]);
+  useEffect(() => {
+    if (needsInit || projectClosed) return;
+    const refreshVisibleProject = () => {
+      if (document.visibilityState !== "visible") return;
+      void loadOverview();
+      void loadMatrix();
+    };
+    const timer = window.setInterval(refreshVisibleProject, 5000);
+    return () => window.clearInterval(timer);
+  }, [needsInit, projectClosed, loadOverview, loadMatrix]);
 
   const refresh = async () => {
     setSelection(null);
@@ -2658,7 +2693,7 @@ export default function App() {
         )}
         {showWorkspaceAgent && (
           <WorkspaceAgentPanel
-            jobs={jobs.filter((job) => job.job_type === "workspace_agent")}
+            jobs={jobs}
             onClose={() => setShowWorkspaceAgent(false)}
             onSend={directWorkspaceAgent}
             onCancel={cancelResearch}
@@ -5115,7 +5150,10 @@ function WorkspaceAgentPanel({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
-  const ordered = [...jobs].reverse();
+  const ordered = jobs
+    .filter((job) => job.job_type === "workspace_agent")
+    .reverse();
+  const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [jobs]);
@@ -5159,13 +5197,27 @@ function WorkspaceAgentPanel({
             </div>
           </div>
         )}
-        {ordered.map((job) => (
-          <div className="agent-exchange" key={job.job_id}>
+        {ordered.map((job) => {
+          const children = (job.child_job_ids ?? [])
+            .map((id) => jobsById.get(id))
+            .filter((item): item is ResearchJob => Boolean(item));
+          const finishedChildren = children.filter((item) =>
+            ["completed", "failed", "cancelled"].includes(item.status),
+          );
+          const failedChildren = children.filter((item) => item.status === "failed");
+          const activeChildren = children.filter((item) =>
+            ["queued", "running"].includes(item.status),
+          );
+          const childWrites = children.reduce((total, item) => total + (item.written ?? 0), 0);
+          const isWorking = ["queued", "running"].includes(job.status) || activeChildren.length > 0;
+          return <div className="agent-exchange" key={job.job_id}>
             <div className="agent-message user-message">{job.user_message ?? job.instructions}</div>
-            <div className={`agent-message assistant-message ${job.status}`}>
+            <div className={`agent-message assistant-message ${isWorking ? "running" : job.status}`}>
               <div className="agent-message-status">
-                <span className={`job-status ${job.status}`}>{job.status}</span>
-                {job.status === "running" && <i className="agent-spinner" />}
+                <span className={`job-status ${isWorking ? "running" : job.status}`}>
+                  {isWorking ? "working" : job.status}
+                </span>
+                {isWorking && <i className="agent-spinner" />}
               </div>
               {job.assistant_summary ? <p>{job.assistant_summary}</p> : (
                 <p>{job.messages.at(-1)?.message ?? "Preparing the workspace…"}</p>
@@ -5178,13 +5230,30 @@ function WorkspaceAgentPanel({
                   <span>{job.child_job_ids?.length ?? 0} research jobs</span>
                 </div>
               )}
+              {children.length > 0 && (
+                <div className="agent-child-progress">
+                  <div>
+                    <b>{finishedChildren.length} of {children.length} cells researched</b>
+                    <span>{childWrites} updated{failedChildren.length ? ` · ${failedChildren.length} failed` : ""}</span>
+                  </div>
+                  <div className="job-progress">
+                    <i style={{ width: `${(finishedChildren.length / children.length) * 100}%` }} />
+                  </div>
+                  {activeChildren.length > 0 && (
+                    <small>{activeChildren.slice(0, 3).map((item) => item.messages.at(-1)?.message).filter(Boolean).join(" · ")}</small>
+                  )}
+                </div>
+              )}
               {job.error && <div className="form-error">{job.error}</div>}
-              {(job.status === "queued" || job.status === "running") && (
-                <button className="job-action" onClick={() => void onCancel(job.job_id)}>Cancel</button>
+              {isWorking && (
+                <button className="job-action" onClick={() => {
+                  const targets = activeChildren.length ? activeChildren : [job];
+                  void Promise.all(targets.map((item) => onCancel(item.job_id)));
+                }}>Cancel active work</button>
               )}
             </div>
-          </div>
-        ))}
+          </div>;
+        })}
       </div>
       <form className="agent-composer" onSubmit={submit}>
         <textarea

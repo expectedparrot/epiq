@@ -2400,6 +2400,30 @@ button:hover {
   font: 9px DM Mono;
   padding: 4px 7px;
 }
+.agent-child-progress {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #d8d7cf;
+}
+.agent-child-progress > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+.agent-child-progress b {
+  font-size: 10px;
+}
+.agent-child-progress span,
+.agent-child-progress small {
+  color: var(--muted);
+  font-size: 9px;
+}
+.agent-child-progress small {
+  display: block;
+  margin-top: 6px;
+  line-height: 1.4;
+}
 .agent-composer {
   border-top: 1px solid var(--line);
   padding: 14px 16px 16px;
