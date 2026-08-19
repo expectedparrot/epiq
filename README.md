@@ -150,6 +150,77 @@ explicit compact-output modes.
 For readability, JSON fragments shown throughout the tutorial represent the envelope's `data`
 member unless the complete envelope is being discussed.
 
+## Use Epiq from a coding agent — copy and paste
+
+Paste this prompt into Codex, Claude Code, or another coding agent when you want it to create,
+inspect, or continue an Epiq research project. Replace the bracketed objective; the rest can be used
+unchanged.
+
+```text
+Use Epiq to help me with this research objective:
+
+[DESCRIBE WHAT YOU WANT TO RESEARCH]
+
+Treat Epiq as the system of record for the work. Follow this protocol:
+
+1. Work from the Epiq repository or an environment where `epiq` is installed. Do not modify Epiq's
+   source code unless I explicitly ask you to develop the package.
+2. Orient yourself before making project changes. Run:
+     epiq version
+     epiq capabilities
+     epiq guide
+     epiq db
+     epiq agent status
+     epiq next
+   Epiq returns a versioned JSON envelope. Read results from `data`, errors from `errors`, and
+   recommendations from `next_steps`. Never execute a suggested action without first checking its
+   `mutates_state`, `uses_network`, and `requires_approval` fields.
+3. If no database has been selected, ask me where it should live. Then select it once with:
+     epiq use PATH.sqlite
+   If the selected database does not exist, initialize it only after its location and project name
+   are clear:
+     epiq init --name "PROJECT NAME"
+   Never overwrite, delete, or silently replace an existing database.
+4. Inspect the current project before proposing work:
+     epiq schema
+     epiq context
+     epiq agent status
+   If this is a new project, propose a concise table-and-field design and explain which tables are
+   entities, observations, or relationships. Obtain my approval before applying a substantial new
+   schema. Use typed fields and Ref[...] relationships instead of embedding structured records in
+   strings or JSON cells.
+5. Use Epiq's exact command contract rather than guessing syntax. For a command, run:
+     epiq capabilities --command COMMAND
+   For installed operational guidance and schemas, use:
+     epiq docs list
+     epiq docs show workflow
+     epiq agent schema envelope
+6. Preserve provenance. For every factual answer, record the source, retrieval date, and a bounded
+   excerpt that actually supports the value. Prefer `epiq record` when one source supports one or
+   more cells. Use `epiq not-found` when a bounded search found no adequate evidence; do not turn
+   missing evidence into a negative claim. Keep observation time distinct from retrieval time, and
+   respect each field's volatility and freshness policy.
+7. If external research is needed, first use `epiq gaps`, `epiq stale`, or `epiq refresh-plan` to
+   define bounded tasks. Use only research tools and network access available to you. Epiq itself is
+   deterministic and does not search the web. Do not invent citations, excerpts, dates, entities,
+   or answers.
+8. Identify your writes with `--actor agent:codex` or `--actor agent:claude-code`, as appropriate.
+   Validate values against the declared field types. Prefer atomic `record`, `batch-write`, or
+   declarative `apply` operations over long chains of partially completed writes.
+9. Treat contested claims, duplicate entities, pending proposals, and field-schema challenges as
+   review work—not as permission to discard history. Use correction, merge, retirement, and review
+   commands exposed by `epiq capabilities`; never edit the SQLite database directly.
+10. Work incrementally. After each material stage, run `epiq agent status` and `epiq next`, summarize
+    what changed, identify anything requiring my judgment, and continue only within the authority I
+    gave you. Before declaring completion, run `epiq doctor` and report the database path, tables
+    changed, research coverage, unresolved review items, and useful export commands.
+
+Do not print secrets. Do not commit databases, credentials, generated exports, or workspace-local
+configuration unless I explicitly request it. Do not claim research is complete merely because a
+command succeeded; completion means the agreed questions are answered, explicitly NotFound, or
+clearly reported as unresolved.
+```
+
 ## Tutorial: build a town database
 
 ### 1. Select a database
