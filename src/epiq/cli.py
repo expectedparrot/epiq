@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .agent_interface import (
+    action,
+    capabilities_data,
+    docs_list_data,
+    docs_show_data,
+    envelope,
+    guide_data,
+    next_actions,
+    schema_data,
+    status_data,
+    version_data,
+)
 from .demo import load_patriots
 from .dsl import describe, parse
 from .edsl_export import write_edsl
@@ -25,6 +37,14 @@ from .xlsx import write_xlsx
 
 CONFIG_PATH = Path(".epiq/config.json")
 DEFAULT_DB = Path(".epiq/epiq.sqlite")
+
+
+class AgentArgumentParser(argparse.ArgumentParser):
+    """Turn usage failures into the same machine-readable error contract."""
+
+    def error(self, message: str) -> None:
+        raise EpiqError("usage_error", message, self.format_usage().strip())
+
 
 CAPABILITY_EXAMPLES = {
     "init": "epiq init --name 'Market research'",
@@ -214,16 +234,14 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
     if command:
         catalog = [item for item in catalog if item["cli_command"] == command]
     return {
-        "protocol": {"name": "epiq-cli", "version": 1, "epiq_version": __version__},
+        "protocol": {"name": "epiq-cli", "version": 2, "epiq_version": __version__},
         "transport": {
             "input": "command arguments plus JSON strings/files where declared",
-            "success": "one JSON value on stdout and exit status 0",
+            "success": "one versioned JSON envelope on stdout and exit status 0",
             "error": {
                 "stream": "stderr",
                 "exit_status": 2,
-                "shape": {
-                    "error": {"code": "string", "message": "string", "suggestion": "string|null"}
-                },
+                "shape": "the same envelope with status=error and one or more errors",
             },
             "global_options": [
                 _argument_schema(action)
@@ -351,10 +369,7 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
             "ambiguous_propagation": "resolve competing sources or restrict the path",
         },
         "commands": commands,
-        "next_actions": [
-            "Run `epiq capabilities --command record` for write syntax.",
-            "Run `epiq schema` and `epiq context` after selecting a project.",
-        ],
+        "agent_interface": capabilities_data(),
     }
 
 
@@ -380,6 +395,28 @@ def _project_schema(store: Store, kind: str | None = None) -> dict[str, Any]:
 
 def _emit(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _command_name(args: argparse.Namespace) -> str:
+    """Return the stable logical command name, including nested commands."""
+    parts = ["epiq", str(args.command)]
+    if args.command == "agent":
+        parts.append(str(args.agent_command))
+    elif args.command == "docs":
+        parts.append(str(args.docs_command))
+    return " ".join(parts)
+
+
+def _human_output(data: Any, args: argparse.Namespace) -> str:
+    """Render explicit human output without changing the default contract."""
+    if args.command == "docs" and args.docs_command == "show":
+        return str(data["markdown"])
+    try:
+        return _table(data, args.command)
+    except EpiqError as error:
+        if error.code != "table_format_unsupported":
+            raise
+    return json.dumps(data, indent=2, sort_keys=True)
 
 
 def _value(raw: str) -> Any:
@@ -566,15 +603,32 @@ def _database(explicit: str | None) -> tuple[Path, str]:
 
 def parser() -> argparse.ArgumentParser:
     """Build the CLI parser."""
-    root = argparse.ArgumentParser(
-        prog="epiq", description="Evidence-backed agent research database"
-    )
+    root = AgentArgumentParser(prog="epiq", description="Evidence-backed agent research database")
     root.add_argument("--db", help="SQLite project path; overrides EPIQ_DB and workspace config")
     root.add_argument("--actor", default="human:cli", help="Actor recorded for write commands")
     root.add_argument("--quiet", action="store_true", help="Suppress successful command output")
     root.add_argument("--select", help="Emit only a dotted output path, such as entity_id")
     root.add_argument("--format", choices=["json", "ids", "table"], default="json")
+    root.add_argument("--human", "-H", action="store_true", help="Emit human-readable output")
     commands = root.add_subparsers(dest="command", required=True)
+
+    commands.add_parser("version", help="Report package and public contract versions")
+    commands.add_parser("guide", help="Describe the complete Epiq workflow and boundaries")
+    commands.add_parser("next", help="Return the safest useful next action for this project")
+
+    agent_parser = commands.add_parser(
+        "agent", help="Inspect the versioned agent contract and current workflow state"
+    )
+    agent_commands = agent_parser.add_subparsers(dest="agent_command", required=True)
+    agent_commands.add_parser("status", help="Return project state, blockers, and next actions")
+    agent_schema = agent_commands.add_parser("schema", help="Return one bundled JSON Schema")
+    agent_schema.add_argument("name", help="Schema name: envelope, action, or agent-status")
+
+    docs_parser = commands.add_parser("docs", help="Read documentation bundled with Epiq")
+    docs_commands = docs_parser.add_subparsers(dest="docs_command", required=True)
+    docs_commands.add_parser("list", help="List bundled documentation topics")
+    docs_show = docs_commands.add_parser("show", help="Return one bundled Markdown document")
+    docs_show.add_argument("name")
 
     init = commands.add_parser("init", help="Initialize a project")
     init.add_argument("--name", required=True)
@@ -1045,6 +1099,14 @@ def parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     """Execute one parsed command."""
+    if args.command == "version":
+        return version_data()
+    if args.command == "guide":
+        return guide_data()
+    if args.command == "docs":
+        return docs_list_data() if args.docs_command == "list" else docs_show_data(args.name)
+    if args.command == "agent" and args.agent_command == "schema":
+        return schema_data(args.name)
     if args.command == "use":
         database = Path(args.database).expanduser().resolve()
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1069,6 +1131,50 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "database": str(database),
             "source": database_source,
             "exists": database.exists(),
+        }
+    if args.command == "next" and not database.exists():
+        return {
+            "ready": False,
+            "blockers": [
+                {"code": "project_not_found", "message": f"Database does not exist: {database}"}
+            ],
+            "next_actions": [
+                action(
+                    "initialize-project",
+                    "Initialize the selected research project",
+                    ["epiq", "--db", str(database.resolve()), "init", "--name", "<project name>"],
+                    mutates_state=True,
+                    reason="No Epiq database exists at the selected path.",
+                )
+            ],
+        }
+    if args.command == "agent" and args.agent_command == "status" and not database.exists():
+        return {
+            "schema_version": "1.0",
+            "ready": False,
+            "database": {
+                "path": str(database.resolve()),
+                "source": database_source,
+                "exists": False,
+            },
+            "project": None,
+            "tables": [],
+            "table_health": [],
+            "jobs": {"active": [], "failed": [], "total": 0},
+            "review_queues": {"claim_proposals": 0, "question_challenges": 0},
+            "integrity": None,
+            "blockers": [
+                {"code": "project_not_found", "message": f"Database does not exist: {database}"}
+            ],
+            "next_actions": [
+                action(
+                    "initialize-project",
+                    "Initialize the selected research project",
+                    ["epiq", "--db", str(database.resolve()), "init", "--name", "<project name>"],
+                    mutates_state=True,
+                    reason="No Epiq database exists at the selected path.",
+                )
+            ],
         }
     store = Store(database)
     if args.command == "init":
@@ -1103,6 +1209,13 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         return store.migrate(args.backup)
     if args.command == "doctor":
         return store.doctor()
+    if args.command == "next":
+        return {
+            "ready": True,
+            "next_actions": next_actions(store, database, database_source),
+        }
+    if args.command == "agent" and args.agent_command == "status":
+        return status_data(store, database, database_source)
     if args.command == "backup":
         output = store.backup(args.output, args.force)
         return {"ok": True, "database": str(database), "backup": str(output)}
@@ -1555,7 +1668,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 result: Any = len(values)
             else:
                 numeric = all(
-                    isinstance(item, (int, float)) and not isinstance(item, bool) for item in values
+                    isinstance(item, int | float) and not isinstance(item, bool) for item in values
                 )
                 if not numeric:
                     raise EpiqError(
@@ -1727,39 +1840,91 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run Epiq and emit exactly one JSON value."""
+    """Run Epiq and emit exactly one versioned JSON envelope by default."""
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    full_argv = ["epiq", *raw_argv]
+    command = "epiq"
     try:
-        args = parser().parse_args(argv)
+        args = parser().parse_args(raw_argv)
+        command = _command_name(args)
         result = run(args)
         if args.quiet:
             return
         if args.select:
             result = _select(result, args.select)
+            if args.format == "json" and not args.human:
+                print(json.dumps(result, sort_keys=True))
+                return
         if args.format == "ids":
-            result = _ids(result)
-        if args.format == "table":
-            print(_table(result, args.command))
+            print(json.dumps(_ids(result)))
+        elif args.format == "table" or args.human:
+            print(_human_output(result, args))
         else:
-            _emit(result)
+            next_steps = []
+            if isinstance(result, dict) and isinstance(result.get("next_actions"), list):
+                next_steps = result["next_actions"]
+            _emit(envelope(command, full_argv, data=result, next_steps=next_steps))
     except EpiqError as exc:
-        print(json.dumps({"error": exc.as_dict()}, sort_keys=True), file=sys.stderr)
+        print(
+            json.dumps(
+                envelope(
+                    command,
+                    full_argv,
+                    status="error",
+                    errors=[exc.as_dict()],
+                ),
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
         raise SystemExit(2) from None
     except (json.JSONDecodeError, OSError) as exc:
         print(
-            json.dumps({"error": {"code": "invalid_input", "message": str(exc)}}, sort_keys=True),
+            json.dumps(
+                envelope(
+                    command,
+                    full_argv,
+                    status="error",
+                    errors=[{"code": "invalid_input", "message": str(exc)}],
+                ),
+                sort_keys=True,
+            ),
             file=sys.stderr,
         )
         raise SystemExit(2) from None
     except sqlite3.Error as exc:
         print(
             json.dumps(
-                {
-                    "error": {
-                        "code": "database_error",
-                        "message": str(exc),
-                        "suggestion": "Run `epiq doctor` and restore a recent backup if needed.",
-                    }
-                },
+                envelope(
+                    command,
+                    full_argv,
+                    status="error",
+                    errors=[
+                        {
+                            "code": "database_error",
+                            "message": str(exc),
+                            "suggestion": (
+                                "Run `epiq doctor` and restore a recent backup if needed."
+                            ),
+                        }
+                    ],
+                ),
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
+    except Exception as exc:
+        if os.environ.get("EPIQ_DEBUG"):
+            raise
+        print(
+            json.dumps(
+                envelope(
+                    command,
+                    full_argv,
+                    status="error",
+                    errors=[{"code": "internal_error", "message": str(exc)}],
+                ),
                 sort_keys=True,
             ),
             file=sys.stderr,

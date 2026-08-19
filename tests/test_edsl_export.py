@@ -82,7 +82,7 @@ def test_unified_cli_exports_edsl_excel_and_sqlite(tmp_path: Path, capsys) -> No
             str(agent_list),
         ]
     )
-    assert json.loads(capsys.readouterr().out)["format"] == "agent-list"
+    assert json.loads(capsys.readouterr().out)["data"]["format"] == "agent-list"
     assert agent_list.read_bytes().startswith(b"PK")
 
     workbook = tmp_path / "audit.xlsx"
@@ -99,7 +99,7 @@ def test_unified_cli_exports_edsl_excel_and_sqlite(tmp_path: Path, capsys) -> No
             str(workbook),
         ]
     )
-    assert json.loads(capsys.readouterr().out)["format"] == "xlsx"
+    assert json.loads(capsys.readouterr().out)["data"]["format"] == "xlsx"
     assert workbook.read_bytes().startswith(b"PK")
 
     backup = tmp_path / "backup.sqlite"
@@ -114,5 +114,5 @@ def test_unified_cli_exports_edsl_excel_and_sqlite(tmp_path: Path, capsys) -> No
             str(backup),
         ]
     )
-    assert json.loads(capsys.readouterr().out)["format"] == "sqlite"
+    assert json.loads(capsys.readouterr().out)["data"]["format"] == "sqlite"
     assert Store(backup).doctor()["ok"] is True

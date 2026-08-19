@@ -8,23 +8,39 @@ from epiq.cli import main
 from epiq.store import Store
 
 
+def _data(capsys):
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "1.0"
+    assert payload["status"] == "ok"
+    assert payload["errors"] == []
+    return payload["data"]
+
+
+def _error(capsys):
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["schema_version"] == "1.0"
+    assert payload["status"] == "error"
+    assert payload["data"] is None
+    return payload["errors"][0]
+
+
 def test_cli_demo_round_trip(tmp_path: Path, capsys) -> None:
     database = tmp_path / "demo.sqlite"
     main(["--db", str(database), "init", "--name", "Demo"])
-    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert _data(capsys)["ok"] is True
 
     main(["--db", str(database), "demo", "patriots"])
-    demo = json.loads(capsys.readouterr().out)
+    demo = _data(capsys)
     assert demo["final"]["record"] == "14-3"
 
     main(["--db", str(database), "season-record", "New England Patriots 2025"])
-    record = json.loads(capsys.readouterr().out)
+    record = _data(capsys)
     assert record["wins"] == 14
     assert len(record["lineage"]) == 17
 
     report = tmp_path / "report.html"
     main(["--db", str(database), "export-html", "--kind", "Game", "--output", str(report)])
-    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert _data(capsys)["ok"] is True
     assert "Patriots 2025 Week 1" in report.read_text()
 
 
@@ -33,22 +49,22 @@ def test_cli_can_remember_workspace_database(tmp_path: Path, capsys, monkeypatch
     database = tmp_path / "research" / "market.sqlite"
 
     main(["use", str(database)])
-    selected = json.loads(capsys.readouterr().out)
+    selected = _data(capsys)
     assert selected["exists"] is False
 
     main(["db"])
-    current = json.loads(capsys.readouterr().out)
+    current = _data(capsys)
     assert current["database"] == str(database)
     assert current["source"] == "workspace"
 
     main(["init", "--name", "Market"])
-    assert json.loads(capsys.readouterr().out)["database"] == str(database)
+    assert _data(capsys)["database"] == str(database)
     assert database.exists()
 
     environment_database = tmp_path / "environment.sqlite"
     monkeypatch.setenv("EPIQ_DB", str(environment_database))
     main(["db"])
-    current = json.loads(capsys.readouterr().out)
+    current = _data(capsys)
     assert current["database"] == str(environment_database)
     assert current["source"] == "environment"
 
@@ -56,12 +72,12 @@ def test_cli_can_remember_workspace_database(tmp_path: Path, capsys, monkeypatch
 def test_capabilities_are_machine_readable_without_a_project(tmp_path: Path, capsys) -> None:
     missing = tmp_path / "missing.sqlite"
     main(["--db", str(missing), "capabilities", "--command", "record"])
-    result = json.loads(capsys.readouterr().out)
+    result = _data(capsys)
 
     assert result["protocol"] == {
         "epiq_version": "0.1.0",
         "name": "epiq-cli",
-        "version": 1,
+        "version": 2,
     }
     command = result["commands"][0]
     assert command["name"] == "record"
@@ -91,17 +107,17 @@ def test_schema_and_context_include_question_only_kind(tmp_path: Path, capsys) -
         connection.execute("DELETE FROM entity_kinds WHERE kind='Item'")
 
     main(["--db", str(database), "schema"])
-    schema = json.loads(capsys.readouterr().out)
+    schema = _data(capsys)
     assert schema["tables"][0]["entity_kind"] == "Item"
     assert schema["tables"][0]["questions"][0]["name"] == "score"
 
     main(["--db", str(database), "context", "--budget", "1000"])
-    context = json.loads(capsys.readouterr().out)
+    context = _data(capsys)
     assert context["tables"][0]["entity_kind"] == "Item"
     assert context["tables"][0]["rows"] == []
 
     main(["--db", str(database), "capabilities", "--include-schema"])
-    capabilities = json.loads(capsys.readouterr().out)
+    capabilities = _data(capsys)
     assert capabilities["project_schema"]["tables"][0]["entity_kind"] == "Item"
 
 
@@ -140,7 +156,7 @@ def test_cli_derives_distribution_from_repeated_input_claims(tmp_path: Path, cap
             "2026-08-17",
         ]
     )
-    result = json.loads(capsys.readouterr().out)
+    result = _data(capsys)
     assert result["input_claim_ids"] == inputs
     assert store.matrix("WeatherEvent")["rows"][0]["cells"]["ensemble"]["value"] == {
         "kind": "empirical",
@@ -191,7 +207,7 @@ def test_cli_derive_uses_claim_backed_weights(tmp_path: Path, capsys) -> None:
             "2026-08-17",
         ]
     )
-    result = json.loads(capsys.readouterr().out)
+    result = _data(capsys)
     assert len(result["parameter_claim_ids"]) == 2
     cell = store.matrix("Review")["rows"][0]["cells"]["pooled"]
     assert cell["value"] == pytest.approx(0.4)
@@ -219,7 +235,7 @@ def test_cli_materializes_declarative_formulas_per_row(tmp_path: Path, capsys) -
         store.assert_claim(name, "shipping", shipping, "2026-08-17", evidence, "test")
 
     main(["--db", str(database), "materialize", "--kind", "Quote", "--valid-from", "2026-08-17"])
-    result = json.loads(capsys.readouterr().out)
+    result = _data(capsys)
     assert [item["status"] for item in result["results"]] == ["materialized", "materialized"]
     assert [row["cells"]["landed"]["value"] for row in store.matrix("Quote")["rows"]] == [
         45.0,
@@ -262,7 +278,7 @@ def test_cli_propagates_claim_through_relationship_path(tmp_path: Path, capsys) 
             "2026-08-17",
         ]
     )
-    result = json.loads(capsys.readouterr().out)
+    result = _data(capsys)
     assert result["source_entity"] == "Cobalt"
     cell = next(row for row in store.matrix("Company")["rows"] if row["name"] == "Acorn")["cells"][
         "inherited_risk"
@@ -277,7 +293,7 @@ def test_cli_propagates_claim_through_relationship_path(tmp_path: Path, capsys) 
     )
     store.assert_claim("Cobalt", "risk", "medium", "2026-08-18", update_evidence, "test")
     main(["--db", str(database), "stale-derivations"])
-    stale = json.loads(capsys.readouterr().out)
+    stale = _data(capsys)
     assert stale["count"] == 1
     assert stale["stale_derivations"][0]["reasons"] == [
         {
@@ -290,7 +306,7 @@ def test_cli_propagates_claim_through_relationship_path(tmp_path: Path, capsys) 
     store.add_entity("Company", "Delta", {}, "test")
     store.assert_claim("Beacon", "parent", "Delta", "2026-08-18", evidence, "test")
     main(["--db", str(database), "stale-derivations"])
-    stale = json.loads(capsys.readouterr().out)
+    stale = _data(capsys)
     assert any(
         reason["role"] == "path" and reason["reason"] == "newer_claim_available"
         for reason in stale["stale_derivations"][0]["reasons"]
@@ -302,7 +318,7 @@ def test_cli_crud_matrix_history_and_retraction(tmp_path: Path, capsys) -> None:
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Market")
     entity = invoke("entity", "Company", "Example", "--attributes", '{"domain":"example.test"}')
@@ -355,7 +371,7 @@ def test_cli_claim_review_and_atomic_bulk_write(tmp_path: Path, capsys) -> None:
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Review")
     entity = invoke("entity", "Company", "Acme")["entity_id"]
@@ -410,7 +426,7 @@ def test_cli_record_atomically_adds_evidence_and_supported_answers(tmp_path: Pat
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Record")
     invoke("entity", "Candidate", "Alex Rivera")
@@ -514,7 +530,7 @@ def test_cli_record_rolls_back_evidence_when_an_answer_is_invalid(tmp_path: Path
                 "1.5",
             ]
         )
-    error = json.loads(capsys.readouterr().err)["error"]
+    error = _error(capsys)
     assert error["code"] == "value_type_error"
     after = store.doctor()["counts"]
     assert after["evidence"] == before["evidence"]
@@ -526,7 +542,7 @@ def test_cli_record_can_write_multiple_subjects_and_render_table(tmp_path: Path,
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Multi record")
     invoke("entity", "Company", "Acorn")
@@ -566,7 +582,7 @@ def test_cli_related_can_traverse_multiple_hops(tmp_path: Path, capsys) -> None:
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Graph")
     for name in ("A", "B", "C"):
@@ -612,7 +628,7 @@ def test_cli_aggregate_groups_numeric_claims(tmp_path: Path, capsys) -> None:
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Aggregate")
     for name in ("A", "B", "C"):
@@ -678,7 +694,7 @@ def test_cli_structured_locator_and_source_entity_appear_in_lineage(tmp_path: Pa
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Locator")
     invoke("entity", "Paper", "Study A")
@@ -746,7 +762,7 @@ def test_cli_apply_concise_query_output_and_non_web_evidence(tmp_path: Path, cap
             str(notes),
         ]
     )
-    evidence = json.loads(capsys.readouterr().out)["evidence_id"]
+    evidence = _data(capsys)["evidence_id"]
     main(
         [
             "--db",
@@ -786,7 +802,7 @@ def test_cli_question_challenge_lifecycle(tmp_path: Path, capsys) -> None:
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     invoke("init", "--name", "Boats")
     boat = invoke("entity", "BoatModel", "RS Quest")
@@ -838,11 +854,11 @@ def test_cli_records_not_found_and_exports_xlsx(tmp_path: Path, capsys) -> None:
             "No public price found.",
         ]
     )
-    assert json.loads(capsys.readouterr().out)["state"] == "NotFound"
+    assert _data(capsys)["state"] == "NotFound"
 
     output = tmp_path / "market.xlsx"
     main(["--db", str(database), "export-xlsx", "--kind", "Company", "--output", str(output)])
-    result = json.loads(capsys.readouterr().out)
+    result = _data(capsys)
     assert result["entities"] == 1
     assert result["questions"] == 1
     assert output.read_bytes().startswith(b"PK")
@@ -853,7 +869,7 @@ def test_cli_errors_are_single_machine_readable_json_values(tmp_path: Path, caps
     with pytest.raises(SystemExit) as exit_info:
         main(["--db", str(missing), "matrix", "--kind", "Company"])
     assert exit_info.value.code == 2
-    error = json.loads(capsys.readouterr().err)["error"]
+    error = _error(capsys)
     assert error["code"] == "project_not_found"
     assert "Run:" in error["suggestion"]
 
@@ -863,13 +879,13 @@ def test_cli_errors_are_single_machine_readable_json_values(tmp_path: Path, caps
     with pytest.raises(SystemExit) as exit_info:
         main(["--db", str(database), "entity", "Company", "Example", "--attributes", "[]"])
     assert exit_info.value.code == 2
-    error = json.loads(capsys.readouterr().err)["error"]
+    error = _error(capsys)
     assert error["code"] == "invalid_attributes"
 
     with pytest.raises(SystemExit) as exit_info:
         main(["--db", str(database), "entity", "Company", "Example", "--attributes", "{"])
     assert exit_info.value.code == 2
-    assert json.loads(capsys.readouterr().err)["error"]["code"] == "invalid_input"
+    assert _error(capsys)["code"] == "invalid_input"
 
 
 def test_cli_rejects_non_array_distribution_weights(tmp_path: Path, capsys) -> None:
@@ -894,7 +910,7 @@ def test_cli_rejects_non_array_distribution_weights(tmp_path: Path, capsys) -> N
             ]
         )
     assert exit_info.value.code == 2
-    assert json.loads(capsys.readouterr().err)["error"]["code"] == "invalid_weights"
+    assert _error(capsys)["code"] == "invalid_weights"
 
 
 def test_cli_operational_and_agent_orientation_commands(tmp_path: Path, capsys) -> None:
@@ -906,7 +922,7 @@ def test_cli_operational_and_agent_orientation_commands(tmp_path: Path, capsys) 
 
     def invoke(*arguments: str):
         main(["--db", str(database), *arguments])
-        return json.loads(capsys.readouterr().out)
+        return _data(capsys)
 
     assert invoke("doctor")["ok"] is True
     schema = invoke("schema", "--kind", "Company")
@@ -928,3 +944,49 @@ def test_cli_operational_and_agent_orientation_commands(tmp_path: Path, capsys) 
     result = invoke("backup", "--output", str(backup))
     assert result["ok"] is True
     assert Store(backup).doctor()["ok"] is True
+
+
+def test_agent_first_envelope_and_orientation_lifecycle(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "agent.sqlite"
+
+    main(["version"])
+    version_payload = json.loads(capsys.readouterr().out)
+    assert version_payload["status"] == "ok"
+    assert version_payload["command"] == "epiq version"
+    assert version_payload["argv"] == ["epiq", "version"]
+    assert version_payload["data"]["envelope_schema_version"] == "1.0"
+
+    main(["--db", str(database), "agent", "status"])
+    missing = json.loads(capsys.readouterr().out)
+    assert missing["data"]["ready"] is False
+    assert missing["data"]["blockers"][0]["code"] == "project_not_found"
+    assert missing["next_steps"][0]["argv"][-3:] == ["init", "--name", "<project name>"]
+    assert missing["next_steps"][0]["mutates_state"] is True
+
+    main(["--db", str(database), "init", "--name", "Agent project"])
+    _data(capsys)
+    main(["--db", str(database), "next"])
+    next_payload = json.loads(capsys.readouterr().out)
+    assert next_payload["next_steps"][0]["id"] == "design-project"
+    assert next_payload["next_steps"][0]["argv"][-2:] == ["--input", "project.json"]
+
+    main(["agent", "schema", "action"])
+    schema = _data(capsys)
+    assert schema["name"] == "action.schema.json"
+    assert schema["schema"]["properties"]["argv"]["items"] == {"type": "string"}
+
+    main(["docs", "list"])
+    documents = _data(capsys)["documents"]
+    assert {item["name"] for item in documents} == {"agent-interface", "workflow"}
+
+    main(["--human", "docs", "show", "agent-interface"])
+    assert capsys.readouterr().out.startswith("# Epiq agent interface")
+
+
+def test_usage_errors_use_the_versioned_envelope(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["agent", "schema"])
+    assert exit_info.value.code == 2
+    error = _error(capsys)
+    assert error["code"] == "usage_error"
+    assert "required" in error["message"]

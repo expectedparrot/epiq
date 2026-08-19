@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://expectedparrot.com/schemas/epiq/action-1.0.json",
+  "title": "Epiq Action",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "label", "argv", "mutates_state", "uses_network", "requires_approval", "reason"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "label": {"type": "string", "minLength": 1},
+    "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "mutates_state": {"type": "boolean"},
+    "uses_network": {"type": "boolean"},
+    "requires_approval": {"type": "boolean"},
+    "reason": {"type": "string"}
+  }
+}

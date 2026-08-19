@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://expectedparrot.com/schemas/epiq/agent-status-1.0.json",
+  "title": "Epiq Agent Status",
+  "type": "object",
+  "required": ["schema_version", "ready", "database", "project", "tables", "table_health", "jobs", "review_queues", "integrity", "blockers", "next_actions"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "ready": {"type": "boolean"},
+    "database": {"type": "object", "required": ["path", "source"]},
+    "project": {"type": ["object", "null"]},
+    "tables": {"type": "array"},
+    "table_health": {"type": "array"},
+    "jobs": {"type": "object"},
+    "review_queues": {"type": "object"},
+    "integrity": {"type": ["object", "null"]},
+    "blockers": {"type": "array"},
+    "next_actions": {"type": "array", "items": {"$ref": "action.schema.json"}}
+  }
+}

@@ -22,6 +22,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from .agent_interface import (
+    docs_list_data,
+    docs_show_data,
+    guide_data,
+    next_actions,
+    schema_data,
+    status_data,
+    version_data,
+)
 from .cli import capabilities
 from .dsl import describe, parse
 from .edsl_export import write_edsl
@@ -510,6 +519,33 @@ def create_app(
             "initialized": True,
             "schema_version": overview["project"]["schema_version"],
         }
+
+    @app.get("/api/version")
+    def api_version() -> dict[str, Any]:
+        return version_data()
+
+    @app.get("/api/guide")
+    def api_guide() -> dict[str, Any]:
+        return guide_data()
+
+    @app.get("/api/agent/status")
+    def api_agent_status() -> dict[str, Any]:
+        project_store = store()
+        return status_data(project_store, project_store.path, "server")
+
+    @app.get("/api/agent/next")
+    def api_agent_next() -> dict[str, Any]:
+        project_store = store()
+        actions = next_actions(project_store, project_store.path, "server")
+        return {"next_actions": actions}
+
+    @app.get("/api/agent/schema/{name}")
+    def api_agent_schema(name: str) -> dict[str, Any]:
+        return schema_data(name)
+
+    @app.get("/api/docs")
+    def api_docs(name: str | None = None) -> dict[str, Any]:
+        return docs_show_data(name) if name else docs_list_data()
 
     @app.get("/api/capabilities")
     def api_capabilities(

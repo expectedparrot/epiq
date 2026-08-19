@@ -27,6 +27,11 @@ def _operation(
 
 
 _BINDINGS = [
+    ("version", "GET", "/api/version", "read"),
+    ("guide", "GET", "/api/guide", "read"),
+    ("next", "GET", "/api/agent/next", "read"),
+    ("agent", "GET", "/api/agent/status", "read", "family"),
+    ("docs", "GET", "/api/docs", "read", "family"),
     ("init", "POST", "/api/projects", "additive"),
     ("use", "POST", "/api/projects/open", "administrative"),
     ("db", "GET", "/api/health", "read"),

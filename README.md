@@ -111,6 +111,45 @@ epiq --help
 
 You can also replace `epiq` with `python -m epiq` in every example below.
 
+## Agent interface
+
+Epiq is agent-first. Every command emits one versioned JSON envelope to stdout by default:
+
+```json
+{
+  "schema_version": "1.0",
+  "status": "ok",
+  "command": "epiq db",
+  "argv": ["epiq", "db"],
+  "data": {},
+  "warnings": [],
+  "errors": [],
+  "next_steps": []
+}
+```
+
+Agents should read command results from `data` and execute only reviewed `next_steps`. Suggested
+actions are exact argument arrays and declare whether they mutate state, use the network, or require
+approval. Errors use the same envelope on stderr with `status: "error"`.
+
+An agent can orient and resume without reading this README:
+
+```bash
+epiq version
+epiq capabilities
+epiq guide
+epiq agent status
+epiq next
+epiq agent schema envelope
+epiq docs list
+```
+
+Use `--human` or `-H` for explicit human-readable output. `--select` selects a path inside `data`
+and emits that value directly for shell chaining; `--format ids` and `--format table` are likewise
+explicit compact-output modes.
+For readability, JSON fragments shown throughout the tutorial represent the envelope's `data`
+member unless the complete envelope is being discussed.
+
 ## Tutorial: build a town database
 
 ### 1. Select a database
@@ -330,15 +369,14 @@ epiq assert --subject Barnstable --question population --value 49568 \
 
 Every evidence link remains visible in JSON, HTML, and Excel lineage.
 
-Capture the evidence ID for shell chaining with `jq`:
+Capture the evidence ID without shell-side JSON traversal:
 
 ```bash
-BARNSTABLE_EVIDENCE=$(epiq --actor agent:census evidence \
+BARNSTABLE_EVIDENCE=$(epiq --actor agent:census --select evidence_id evidence \
   --url "https://api.example.gov/towns/barnstable" \
   --title "2024 town estimates" \
   --retrieved-at 2026-08-15 \
-  --excerpt "Barnstable population: 49,568; median owner-occupied home value: $602,500." \
-  | jq -r .evidence_id)
+  --excerpt "Barnstable population: 49,568; median owner-occupied home value: $602,500.")
 ```
 
 The CLI does not download or summarize the URL. The caller is responsible for retrieval; Epiq
@@ -801,18 +839,18 @@ epiq question forecast_distribution \
 Each provider gets its own evidence and claim:
 
 ```bash
-NOAA_EVIDENCE=$(epiq evidence \
+NOAA_EVIDENCE=$(epiq --select evidence_id evidence \
   --url https://example.test/noaa/2026-08-17 \
   --title "NOAA forecast" \
   --retrieved-at 2026-08-16 \
-  --excerpt "NOAA assigns a 40% chance of rain." | jq -r .evidence_id)
+  --excerpt "NOAA assigns a 40% chance of rain.")
 
-NOAA_CLAIM=$(epiq assert \
+NOAA_CLAIM=$(epiq --select claim_id assert \
   --subject "Boston rain on 2026-08-17" \
   --question rain_probability \
   --value 0.40 \
   --valid-from 2026-08-17 \
-  --evidence "$NOAA_EVIDENCE" | jq -r .claim_id)
+  --evidence "$NOAA_EVIDENCE")
 ```
 
 Repeat that write for the other providers. Then derive an equally weighted empirical distribution
@@ -888,15 +926,22 @@ A research agent does not need a privileged write path. Its loop is ordinary CLI
 5. If a bounded search fails, record it with `epiq not-found`.
 6. Regenerate HTML, Excel, or JSON projections.
 
-All commands emit exactly one JSON value on success. Errors go to stderr in a machine-readable
-shape:
+All commands emit exactly one versioned JSON envelope on success. Errors use the same envelope on
+stderr:
 
 ```json
 {
-  "error": {
+  "schema_version": "1.0",
+  "status": "error",
+  "command": "epiq matrix",
+  "argv": ["epiq", "matrix", "--kind", "Barnstabel"],
+  "data": null,
+  "warnings": [],
+  "errors": [{
     "code": "entity_not_found",
     "message": "Entity not found: Barnstabel"
-  }
+  }],
+  "next_steps": []
 }
 ```
 
@@ -1407,7 +1452,13 @@ and claims against their originating event types and verifies every claim's prim
 Agents can orient themselves without reading this tutorial or guessing the schema:
 
 ```bash
+epiq version
 epiq capabilities
+epiq guide
+epiq agent status
+epiq next
+epiq agent schema envelope
+epiq docs list
 epiq capabilities --command record
 epiq capabilities --include-schema
 epiq schema --kind Company
@@ -1422,7 +1473,10 @@ epiq search "pricing announcement"
 `capabilities` does not require an initialized database. It returns a versioned protocol declaration
 with every command's arguments, constraints, mutation and transaction behavior, return shape,
 examples, supported types and operations, JSON document shapes, common errors, and recommended
-agent workflows. `--command` narrows the response for a token-efficient tool lookup;
+agent workflows. `guide` describes the lifecycle and execution boundary; `agent status` combines
+live project health, research jobs, review queues, and blockers; and `next` returns the safest useful
+action as an executable, safety-annotated argument array. `--command` narrows the capabilities
+response for a token-efficient tool lookup;
 `--include-schema` combines protocol discovery with the selected project's current schema.
 
 `context` returns current typed cells and confidence-aware lineage, compacting rows when the
