@@ -152,32 +152,37 @@ member unless the complete envelope is being discussed.
 
 ## Coding-agent instructions — copy and paste
 
-Paste this into Codex, Claude Code, or another coding agent working in an Epiq checkout:
+Paste this into Codex, Claude Code, or another terminal-capable coding agent:
 
 ```text
 Use the Epiq CLI as the interface to Epiq; do not edit its SQLite database directly.
 
-This repository uses uv. Run `uv sync` once to create/update the locked environment, then prefix
-every Epiq command with `uv run`—for example, `uv run epiq version`. `uv run` uses the managed
-environment, so do not activate `.venv` or install Epiq globally.
+Check that `uv --version` works; if it does not, install `uv` from
+https://docs.astral.sh/uv/getting-started/installation/. Then install the current GitHub version of
+Epiq as an isolated CLI:
+  uv tool install git+https://github.com/expectedparrot/epiq.git
+
+This makes the `epiq` command available without activating a virtual environment. If Epiq is
+already installed this way, update it with `uv tool upgrade epiq`. If you are developing inside an
+Epiq source checkout instead, run `uv sync` once and replace `epiq` below with `uv run epiq`.
 
 Orient yourself with:
-  uv run epiq version
-  uv run epiq capabilities
-  uv run epiq guide
-  uv run epiq db
-  uv run epiq agent status
+  epiq version
+  epiq capabilities
+  epiq guide
+  epiq db
+  epiq agent status
 
 Commands return a JSON envelope. Read results from `data`, failures from `errors`, and inspect the
 safety metadata in `next_steps` before executing one. To learn exact syntax, run
-`uv run epiq capabilities --command COMMAND`; do not guess flags or input shapes.
+`epiq capabilities --command COMMAND`; do not guess flags or input shapes.
 
-Select a database once with `uv run epiq use PATH.sqlite`. Inspect it with `schema`, `context`,
+Select a database once with `epiq use PATH.sqlite`. Inspect it with `schema`, `context`,
 `agent status`, and `next`. Record factual values with real evidence, retrieval dates, and supporting
 excerpts—prefer the atomic `record` command. Use `not-found` for an inconclusive search, never as a
-negative answer. Identify writes as, for example, `uv run epiq --actor agent:codex record ...`.
+negative answer. Identify writes as, for example, `epiq --actor agent:codex record ...`.
 
-After material changes, run `uv run epiq doctor`. Never invent evidence, expose secrets, overwrite
+After material changes, run `epiq doctor`. Never invent evidence, expose secrets, overwrite
 an existing project, or commit databases and `.epiq/config.json` unless explicitly asked.
 ```
 
