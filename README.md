@@ -796,19 +796,25 @@ epiq --actor agent:census-refresh-2026-08 assert ...
 
 ### 11. Export without losing provenance
 
-Create a self-contained interactive report:
+Create a self-contained, read-only snapshot of the entire database:
 
 ```bash
-epiq export-html --kind Town --output reports/towns.html
+epiq export-html --output reports/project.html
 ```
 
-The generic explorer discovers questions from the database and displays:
+Open that file directly in any browser. It embeds its data, styling, and interaction code, so it
+does not need Epiq, a web server, or an internet connection. It cannot modify the database. The
+snapshot includes:
 
-- the entity-by-question matrix;
-- automatic charts for numeric questions;
-- coverage and unknown cells;
-- evidence excerpts and source links;
-- confidence and claim-token lineage.
+- every current table, field schema, row, and cell state;
+- claim lineage, temporal status, evidence excerpts, and source metadata;
+- `NotFound` research outcomes;
+- claim proposals, field challenges, and agent-job records;
+- integrity results and the complete append-only event history;
+- local filtering and cell inspection.
+
+The file reflects the database at export time; regenerate it to capture later changes. To disclose
+only one table while retaining its associated history and review metadata, add `--kind Town`.
 
 Create a multi-sheet Excel audit workbook:
 
@@ -1044,7 +1050,7 @@ uv run examples/cli/build-all.sh /tmp/epiq-cli-examples
 ```
 
 Each tutorial is Markdown, every fixture enters through actual CLI commands, and the test suite
-rebuilds all eleven projects from scratch and runs their integrity checks.
+rebuilds all twelve projects from scratch and runs their integrity checks.
 
 ### Patriots and transaction time
 

@@ -1014,9 +1014,11 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--known-at")
     export.add_argument("--valid-at")
 
-    html = commands.add_parser("export-html", help="Export an interactive HTML explorer")
-    html.add_argument("--output", required=True)
-    html.add_argument("--kind")
+    html = commands.add_parser(
+        "export-html", help="Export a self-contained, read-only database inspector"
+    )
+    html.add_argument("--output", "--output-path", dest="output", required=True)
+    html.add_argument("--kind", help="Optionally restrict the snapshot to one table")
 
     corpus = commands.add_parser("import-cham", help="Import an earlier Cham JSON corpus")
     corpus.add_argument("--entities", required=True)
@@ -1750,7 +1752,18 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         }
     if args.command == "export-html":
         output = write_html(store, args.output, args.kind)
-        return {"ok": True, "output": str(output), "entity_kind": args.kind}
+        tables = (
+            [args.kind]
+            if args.kind
+            else [item["kind"] for item in store.overview()["entity_kinds"]]
+        )
+        return {
+            "ok": True,
+            "output": str(output),
+            "format": "self-contained-html-snapshot",
+            "tables": tables,
+            "read_only": True,
+        }
     if args.command == "import-cham":
         return {
             "ok": True,
