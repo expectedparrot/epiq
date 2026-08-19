@@ -811,7 +811,7 @@ snapshot includes:
 - `NotFound` research outcomes;
 - claim proposals, field challenges, and agent-job records;
 - integrity results and the complete append-only event history;
-- local filtering and cell inspection.
+- local filtering and cell inspection, draggable column widths, and wrapped or clipped text.
 
 The file reflects the database at export time; regenerate it to capture later changes. To disclose
 only one table while retaining its associated history and review metadata, add `--kind Town`.

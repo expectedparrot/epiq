@@ -46,6 +46,10 @@ def test_html_snapshot_contains_the_whole_project_and_audit_state(tmp_path: Path
     assert "fetch(" not in document
     assert "XMLHttpRequest" not in document
     assert 'method="post"' not in document.lower()
+    assert 'id="wrap-toggle"' in document
+    assert 'class="resize"' in document
+    assert 'class="cell answered"' not in document
+    assert "if(c.state==='Answered')return `<td class=\"inspect-cell\"" in document
 
 
 def test_html_snapshot_can_be_scoped_or_export_an_empty_project(tmp_path: Path) -> None:
