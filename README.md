@@ -150,32 +150,35 @@ explicit compact-output modes.
 For readability, JSON fragments shown throughout the tutorial represent the envelope's `data`
 member unless the complete envelope is being discussed.
 
-## Use Epiq from a coding agent — copy and paste
+## Coding-agent instructions — copy and paste
 
-Paste this into Codex, Claude Code, or another terminal-capable agent. It uses
-[`uvx`](https://docs.astral.sh/uv/guides/tools/) to download Epiq from GitHub into a cached,
-isolated environment and run it—no clone, installation, or virtual-environment activation needed.
+Paste this into Codex, Claude Code, or another coding agent working in an Epiq checkout:
 
 ```text
-Use Epiq to help me with this research objective:
+Use the Epiq CLI as the interface to Epiq; do not edit its SQLite database directly.
 
-[DESCRIBE WHAT YOU WANT TO RESEARCH]
+This repository uses uv. Run `uv sync` once to create/update the locked environment, then prefix
+every Epiq command with `uv run`—for example, `uv run epiq version`. `uv run` uses the managed
+environment, so do not activate `.venv` or install Epiq globally.
 
-Run Epiq as:
-  uvx --from git+https://github.com/expectedparrot/epiq.git epiq COMMAND
+Orient yourself with:
+  uv run epiq version
+  uv run epiq capabilities
+  uv run epiq guide
+  uv run epiq db
+  uv run epiq agent status
 
-`uvx` supplies an isolated, cached environment; do not clone Epiq or create a virtual environment.
-Start with `version`, `capabilities`, `guide`, `db`, and `agent status`. If syntax is unclear, run
-`capabilities --command COMMAND` rather than guessing.
+Commands return a JSON envelope. Read results from `data`, failures from `errors`, and inspect the
+safety metadata in `next_steps` before executing one. To learn exact syntax, run
+`uv run epiq capabilities --command COMMAND`; do not guess flags or input shapes.
 
-Agree with me on a SQLite path, select it with `use PATH.sqlite`, then initialize it if necessary.
-Inspect `schema` and `context`. Propose tables, typed fields, and relationships for approval before
-building a new schema. Store each factual value with a real source, retrieval date, and supporting
-excerpt; never invent evidence or edit SQLite directly. Use `not-found` for an inconclusive search,
-not as a negative answer.
+Select a database once with `uv run epiq use PATH.sqlite`. Inspect it with `schema`, `context`,
+`agent status`, and `next`. Record factual values with real evidence, retrieval dates, and supporting
+excerpts—prefer the atomic `record` command. Use `not-found` for an inconclusive search, never as a
+negative answer. Identify writes as, for example, `uv run epiq --actor agent:codex record ...`.
 
-Work incrementally. Check `agent status` and `next` as you go. Finish with `doctor`, then report the
-database path, changes, coverage, and unresolved review items.
+After material changes, run `uv run epiq doctor`. Never invent evidence, expose secrets, overwrite
+an existing project, or commit databases and `.epiq/config.json` unless explicitly asked.
 ```
 
 ## Tutorial: build a town database
