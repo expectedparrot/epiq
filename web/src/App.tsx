@@ -1561,8 +1561,8 @@ export default function App() {
     <div className="app-shell">
       <header>
         <div className="brand">
-          <span className="mark" aria-label="Expected Parrot">
-            E[<span className="mark-parrot">🦜</span>]
+          <span className="mark" aria-label="Epiq">
+            E[🦜]
           </span>
           <div>
             <b>Epiq</b>

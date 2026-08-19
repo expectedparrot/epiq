@@ -1,6 +1,4 @@
-# Epiq
-
-![Epiq — an agentic epistemic database](assets/epiq-hero.png)
+# E[🦜]
 
 Epiq is a local-first epistemic database for agent-driven research. It stores entities, typed
 questions, source excerpts, and evidence-backed claims in SQLite. It can then project that history

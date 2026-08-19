@@ -58,19 +58,11 @@ header {
   width: auto;
   height: 34px;
   color: var(--green);
-  font-family: Georgia, serif;
+  font-family: system-ui, sans-serif;
   font-size: 24px;
   font-weight: 700;
-  letter-spacing: -2px;
+  letter-spacing: -1px;
   white-space: nowrap;
-}
-.mark-parrot {
-  display: inline-block;
-  margin: 0 2px;
-  font-family: system-ui, sans-serif;
-  font-size: 21px;
-  font-weight: 400;
-  letter-spacing: 0;
 }
 .project-title {
   font-weight: 600;
