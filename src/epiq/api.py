@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .errors import EpiqError
 from .store import Store
 
 
@@ -14,10 +16,34 @@ class Database:
     Methods not exposed here remain internal and may change without notice before 1.0.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, create: bool = False, name: str | None = None
+    ) -> None:
         self.path = Path(path)
         self._store = Store(self.path)
-        self._store.overview()
+        if create and not self.path.exists():
+            self._store.initialize(name or self.path.stem)
+            return
+        if not self.path.exists():
+            raise EpiqError(
+                "uninitialized_database",
+                f"Epiq project does not exist: {self.path}",
+                "Pass create=True and optionally name=... to initialize it.",
+            )
+        try:
+            self._store.overview()
+        except sqlite3.OperationalError as error:
+            raise EpiqError(
+                "uninitialized_database",
+                f"File is not an initialized Epiq project: {self.path}",
+                "Use a different path, or remove the file and reopen with create=True.",
+            ) from error
+        except sqlite3.DatabaseError as error:
+            raise EpiqError(
+                "invalid_database",
+                f"Could not read Epiq project: {self.path}",
+                "Restore a valid Epiq SQLite project or choose another path.",
+            ) from error
 
     def batch_write(
         self, operations: list[dict[str, Any]], *, actor: str = "agent:python"
@@ -64,6 +90,8 @@ class Database:
         return self._store.list_claims(kind, question, actor, include_superseded)
 
 
-def open_database(path: str | Path) -> Database:
-    """Open an existing Epiq project through the stable embedding API."""
-    return Database(path)
+def open_database(
+    path: str | Path, *, create: bool = False, name: str | None = None
+) -> Database:
+    """Open an Epiq project, optionally initializing it when the path is missing."""
+    return Database(path, create=create, name=name)

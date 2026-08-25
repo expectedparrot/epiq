@@ -603,14 +603,20 @@ The supported Python surface is deliberately small:
 ```python
 import epiq
 
-db = epiq.open("project.sqlite")
+db = epiq.open("project.sqlite", create=True, name="Judge results")
 db.batch_write(operations, actor="model:judge")
 claims = db.claims(kind="Observation", question="verdict")
 ```
 
 `Database.batch_write`, `Database.upsert_entity`, `Database.define_question`, and
 `Database.claims` are covered by package semantic versioning. Other methods in `epiq.store.Store`
-remain internal implementation details.
+remain internal implementation details. Without `create=True`, a missing or non-Epiq path raises a
+typed `EpiqError` instead of creating a file implicitly.
+
+Question upserts compare against the latest immutable version; returning to an older definition
+creates a new version so that definition becomes current again. Entity upserts with a matching
+compound identity return the existing entity without renaming it—the original display name remains
+canonical.
 
 For repeatable setup, place `project`, `entity_kinds`, `entities`, `questions`, `aliases`, and
 `operations` in one JSON object:
