@@ -421,6 +421,67 @@ def test_cli_claim_review_and_atomic_bulk_write(tmp_path: Path, capsys) -> None:
     assert invoke("bulk-assert", "--input", str(batch))["count"] == 1
 
 
+def test_cli_claims_actor_tally_and_long_export(tmp_path: Path, capsys) -> None:
+    database = tmp_path / "ratings.sqlite"
+
+    def invoke(*arguments: str):
+        main(["--db", str(database), *arguments])
+        return _data(capsys)
+
+    invoke("init", "--name", "Ratings")
+    invoke("entity", "Item", "Example")
+    invoke("question", "verdict", "--for", "Item", "--type", "Enum[pass,fail]")
+    for actor, verdict in (("model:a", "pass"), ("model:b", "fail")):
+        evidence = invoke(
+            "--actor",
+            actor,
+            "evidence",
+            "--type",
+            "model",
+            "--title",
+            actor,
+            "--retrieved-at",
+            "2026-08-25",
+            "--excerpt",
+            verdict,
+        )["evidence_id"]
+        invoke(
+            "--actor",
+            actor,
+            "assert",
+            "--subject",
+            "Example",
+            "--question",
+            "verdict",
+            "--value",
+            verdict,
+            "--valid-from",
+            "2026-08-25",
+            "--evidence",
+            evidence,
+        )
+
+    claims = invoke("claims", "list", "--kind", "Item", "--actor", "model:a")
+    assert claims["count"] == 1
+    assert claims["claims"][0]["value"] == "pass"
+    tally = invoke(
+        "aggregate", "--kind", "Item", "--question", "verdict", "--op", "tally",
+        "--group-by-actor"
+    )
+    assert tally["groups"] == [
+        {"group": "model:a", "value": {'"pass"': 1}, "count": 1},
+        {"group": "model:b", "value": {'"fail"': 1}, "count": 1},
+    ]
+    output = tmp_path / "claims.jsonl"
+    exported = invoke(
+        "export", "--format", "claims-long", "--kind", "Item", "--output-path", str(output)
+    )
+    assert exported["count"] == 2
+    assert {json.loads(line)["actor"] for line in output.read_text().splitlines()} == {
+        "model:a", "model:b"
+    }
+
+
 def test_cli_record_atomically_adds_evidence_and_supported_answers(tmp_path: Path, capsys) -> None:
     database = tmp_path / "record.sqlite"
 

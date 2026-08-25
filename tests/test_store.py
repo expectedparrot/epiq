@@ -51,6 +51,31 @@ def test_claim_is_idempotent(store: Store) -> None:
     assert [event["event_type"] for event in store.history()].count("claim.assert") == 1
 
 
+def test_long_claims_preserve_actor_and_support_actor_filtered_projection(store: Store) -> None:
+    store.add_entity("Item", "Example", {}, "test")
+    store.add_question("verdict", "Item", "Enum[pass,fail]", {}, "test")
+    _, first_evidence = store.add_evidence(
+        "urn:rater:a", "Rater A", "2026-08-25", "pass", "model:a", source_type="model"
+    )
+    _, second_evidence = store.add_evidence(
+        "urn:rater:b", "Rater B", "2026-08-25", "fail", "model:b", source_type="model"
+    )
+    store.assert_claim(
+        "Example", "verdict", "pass", "2026-08-25", first_evidence, "model:a"
+    )
+    store.assert_claim(
+        "Example", "verdict", "fail", "2026-08-25", second_evidence, "model:b"
+    )
+
+    claims = store.list_claims("Item", "verdict")
+    assert [(item["value"], item["actor"]) for item in claims] == [
+        ("pass", "model:a"),
+        ("fail", "model:b"),
+    ]
+    projected = store.matrix("Item", actor="model:a")
+    assert projected["rows"][0]["cells"]["verdict"]["value"] == "pass"
+
+
 def test_relationship_findings_approve_atomically_and_are_idempotent(store: Store) -> None:
     paper = store.add_entity("Paper", "Market Design", {}, "test")
     question = store.add_question(

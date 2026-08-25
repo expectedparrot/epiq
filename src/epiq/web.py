@@ -63,6 +63,7 @@ class RowQueryCreate(BaseModel):
     predicates: list[dict[str, Any]] = Field(default_factory=list)
     known_at: str | None = None
     valid_at: str | None = None
+    actor: str | None = None
 
 
 class ApplyCreate(BaseModel):
@@ -319,8 +320,10 @@ class AcceptFieldSuggestionsCreate(BaseModel):
 
 class AggregateCreate(BaseModel):
     question: str
-    operation: Literal["count", "sum", "avg", "min", "max"]
+    operation: Literal["count", "sum", "avg", "min", "max", "tally"]
     group_by: str | None = None
+    group_by_actor: bool = False
+    actor: str | None = None
 
 
 class DeriveCreate(BaseModel):
@@ -858,12 +861,15 @@ def create_app(
         questions: Annotated[list[str] | None, Query()] = None,
         known_at: str | None = None,
         valid_at: str | None = None,
+        actor: str | None = None,
     ) -> dict[str, Any]:
-        return store().matrix(entity_kind, questions, known_at, valid_at)
+        return store().matrix(entity_kind, questions, known_at, valid_at, actor)
 
     @app.post("/api/query/{entity_kind}")
     def query_rows(entity_kind: str, body: RowQueryCreate) -> dict[str, Any]:
-        return store().query_rows(entity_kind, body.predicates, body.known_at, body.valid_at)
+        return store().query_rows(
+            entity_kind, body.predicates, body.known_at, body.valid_at, body.actor
+        )
 
     def diagnostic_cells(entity_kind: str, diagnostic: str) -> dict[str, Any]:
         projection = store().matrix(entity_kind)
@@ -959,7 +965,48 @@ def create_app(
 
     @app.post("/api/aggregate/{entity_kind}")
     def aggregate(entity_kind: str, body: AggregateCreate) -> dict[str, Any]:
-        projection = store().matrix(entity_kind)
+        if body.group_by and body.group_by_actor:
+            raise EpiqError("invalid_aggregate", "Choose group_by or group_by_actor, not both")
+        if body.group_by_actor or body.operation == "tally":
+            claims = store().list_claims(entity_kind, body.question, body.actor)
+            grouped_claims: dict[str, list[Any]] = {}
+            for claim in claims:
+                key = claim["actor"] if body.group_by_actor else "all"
+                grouped_claims.setdefault(str(key), []).append(claim["value"])
+            groups = []
+            for key, values in sorted(grouped_claims.items()):
+                if body.operation == "tally":
+                    counts: dict[str, int] = {}
+                    for value in values:
+                        label = json.dumps(value, sort_keys=True, separators=(",", ":"))
+                        counts[label] = counts.get(label, 0) + 1
+                    aggregate_value: Any = counts
+                elif body.operation == "count":
+                    aggregate_value = len(values)
+                else:
+                    if not all(
+                        isinstance(item, int | float) and not isinstance(item, bool)
+                        for item in values
+                    ):
+                        raise EpiqError(
+                            "non_numeric_aggregate",
+                            f"{body.question} contains non-numeric values",
+                        )
+                    aggregate_value = {
+                        "sum": sum,
+                        "avg": lambda items: sum(items) / len(items),
+                        "min": min,
+                        "max": max,
+                    }[body.operation](values)
+                groups.append({"group": key, "value": aggregate_value, "count": len(values)})
+            return {
+                "entity_kind": entity_kind,
+                "question": body.question,
+                "operation": body.operation,
+                "group_by_actor": body.group_by_actor,
+                "groups": groups,
+            }
+        projection = store().matrix(entity_kind, actor=body.actor)
         question_names = {str(item["name"]) for item in projection["questions"]}
         for name in (body.question, body.group_by):
             if name and name not in question_names:
@@ -1359,6 +1406,16 @@ def create_app(
     @app.get("/api/evidence/{evidence_id}/assessments")
     def evidence_assessments(evidence_id: str) -> list[dict[str, Any]]:
         return store().evidence_assessments(evidence_id)
+
+    @app.get("/api/claims-long")
+    def claims_long(
+        kind: str | None = None,
+        question: str | None = None,
+        actor: str | None = None,
+        include_superseded: bool = False,
+    ) -> dict[str, Any]:
+        items = store().list_claims(kind, question, actor, include_superseded)
+        return {"count": len(items), "claims": items}
 
     @app.post("/api/claims", status_code=201)
     def add_claim(body: ClaimCreate) -> dict[str, str]:

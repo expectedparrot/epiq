@@ -1090,6 +1090,29 @@ class Store:
         except sqlite3.IntegrityError as exc:
             raise EpiqError("duplicate_entity", f"Entity already exists: {kind} {name}") from exc
 
+    def upsert_entity(
+        self,
+        kind: str,
+        name: str,
+        attributes: dict[str, Any] | None,
+        actor: str,
+        role: str = "entity",
+        identity: dict[str, Any] | None = None,
+    ) -> str:
+        """Return a matching entity or create it when absent."""
+        with self.connect() as connection:
+            if identity is not None:
+                identity_hash = hashlib.sha256(_json(identity).encode()).hexdigest()
+                existing = connection.execute(
+                    "SELECT entity_id FROM entities WHERE kind=? AND identity_hash=?",
+                    (kind, identity_hash),
+                ).fetchone()
+            else:
+                existing = self._find_entity_by_identity(connection, name, kind)
+            if existing:
+                return str(existing["entity_id"])
+        return self.add_entity(kind, name, attributes, actor, role, identity)
+
     def _add_entity_tx(
         self,
         connection: sqlite3.Connection,
@@ -1287,6 +1310,28 @@ class Store:
             return self._add_question_tx(
                 connection, name, subject_kind, value_type, definition, actor
             )[0]
+
+    def upsert_question(
+        self,
+        name: str,
+        subject_kind: str,
+        value_type: str,
+        definition: dict[str, Any],
+        actor: str,
+    ) -> str:
+        """Return the matching latest question version or define a new version."""
+        with self.connect() as connection:
+            existing = connection.execute(
+                """SELECT * FROM questions WHERE name=? ORDER BY version DESC LIMIT 1""", (name,)
+            ).fetchone()
+            if (
+                existing
+                and str(existing["subject_kind"]) == subject_kind
+                and str(existing["value_type"]) == value_type
+                and json.loads(str(existing["definition_json"])) == definition
+            ):
+                return str(existing["question_id"])
+        return self.add_question(name, subject_kind, value_type, definition, actor)
 
     def _add_question_tx(
         self,
@@ -3979,6 +4024,7 @@ class Store:
         question_names: list[str] | None = None,
         known_at: str | None = None,
         valid_at: str | None = None,
+        actor: str | None = None,
     ) -> dict[str, Any]:
         """Project current claims into a general entity-by-question matrix."""
         cutoff = known_at or "9999-12-31T23:59:59Z"
@@ -4031,10 +4077,13 @@ class Store:
                 ).fetchall()
                 entity_placeholders = ",".join("?" for _ in entity_ids)
                 for question in questions:
+                    actor_clause = "AND claim_event.actor=?" if actor else ""
                     claims = connection.execute(
                         f"""SELECT c.* FROM claims c
                            JOIN questions cq ON cq.question_id=c.question_id
+                           JOIN events claim_event ON claim_event.seq=c.created_seq
                            WHERE c.subject_id IN ({entity_placeholders}) AND cq.name=?
+                           {actor_clause}
                            AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
                            AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
                            AND NOT EXISTS (
@@ -4046,6 +4095,7 @@ class Store:
                         (
                             *entity_ids,
                             question["name"],
+                            *((actor,) if actor else ()),
                             cutoff,
                             cutoff,
                             valid,
@@ -4097,9 +4147,65 @@ class Store:
             "entity_kind": entity_kind,
             "known_at": known_at,
             "valid_at": valid_at,
+            "actor": actor,
             "questions": projected_questions,
             "rows": rows,
         }
+
+    def list_claims(
+        self,
+        entity_kind: str | None = None,
+        question: str | None = None,
+        actor: str | None = None,
+        include_superseded: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return claims in lossless long form with assertion actor attribution."""
+        conditions = [] if include_superseded else ["c.status='asserted'", "c.tx_to IS NULL"]
+        parameters: list[Any] = []
+        if entity_kind:
+            conditions.append("subject.kind=?")
+            parameters.append(entity_kind)
+        if question:
+            conditions.append("q.name=?")
+            parameters.append(question)
+        if actor:
+            conditions.append("claim_event.actor=?")
+            parameters.append(actor)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT c.claim_id,c.subject_id,subject.name subject_name,
+                           subject.kind subject_kind,c.question_id,q.name question,
+                           c.value_json,claim_event.actor,c.confidence,c.temporal_basis,
+                           c.valid_from,c.valid_to,c.status,c.evidence_id,c.created_seq
+                    FROM claims c
+                    JOIN entities subject ON subject.entity_id=c.subject_id
+                    JOIN questions q ON q.question_id=c.question_id
+                    JOIN events claim_event ON claim_event.seq=c.created_seq
+                    {where}
+                    ORDER BY c.created_seq,c.claim_id""",
+                parameters,
+            ).fetchall()
+        return [
+            {
+                "claim_id": str(row["claim_id"]),
+                "subject_id": str(row["subject_id"]),
+                "subject_name": str(row["subject_name"]),
+                "subject_kind": str(row["subject_kind"]),
+                "question_id": str(row["question_id"]),
+                "question": str(row["question"]),
+                "value": json.loads(str(row["value_json"])),
+                "actor": str(row["actor"]),
+                "confidence": str(row["confidence"]),
+                "temporal_basis": str(row["temporal_basis"]),
+                "valid_from": str(row["valid_from"]),
+                "valid_to": row["valid_to"],
+                "status": str(row["status"]),
+                "evidence_id": str(row["evidence_id"]),
+                "created_seq": int(row["created_seq"]),
+            }
+            for row in rows
+        ]
 
     def _decorate_reference_cell(
         self, connection: sqlite3.Connection, cell: dict[str, Any], value_type: str
@@ -4130,9 +4236,10 @@ class Store:
         predicates: list[dict[str, Any]],
         known_at: str | None = None,
         valid_at: str | None = None,
+        actor: str | None = None,
     ) -> dict[str, Any]:
         """Filter a projection with a small, structured, agent-safe predicate language."""
-        projection = self.matrix(entity_kind, known_at=known_at, valid_at=valid_at)
+        projection = self.matrix(entity_kind, known_at=known_at, valid_at=valid_at, actor=actor)
         questions = {str(item["name"]): item for item in projection["questions"]}
         allowed = {
             "eq",

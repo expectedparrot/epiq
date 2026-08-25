@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://expectedparrot.com/schemas/epiq/batch-write-1.0.json",
+  "title": "Epiq batch-write input",
+  "description": "Stable version 1.0 input accepted by the batch-write CLI and Python API.",
+  "type": "array",
+  "minItems": 1,
+  "maxItems": 2000,
+  "items": {
+    "oneOf": [
+      {"$ref": "#/$defs/evidenceAdd"},
+      {"$ref": "#/$defs/claimAssert"}
+    ]
+  },
+  "$defs": {
+    "evidenceAdd": {
+      "type": "object",
+      "required": ["op", "url", "title", "retrieved_at", "excerpt"],
+      "properties": {
+        "op": {"const": "evidence.add"},
+        "ref": {"type": "string"},
+        "url": {"type": "string"},
+        "source_type": {"enum": ["web", "personal", "model", "report", "interview", "other"]},
+        "title": {"type": "string", "minLength": 1},
+        "retrieved_at": {"type": "string", "minLength": 1},
+        "published_at": {"type": ["string", "null"]},
+        "excerpt": {"type": "string", "minLength": 1},
+        "actor": {"type": "string"},
+        "locator": {"type": "object"},
+        "source_entity": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "claimAssert": {
+      "type": "object",
+      "required": ["op", "subject", "question", "value", "valid_from"],
+      "properties": {
+        "op": {"const": "claim.assert"},
+        "subject": {"type": "string", "minLength": 1},
+        "question": {"type": "string", "minLength": 1},
+        "value": {},
+        "valid_from": {"type": "string", "minLength": 1},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "actor": {"type": "string"},
+        "confidence": {"enum": ["low", "medium", "high"]},
+        "temporal_basis": {"enum": ["observed", "source", "unknown"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

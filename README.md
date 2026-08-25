@@ -567,6 +567,51 @@ Each operation may provide its own `actor`; the event records that actor plus `s
 differs from the batch submitter. This lets an import agent preserve individual interviewers or
 model runs as the originators of observations.
 
+The batch input is a stable, semver-covered contract. Its version 1.0 JSON Schema ships as
+`epiq/schemas/batch-write-1.0.schema.json`; incompatible changes require a new schema version.
+
+### Repeated measurements and actor-aware reads
+
+Model each repeated measurement as an `observation` entity. Its compound identity should contain
+the measured item, rater, run, and iteration (or another tuple that uniquely identifies one
+measurement). Put the verdict and rationale on that observation, and use typed `Ref[...]` questions
+to link it to the measured item and rater. Re-ingesting the same compound identity returns the same
+observation entity, making retries idempotent.
+
+Do not rely on actor alone to distinguish repeated measurements. Actor is provenance for an
+assertion, while observations are independently addressable domain records. Identical assertions
+against the same subject, question, evidence, value, and valid date remain idempotent.
+
+For analysis that needs assertion provenance, read claims without collapsing them into cells:
+
+```bash
+epiq claims list --kind Observation --question verdict --actor model:gpt-x
+epiq export --format claims-long --kind Observation --questions verdict \
+  --output-path verdicts.jsonl
+epiq aggregate --kind Observation --question verdict --op tally --group-by-actor
+```
+
+`claims-long` writes JSONL when the output ends in `.jsonl` and CSV when it ends in `.csv`. Each
+row includes claim, subject, question, value, actor, confidence, temporal fields, status, evidence,
+and creation sequence. `matrix` and `query` also accept `--actor` to restrict their projections to
+claims asserted by one actor.
+
+### Python embedding API
+
+The supported Python surface is deliberately small:
+
+```python
+import epiq
+
+db = epiq.open("project.sqlite")
+db.batch_write(operations, actor="model:judge")
+claims = db.claims(kind="Observation", question="verdict")
+```
+
+`Database.batch_write`, `Database.upsert_entity`, `Database.define_question`, and
+`Database.claims` are covered by package semantic versioning. Other methods in `epiq.store.Store`
+remain internal implementation details.
+
 For repeatable setup, place `project`, `entity_kinds`, `entities`, `questions`, `aliases`, and
 `operations` in one JSON object:
 

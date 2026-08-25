@@ -84,6 +84,7 @@ _BINDINGS = [
     ("check", "POST", "/api/epiql/check", "read"),
     ("matrix", "GET", "/api/matrix/{entity_kind}", "read"),
     ("query", "POST", "/api/query/{entity_kind}", "read"),
+    ("claims", "GET", "/api/claims-long", "read"),
     ("aggregate", "POST", "/api/aggregate/{entity_kind}", "read"),
     ("dossier", "GET", "/api/reports/dossier/{entity}", "read"),
     ("related", "GET", "/api/related/{entity}", "read"),

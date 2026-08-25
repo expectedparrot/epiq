@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -137,6 +138,44 @@ def _argument_schema(action: argparse.Action) -> dict[str, Any]:
     ):
         result["default"] = action.default
     return result
+
+
+def _write_claims_long(rows: list[dict[str, Any]], output: str) -> Path:
+    """Write long-form claims as JSONL or CSV, selected by the output suffix."""
+    path = Path(output).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix.lower() == ".jsonl":
+        path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
+        return path
+    if path.suffix.lower() != ".csv":
+        raise EpiqError(
+            "invalid_export_path", "claims-long output must have a .csv or .jsonl suffix"
+        )
+    fieldnames = list(rows[0]) if rows else [
+        "claim_id",
+        "subject_id",
+        "subject_name",
+        "subject_kind",
+        "question_id",
+        "question",
+        "value",
+        "actor",
+        "confidence",
+        "temporal_basis",
+        "valid_from",
+        "valid_to",
+        "status",
+        "evidence_id",
+        "created_seq",
+    ]
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            rendered = dict(row)
+            rendered["value"] = json.dumps(row["value"], sort_keys=True)
+            writer.writerow(rendered)
+    return path
 
 
 def _capabilities(command: str | None = None) -> dict[str, Any]:
@@ -952,18 +991,32 @@ def parser() -> argparse.ArgumentParser:
     matrix.add_argument("--questions", help="Comma-separated question names")
     matrix.add_argument("--known-at")
     matrix.add_argument("--valid-at")
+    matrix.add_argument("--asserted-by", "--actor", dest="claim_actor")
 
     query = commands.add_parser("query", help="Filter rows with structured JSON predicates")
     query.add_argument("--kind", required=True)
     query.add_argument("--where", action="append", default=[], help="JSON predicate")
     query.add_argument("--known-at")
     query.add_argument("--valid-at")
+    query.add_argument("--asserted-by", "--actor", dest="claim_actor")
+
+    claims = commands.add_parser("claims", help="Read claims in lossless long form")
+    claim_commands = claims.add_subparsers(dest="claims_command", required=True)
+    claims_list = claim_commands.add_parser("list", help="List claims with actor attribution")
+    claims_list.add_argument("--kind")
+    claims_list.add_argument("--question")
+    claims_list.add_argument("--asserted-by", "--actor", dest="claim_actor")
+    claims_list.add_argument("--include-superseded", action="store_true")
 
     aggregate = commands.add_parser("aggregate", help="Group and summarize current numeric values")
     aggregate.add_argument("--kind", required=True)
     aggregate.add_argument("--question", required=True)
-    aggregate.add_argument("--op", choices=["count", "sum", "avg", "min", "max"], required=True)
+    aggregate.add_argument(
+        "--op", choices=["count", "sum", "avg", "min", "max", "tally"], required=True
+    )
     aggregate.add_argument("--group-by")
+    aggregate.add_argument("--group-by-actor", action="store_true")
+    aggregate.add_argument("--asserted-by", "--actor", dest="claim_actor")
 
     dossier = commands.add_parser("dossier", help="Generate a sourced entity dossier")
     dossier.add_argument("entity")
@@ -1005,7 +1058,7 @@ def parser() -> argparse.ArgumentParser:
     )
     export.add_argument(
         "--format",
-        choices=["xlsx", "scenario-list", "agent-list", "sqlite"],
+        choices=["xlsx", "scenario-list", "agent-list", "sqlite", "claims-long"],
         required=True,
     )
     export.add_argument("--output-path", required=True)
@@ -1013,6 +1066,8 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--questions", help="Comma-separated question names")
     export.add_argument("--known-at")
     export.add_argument("--valid-at")
+    export.add_argument("--asserted-by", "--actor", dest="claim_actor")
+    export.add_argument("--include-superseded", action="store_true")
 
     html = commands.add_parser(
         "export-html", help="Export a self-contained, read-only database inspector"
@@ -1637,12 +1692,60 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         return {"ok": True, "demo": args.name, **load_patriots(store, args.actor)}
     if args.command == "matrix":
         questions = args.questions.split(",") if args.questions else None
-        return store.matrix(args.kind, questions, args.known_at, args.valid_at)
+        return store.matrix(args.kind, questions, args.known_at, args.valid_at, args.claim_actor)
     if args.command == "query":
         predicates = [_predicate(item) for item in args.where]
-        return store.query_rows(args.kind, predicates, args.known_at, args.valid_at)
+        return store.query_rows(
+            args.kind, predicates, args.known_at, args.valid_at, args.claim_actor
+        )
+    if args.command == "claims":
+        items = store.list_claims(
+            args.kind, args.question, args.claim_actor, args.include_superseded
+        )
+        return {"count": len(items), "claims": items}
     if args.command == "aggregate":
-        projection = store.matrix(args.kind)
+        if args.group_by and args.group_by_actor:
+            raise EpiqError("invalid_aggregate", "Choose --group-by or --group-by-actor, not both")
+        if args.group_by_actor or args.op == "tally":
+            claims = store.list_claims(args.kind, args.question, args.claim_actor)
+            grouped_claims: dict[str, list[Any]] = {}
+            for claim in claims:
+                key = claim["actor"] if args.group_by_actor else "all"
+                grouped_claims.setdefault(str(key), []).append(claim["value"])
+            groups = []
+            for key, values in sorted(grouped_claims.items()):
+                if args.op == "tally":
+                    counts: dict[str, int] = {}
+                    for value in values:
+                        label = json.dumps(value, sort_keys=True, separators=(",", ":"))
+                        counts[label] = counts.get(label, 0) + 1
+                    result: Any = counts
+                elif args.op == "count":
+                    result = len(values)
+                else:
+                    if not all(
+                        isinstance(item, int | float) and not isinstance(item, bool)
+                        for item in values
+                    ):
+                        raise EpiqError(
+                            "non_numeric_aggregate",
+                            f"{args.question} contains non-numeric values",
+                        )
+                    result = {
+                        "sum": sum,
+                        "avg": lambda items: sum(items) / len(items),
+                        "min": min,
+                        "max": max,
+                    }[args.op](values)
+                groups.append({"group": key, "value": result, "count": len(values)})
+            return {
+                "entity_kind": args.kind,
+                "question": args.question,
+                "operation": args.op,
+                "group_by_actor": args.group_by_actor,
+                "groups": groups,
+            }
+        projection = store.matrix(args.kind, actor=args.claim_actor)
         question_names = {str(item["name"]) for item in projection["questions"]}
         if args.question not in question_names:
             raise EpiqError("question_not_found", f"Question not found: {args.question}")
@@ -1722,6 +1825,15 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "questions": len(matrix["questions"]),
         }
     if args.command == "export":
+        if args.format == "claims-long":
+            rows = store.list_claims(
+                args.kind, actor=args.claim_actor, include_superseded=args.include_superseded
+            )
+            if args.questions:
+                selected = set(args.questions.split(","))
+                rows = [row for row in rows if row["question"] in selected]
+            output = _write_claims_long(rows, args.output_path)
+            return {"ok": True, "output": str(output), "format": "claims-long", "count": len(rows)}
         if args.format == "sqlite":
             output = store.backup(args.output_path)
             return {
