@@ -17,7 +17,12 @@ tables.
 - Reversible field retirement: `question.retire` removes an unsuitable column from current
   projections and agent work without deleting its schema, claims, evidence, or history;
   `question.restore` brings it back.
-- Schema-versioned automatic migrations (currently v11).
+- Schema-versioned automatic migrations (currently v13), isolated from current-schema reads,
+  serialized across processes and committed atomically. Connection contexts close their handles.
+- Snapshot-consistent bulk table projections. Historical reads preserve identity, visibility,
+  schema versions, research outcomes, reference labels, challenges and evidence assessments.
+- Bounded background worker queues with cancellation checked before invoking queued research.
+- Browser regression tests, frontend builds and installed-wheel smoke checks in CI.
 - Stable entity identity with normalized duplicate rejection, aliases, merge redirects, and
   reversible entity retirement. Historical claims keep their original subject IDs while current
   projections unify merged identities.
@@ -52,9 +57,8 @@ tables.
 
 ## P1 — hardening for trusted local deployment
 
-- Move the implemented ordered migration plan into independently packaged migration functions and
-  add a cross-process migration lock; explicit `migrate --backup` is available now while normal
-  connections retain compatibility auto-upgrade behavior.
+- Extend the original-schema migration fixture, rollback and concurrent-process tests to include
+  archived databases from every released schema version.
 - Persist an explicit job request envelope sufficient to retry interrupted work safely, with retry,
   cancellation, and bounded retention controls.
 - Add canonical URL normalization and stronger evidence idempotency across tracking URLs.

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "check": "tsc -b --pretty false"
+    "check": "tsc -b --pretty false",
+    "test": "playwright test"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
@@ -15,6 +16,7 @@
     "vite": "latest"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "prettier": "^3.9.6",

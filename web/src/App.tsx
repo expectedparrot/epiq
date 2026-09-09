@@ -24,6 +24,7 @@ import {
   api,
   post,
 } from "./api";
+import { useTableData } from "./useTableData";
 import { SchemaAdaptationReviews } from "./SchemaAdaptationReview";
 
 type Selection = {
@@ -292,7 +293,6 @@ function parseValue(raw: string, type: string): unknown {
 
 export default function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [matrix, setMatrix] = useState<Matrix | null>(null);
   const [kind, setKind] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [entitySelection, setEntitySelection] =
@@ -368,9 +368,10 @@ export default function App() {
   const [jobNotice, setJobNotice] = useState("");
   const jobsRef = useRef<ResearchJob[]>([]);
   const jobsRevisionRef = useRef("");
-  const [staleDerivations, setStaleDerivations] = useState<StaleDerivation[]>(
-    [],
+  const { matrix, staleDerivations, loadMatrix, clearMatrix } = useTableData(
+    overview?.project.project_id, kind, !needsInit && !projectClosed, setError,
   );
+  const overviewGeneration = useRef(0);
   const layoutKey = `epiq-layout:${overview?.project.project_id ?? "project"}:${kind}`;
   const viewsKey = `epiq-views:${overview?.project.project_id ?? "project"}:${kind}`;
   const getColumnFormat = (question: Question): NumberFormat => {
@@ -388,8 +389,10 @@ export default function App() {
   };
 
   const loadOverview = useCallback(async () => {
+    const generation = ++overviewGeneration.current;
     try {
       const next = await api<Overview>("/api/project");
+      if (generation !== overviewGeneration.current) return;
       setOverview(next);
       setNeedsInit(false);
       const primaryKind = [...next.entity_kinds].sort(
@@ -398,6 +401,7 @@ export default function App() {
       )[0]?.kind;
       setKind((current) => current || primaryKind || "");
     } catch (caught) {
+      if (generation !== overviewGeneration.current) return;
       if (caught instanceof ApiError && caught.code === "project_not_found")
         setNeedsInit(true);
       else if (
@@ -410,27 +414,10 @@ export default function App() {
           caught instanceof Error ? caught.message : "Could not load project",
         );
     } finally {
-      setLoading(false);
+      if (generation === overviewGeneration.current) setLoading(false);
     }
   }, []);
 
-  const loadMatrix = useCallback(async () => {
-    if (!kind || needsInit) return;
-    try {
-      const [nextMatrix, stale] = await Promise.all([
-        api<Matrix>(`/api/matrix/${encodeURIComponent(kind)}`),
-        api<{ stale_derivations: StaleDerivation[] }>(
-          `/api/stale-derivations?entity_kind=${encodeURIComponent(kind)}`,
-        ),
-      ]);
-      setMatrix(nextMatrix);
-      setStaleDerivations(stale.stale_derivations);
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not load table",
-      );
-    }
-  }, [kind, needsInit]);
   const staleDerivedClaimIds = useMemo(
     () => new Set(staleDerivations.map((item) => item.claim_id)),
     [staleDerivations],
@@ -535,9 +522,12 @@ export default function App() {
     });
   }, [matrix]);
   useEffect(() => {
-    if (needsInit) return;
+    if (needsInit || projectClosed) return;
     let cancelled = false;
+    let polling = false;
     const poll = async () => {
+      if (polling) return;
+      polling = true;
       try {
         const next = await api<ResearchJob[]>("/api/research/jobs");
         if (!cancelled) {
@@ -577,24 +567,18 @@ export default function App() {
           const nextRevision = jobRevision(next);
           const progressChanged = nextRevision !== jobsRevisionRef.current;
           jobsRevisionRef.current = nextRevision;
-          setJobs((current) => {
-            const hadActive = current.some(
-              (job) => job.status === "queued" || job.status === "running",
-            );
-            // Research jobs persist claims independently. Re-project while work is
-            // active so completed cells appear without waiting for sibling jobs.
-            if (progressChanged || hasActive || hadActive) void loadMatrix();
-            if (
-              progressChanged &&
-              next.some((job) => job.job_type === "workspace_agent")
-            ) {
-              void loadOverview();
-            }
-            return next;
-          });
+          const hadActive = [...previous.values()].some(
+            (status) => status === "queued" || status === "running",
+          );
+          if (progressChanged || hasActive || hadActive) void loadMatrix(false);
+          if (progressChanged && next.some((job) => job.job_type === "workspace_agent"))
+            void loadOverview();
+          setJobs(next);
         }
       } catch {
         /* The table remains usable if job polling is unavailable. */
+      } finally {
+        polling = false;
       }
     };
     void poll();
@@ -603,13 +587,13 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [needsInit, loadMatrix, loadOverview]);
+  }, [needsInit, projectClosed, loadMatrix, loadOverview]);
   useEffect(() => {
     if (needsInit || projectClosed) return;
     const refreshVisibleProject = () => {
       if (document.visibilityState !== "visible") return;
       void loadOverview();
-      void loadMatrix();
+      void loadMatrix(false);
     };
     const timer = window.setInterval(refreshVisibleProject, 5000);
     return () => window.clearInterval(timer);
@@ -660,8 +644,9 @@ export default function App() {
     setShowReview(false);
   };
   const projectReady = async () => {
+    ++overviewGeneration.current;
     setKind("");
-    setMatrix(null);
+    clearMatrix();
     setOverview(null);
     setProjectClosed(false);
     setShowProjects(false);
@@ -670,8 +655,9 @@ export default function App() {
   const closeProject = async () => {
     try {
       await post("/api/projects/close", {});
+      ++overviewGeneration.current;
       setOverview(null);
-      setMatrix(null);
+      clearMatrix();
       setKind("");
       setProjectClosed(true);
     } catch (caught) {

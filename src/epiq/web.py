@@ -15,7 +15,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +36,7 @@ from .dsl import describe, parse
 from .edsl_export import write_edsl
 from .errors import EpiqError
 from .html import write_html
+from .jobs import JobQueue, QueueFull
 from .operations import agent_operation_catalog
 from .research import (
     EntitySuggestionRunner,
@@ -397,7 +398,11 @@ def create_app(
     projects_path = Path(
         projects_directory or os.environ.get("EPIQ_PROJECTS_DIR", ".epiq/projects")
     ).resolve()
-    frontend_path = Path(frontend or Path(__file__).parents[2] / "web" / "dist")
+    checkout_frontend = Path(__file__).parents[2] / "web" / "dist"
+    packaged_frontend = Path(__file__).parent / "_frontend"
+    frontend_path = Path(
+        frontend or (packaged_frontend if packaged_frontend.exists() else checkout_frontend)
+    ).resolve()
     app = FastAPI(title="Epiq", version="0.1.0")
     app.state.database: Path | None = database_path.resolve()
     app.state.initial_database = database_path.resolve()
@@ -409,9 +414,11 @@ def create_app(
     app.state.workspace_agent_runner = workspace_agent_runner or OpenAIWorkspaceAgentRunner()
     app.state.research_jobs = {}
     app.state.research_lock = threading.Lock()
-    app.state.research_semaphore = threading.Semaphore(
-        int(os.environ.get("EPIQ_RESEARCH_CONCURRENCY", "6"))
+    concurrency = int(os.environ.get("EPIQ_RESEARCH_CONCURRENCY", "6"))
+    app.state.job_queue = JobQueue(
+        concurrency, int(os.environ.get("EPIQ_RESEARCH_QUEUE_CAPACITY", "1000"))
     )
+    app.state.research_semaphore = threading.Semaphore(concurrency)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -440,6 +447,32 @@ def create_app(
     def persist_job(job_id: str) -> None:
         if app.state.database is not None:
             Store(app.state.database).save_agent_job(app.state.research_jobs[job_id])
+
+    def finish_if_cancelled(job_id: str) -> bool:
+        with app.state.research_lock:
+            job = app.state.research_jobs[job_id]
+            if not job.get("cancel_requested"):
+                return False
+            job["status"] = "cancelled"
+            job["finished_at"] = datetime.now(UTC).isoformat()
+            persist_job(job_id)
+            return True
+
+    def submit_job(target, job_id: str, body: BaseModel) -> None:
+        def execute() -> None:
+            if not finish_if_cancelled(job_id):
+                target(job_id, body)
+
+        try:
+            app.state.job_queue.submit(execute)
+        except QueueFull as error:
+            with app.state.research_lock:
+                job = app.state.research_jobs[job_id]
+                job["status"] = "failed"
+                job["error"] = str(error)
+                job["finished_at"] = datetime.now(UTC).isoformat()
+                persist_job(job_id)
+            raise EpiqError("research_queue_full", str(error)) from error
 
     load_persisted_jobs()
 
@@ -500,7 +533,10 @@ def create_app(
 
     @app.exception_handler(EpiqError)
     async def domain_error(_request: Request, error: EpiqError) -> JSONResponse:
-        return JSONResponse(status_code=400, content={"error": error.as_dict()})
+        return JSONResponse(
+            status_code=429 if error.code == "research_queue_full" else 400,
+            content={"error": error.as_dict()},
+        )
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -1766,6 +1802,9 @@ def create_app(
             )
             progress("Waiting for an available research slot")
             with app.state.research_semaphore:
+                if cancelled():
+                    finish_cancelled()
+                    return
                 findings = app.state.research_runner(
                     body.entity_kind, research_question, targets, progress
                 )
@@ -2043,7 +2082,7 @@ def create_app(
             }
             app.state.research_jobs[job_id] = job
             persist_job(job_id)
-        threading.Thread(target=execute_research, args=(job_id, body), daemon=True).start()
+        submit_job(execute_research, job_id, body)
         return job
 
     @app.post("/api/research/column", status_code=202)
@@ -2450,7 +2489,7 @@ def create_app(
         with app.state.research_lock:
             app.state.research_jobs[job_id] = job
             persist_job(job_id)
-        threading.Thread(target=execute_workspace_agent, args=(job_id, body), daemon=True).start()
+        submit_job(execute_workspace_agent, job_id, body)
         return job
 
     @app.post("/api/workspace-agent/jobs/{job_id}/approve", status_code=202)
@@ -2473,7 +2512,7 @@ def create_app(
             )
             persist_job(job_id)
             body = WorkspaceAgentCreate(message=str(job.get("user_message") or job["instructions"]))
-        threading.Thread(target=execute_workspace_agent, args=(job_id, body), daemon=True).start()
+        submit_job(execute_workspace_agent, job_id, body)
         return job
 
     @app.post("/api/workspace-agent/jobs/{job_id}/reject")
@@ -2857,6 +2896,8 @@ def create_app(
             candidates = app.state.suggestion_runner(
                 body.entity_kind, existing, body.count, body.instructions, progress
             )
+            if finish_if_cancelled(job_id):
+                return
             existing_names = {item["name"].strip().casefold() for item in existing}
             seen = set(existing_names)
             suggestions = []
@@ -2915,7 +2956,7 @@ def create_app(
         with app.state.research_lock:
             app.state.research_jobs[job_id] = job
             persist_job(job_id)
-        threading.Thread(target=execute_suggestions, args=(job_id, body), daemon=True).start()
+        submit_job(execute_suggestions, job_id, body)
         return job
 
     @app.post("/api/entity-suggestions/{job_id}/accept", status_code=201)
@@ -3008,6 +3049,8 @@ def create_app(
                 body.instructions,
                 progress,
             )
+            if finish_if_cancelled(job_id):
+                return
             existing_names = {item["name"].casefold() for item in existing}
             seen = set(existing_names)
             suggestions = []
@@ -3074,7 +3117,7 @@ def create_app(
         with app.state.research_lock:
             app.state.research_jobs[job_id] = job
             persist_job(job_id)
-        threading.Thread(target=execute_field_suggestions, args=(job_id, body), daemon=True).start()
+        submit_job(execute_field_suggestions, job_id, body)
         return job
 
     @app.post("/api/field-suggestions/{job_id}/accept", status_code=201)
@@ -3120,8 +3163,14 @@ def create_app(
 
         @app.get("/{path:path}", include_in_schema=False)
         def spa(path: str) -> FileResponse:
-            candidate = frontend_path / path
-            return FileResponse(candidate if candidate.is_file() else frontend_path / "index.html")
+            candidate = (frontend_path / path).resolve()
+            if not candidate.is_relative_to(frontend_path):
+                raise HTTPException(status_code=404, detail="Not found")
+            if not candidate.is_file():
+                candidate = (frontend_path / "index.html").resolve()
+            if not candidate.is_relative_to(frontend_path) or not candidate.is_file():
+                raise HTTPException(status_code=404, detail="Not found")
+            return FileResponse(candidate)
 
     return app
 

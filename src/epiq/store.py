@@ -20,6 +20,15 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .errors import EpiqError
+from .migrations import (
+    LATEST_SCHEMA_VERSION,
+    MIGRATION_DESCRIPTIONS,
+    Connection,
+    enable_wal,
+    migrate,
+    schema_version,
+)
+from .projections import Projection
 
 QUESTION_CHALLENGE_PROBLEMS = {
     "type_mismatch",
@@ -83,21 +92,6 @@ def _evaluate_arithmetic_expression(expression: str, values: list[int | float]) 
     return result
 
 
-LATEST_SCHEMA_VERSION = 13
-MIGRATION_DESCRIPTIONS = {
-    2: "multi-evidence claims and derivation lineage",
-    3: "source publication time and claim temporal basis",
-    4: "question challenges and supporting evidence",
-    5: "durable operational agent jobs",
-    6: "reversible question visibility",
-    7: "entity aliases, merges, and visibility",
-    8: "durable claim proposal review queue",
-    9: "executable question evolution lineage",
-    10: "claim validity endings and evidence assessments",
-    11: "first-class evidence source types",
-    12: "entity roles, compound identities, and structured source locators",
-    13: "typed derivation dependencies and stale-derived-claim detection",
-}
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -446,267 +440,27 @@ class Store:
             )
 
     def connect(self) -> sqlite3.Connection:
-        """Open a configured SQLite connection."""
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA busy_timeout = 10000")
-        if connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claims'"
-        ).fetchone():
-            version_row = connection.execute(
-                "SELECT value FROM meta WHERE key='schema_version'"
-            ).fetchone()
-            if version_row is not None and int(version_row["value"]) > LATEST_SCHEMA_VERSION:
-                connection.close()
-                raise EpiqError(
-                    "schema_too_new",
-                    f"Database schema v{version_row['value']} is newer than supported "
-                    f"v{LATEST_SCHEMA_VERSION}",
-                )
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS entity_kinds (
-                    kind TEXT PRIMARY KEY,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq)
-                );
-                INSERT OR IGNORE INTO entity_kinds(kind,created_seq)
-                SELECT kind,MIN(created_seq) FROM entities GROUP BY kind;
-                INSERT OR IGNORE INTO entity_kinds(kind,created_seq)
-                SELECT subject_kind,MIN(created_seq) FROM questions GROUP BY subject_kind;
-                CREATE TABLE IF NOT EXISTS claim_evidence (
-                    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-                    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
-                    ordinal INTEGER NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq),
-                    PRIMARY KEY(claim_id, evidence_id),
-                    UNIQUE(claim_id, ordinal)
-                );
-                CREATE TABLE IF NOT EXISTS derivations (
-                    claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id),
-                    operation TEXT NOT NULL,
-                    parameters_json TEXT NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq)
-                );
-                CREATE TABLE IF NOT EXISTS claim_inputs (
-                    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-                    input_claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-                    ordinal INTEGER NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq),
-                    PRIMARY KEY(claim_id, input_claim_id),
-                    UNIQUE(claim_id, ordinal),
-                    CHECK(claim_id <> input_claim_id)
-                );
-                INSERT OR IGNORE INTO claim_evidence(claim_id,evidence_id,ordinal,created_seq)
-                SELECT claim_id,evidence_id,0,created_seq FROM claims
-                WHERE (SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version')<2;
-                UPDATE meta SET value='2' WHERE key='schema_version' AND CAST(value AS INTEGER)<2;
-                """
-            )
-            source_columns = {
-                str(row["name"]) for row in connection.execute("PRAGMA table_info(sources)")
-            }
-            if "published_at" not in source_columns:
-                connection.execute("ALTER TABLE sources ADD COLUMN published_at TEXT")
-            if "source_type" not in source_columns:
-                connection.execute(
-                    "ALTER TABLE sources ADD COLUMN source_type TEXT NOT NULL DEFAULT 'web'"
-                )
-            claim_columns = {
-                str(row["name"]) for row in connection.execute("PRAGMA table_info(claims)")
-            }
-            if "temporal_basis" not in claim_columns:
-                connection.execute(
-                    "ALTER TABLE claims ADD COLUMN temporal_basis TEXT NOT NULL DEFAULT 'unknown'"
-                )
-            connection.execute(
-                "UPDATE meta SET value='3' WHERE key='schema_version' AND CAST(value AS INTEGER)<3"
-            )
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS question_challenges (
-                    challenge_id TEXT PRIMARY KEY,
-                    question_id TEXT NOT NULL REFERENCES questions(question_id),
-                    problem TEXT NOT NULL,
-                    explanation TEXT NOT NULL,
-                    example_entity_id TEXT REFERENCES entities(entity_id),
-                    proposed_replacement_json TEXT,
-                    status TEXT NOT NULL CHECK(status IN ('open', 'resolved', 'dismissed')),
-                    resolution TEXT,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq),
-                    closed_seq INTEGER REFERENCES events(seq)
-                );
-                CREATE TABLE IF NOT EXISTS question_challenge_evidence (
-                    challenge_id TEXT NOT NULL REFERENCES question_challenges(challenge_id),
-                    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
-                    ordinal INTEGER NOT NULL,
-                    PRIMARY KEY(challenge_id, evidence_id),
-                    UNIQUE(challenge_id, ordinal)
-                );
-                CREATE INDEX IF NOT EXISTS idx_question_challenges
-                ON question_challenges(question_id, status, created_seq);
-                UPDATE meta SET value='4'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<4;
-                CREATE TABLE IF NOT EXISTS agent_jobs (
-                    job_id TEXT PRIMARY KEY,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_agent_jobs_updated ON agent_jobs(updated_at);
-                UPDATE meta SET value='5'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<5;
-                CREATE TABLE IF NOT EXISTS question_visibility (
-                    name TEXT PRIMARY KEY,
-                    visible INTEGER NOT NULL CHECK(visible IN (0, 1)),
-                    reason TEXT NOT NULL,
-                    question_id TEXT NOT NULL REFERENCES questions(question_id),
-                    changed_seq INTEGER NOT NULL REFERENCES events(seq)
-                );
-                UPDATE meta SET value='6'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<6;
-                CREATE TABLE IF NOT EXISTS entity_aliases (
-                    alias_id TEXT PRIMARY KEY,
-                    entity_id TEXT NOT NULL REFERENCES entities(entity_id),
-                    alias TEXT NOT NULL,
-                    normalized_alias TEXT NOT NULL UNIQUE,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq)
-                );
-                CREATE TABLE IF NOT EXISTS entity_redirects (
-                    from_entity_id TEXT PRIMARY KEY REFERENCES entities(entity_id),
-                    into_entity_id TEXT NOT NULL REFERENCES entities(entity_id),
-                    reason TEXT NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq),
-                    CHECK(from_entity_id <> into_entity_id)
-                );
-                CREATE TABLE IF NOT EXISTS entity_visibility (
-                    entity_id TEXT PRIMARY KEY REFERENCES entities(entity_id),
-                    visible INTEGER NOT NULL CHECK(visible IN (0, 1)),
-                    reason TEXT NOT NULL,
-                    changed_seq INTEGER NOT NULL REFERENCES events(seq)
-                );
-                UPDATE meta SET value='7'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<7;
-                CREATE TABLE IF NOT EXISTS claim_proposals (
-                    proposal_id TEXT PRIMARY KEY,
-                    subject_id TEXT NOT NULL REFERENCES entities(entity_id),
-                    question_id TEXT NOT NULL REFERENCES questions(question_id),
-                    value_json TEXT NOT NULL,
-                    valid_from TEXT NOT NULL,
-                    evidence_ids_json TEXT NOT NULL,
-                    confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
-                    temporal_basis TEXT NOT NULL
-                        CHECK(temporal_basis IN ('observed', 'source', 'unknown')),
-                    rationale TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
-                    resulting_claim_id TEXT REFERENCES claims(claim_id),
-                    review_reason TEXT,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq),
-                    reviewed_seq INTEGER REFERENCES events(seq)
-                );
-                CREATE INDEX IF NOT EXISTS idx_claim_proposals_status
-                ON claim_proposals(status, created_seq);
-                UPDATE meta SET value='8'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<8;
-                CREATE TABLE IF NOT EXISTS question_lineage (
-                    predecessor_question_id TEXT NOT NULL REFERENCES questions(question_id),
-                    successor_question_id TEXT NOT NULL REFERENCES questions(question_id),
-                    relationship TEXT NOT NULL
-                        CHECK(relationship IN ('replaces', 'splits', 'refines')),
-                    reason TEXT NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq),
-                    PRIMARY KEY(predecessor_question_id, successor_question_id)
-                );
-                UPDATE meta SET value='9'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<9;
-                CREATE TABLE IF NOT EXISTS evidence_assessments (
-                    assessment_id TEXT PRIMARY KEY,
-                    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
-                    status TEXT NOT NULL
-                        CHECK(status IN ('accepted', 'disputed', 'invalid', 'superseded')),
-                    reason TEXT NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq)
-                );
-                CREATE INDEX IF NOT EXISTS idx_evidence_assessments
-                ON evidence_assessments(evidence_id, created_seq);
-                CREATE TABLE IF NOT EXISTS claim_validity_ends (
-                    claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id),
-                    valid_to TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq)
-                );
-                UPDATE meta SET value='10'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<10;
-                CREATE TRIGGER IF NOT EXISTS immutable_events_update
-                BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS immutable_events_delete
-                BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'events are immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS immutable_evidence_update
-                BEFORE UPDATE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence is immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS immutable_evidence_delete
-                BEFORE DELETE ON evidence BEGIN SELECT RAISE(ABORT, 'evidence is immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS immutable_sources_update
-                BEFORE UPDATE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
-                CREATE TRIGGER IF NOT EXISTS immutable_sources_delete
-                BEFORE DELETE ON sources BEGIN SELECT RAISE(ABORT, 'sources are immutable'); END;
-                UPDATE meta SET value='11'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<11;
-                """
-            )
-            entity_columns = {
-                str(row["name"]) for row in connection.execute("PRAGMA table_info(entities)")
-            }
-            if "role" not in entity_columns:
-                connection.execute(
-                    "ALTER TABLE entities ADD COLUMN role TEXT NOT NULL DEFAULT 'entity'"
-                )
-            if "identity_json" not in entity_columns:
-                connection.execute("ALTER TABLE entities ADD COLUMN identity_json TEXT")
-            if "identity_hash" not in entity_columns:
-                connection.execute("ALTER TABLE entities ADD COLUMN identity_hash TEXT")
-            source_columns = {
-                str(row["name"]) for row in connection.execute("PRAGMA table_info(sources)")
-            }
-            if "locator_json" not in source_columns:
-                connection.execute(
-                    "ALTER TABLE sources ADD COLUMN locator_json TEXT NOT NULL DEFAULT '{}'"
-                )
-            if "linked_entity_id" not in source_columns:
-                connection.execute("ALTER TABLE sources ADD COLUMN linked_entity_id TEXT")
-            connection.executescript(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_compound_identity
-                ON entities(kind, identity_hash) WHERE identity_hash IS NOT NULL;
-                UPDATE meta SET value='12'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<12;
-                CREATE TABLE IF NOT EXISTS derivation_dependencies (
-                    claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-                    dependency_claim_id TEXT NOT NULL REFERENCES claims(claim_id),
-                    role TEXT NOT NULL CHECK(role IN ('operand', 'parameter', 'path')),
-                    ordinal INTEGER NOT NULL,
-                    created_seq INTEGER NOT NULL REFERENCES events(seq),
-                    PRIMARY KEY(claim_id, role, dependency_claim_id),
-                    UNIQUE(claim_id, role, ordinal),
-                    CHECK(claim_id <> dependency_claim_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_derivation_dependency_claim
-                ON derivation_dependencies(dependency_claim_id);
-                INSERT OR IGNORE INTO derivation_dependencies
-                    (claim_id,dependency_claim_id,role,ordinal,created_seq)
-                SELECT claim_id,input_claim_id,'operand',ordinal,created_seq FROM claim_inputs;
-                UPDATE meta SET value='13'
-                WHERE key='schema_version' AND CAST(value AS INTEGER)<13;
-                """
-            )
-            connection.commit()
-        return connection
+        """Open a connection, upgrading only an older schema; context exit closes it."""
+        connection = sqlite3.connect(self.path, timeout=10, factory=Connection)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            enable_wal(connection)
+            connection.execute("PRAGMA busy_timeout = 10000")
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claims'"
+            ).fetchone() and schema_version(connection) < LATEST_SCHEMA_VERSION:
+                migrate(connection)
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     def migration_plan(self) -> dict[str, Any]:
         """Inspect pending database migrations without applying them."""
         if not self.path.exists():
             raise EpiqError("project_not_found", f"Database does not exist: {self.path}")
-        with sqlite3.connect(self.path) as connection:
+        with sqlite3.connect(self.path, factory=Connection) as connection:
             row = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if row is None:
             raise EpiqError("invalid_project", "Database has no schema_version metadata")
@@ -737,7 +491,10 @@ class Store:
             if backup_path.exists():
                 raise EpiqError("backup_exists", f"Backup already exists: {backup_path}")
             backup_path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(self.path) as source, sqlite3.connect(backup_path) as target:
+            with (
+                sqlite3.connect(self.path, factory=Connection) as source,
+                sqlite3.connect(backup_path, factory=Connection) as target,
+            ):
                 source.backup(target)
         with self.connect():
             pass
@@ -905,7 +662,7 @@ class Store:
         os.close(descriptor)
         temporary = Path(temporary_name)
         try:
-            with self.connect() as source, sqlite3.connect(temporary) as target:
+            with self.connect() as source, sqlite3.connect(temporary, factory=Connection) as target:
                 source.backup(target)
             os.replace(temporary, output)
         except Exception:
@@ -981,7 +738,7 @@ class Store:
         temporary = Path(temporary_name)
         try:
             temporary.write_bytes(database_bytes)
-            with sqlite3.connect(temporary) as connection:
+            with sqlite3.connect(temporary, factory=Connection) as connection:
                 integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
             if integrity != "ok":
                 raise EpiqError("bundle_integrity_error", integrity)
@@ -3955,7 +3712,8 @@ class Store:
                 """SELECT k.kind,
                           COUNT(DISTINCT e.entity_id) AS entities,
                           COUNT(DISTINCT q.name) AS questions
-                   FROM entity_kinds k
+                   FROM (SELECT kind FROM entity_kinds UNION SELECT kind FROM entities
+                         UNION SELECT subject_kind FROM questions) k
                    LEFT JOIN entities e ON e.kind=k.kind
                      AND NOT EXISTS (
                        SELECT 1 FROM entity_redirects er WHERE er.from_entity_id=e.entity_id
@@ -4026,131 +3784,12 @@ class Store:
         valid_at: str | None = None,
         actor: str | None = None,
     ) -> dict[str, Any]:
-        """Project current claims into a general entity-by-question matrix."""
-        cutoff = known_at or "9999-12-31T23:59:59Z"
-        valid = valid_at or "9999-12-31"
+        """Project one consistent snapshot, including historical identities and schema."""
         with self.connect() as connection:
-            entities = connection.execute(
-                """SELECT * FROM entities e WHERE kind=?
-                   AND NOT EXISTS (
-                     SELECT 1 FROM entity_redirects r WHERE r.from_entity_id=e.entity_id
-                   )
-                   AND NOT EXISTS (
-                     SELECT 1 FROM entity_visibility v
-                     WHERE v.entity_id=e.entity_id AND v.visible=0
-                   )
-                   ORDER BY name""",
-                (entity_kind,),
-            ).fetchall()
-            if question_names:
-                placeholders = ",".join("?" for _ in question_names)
-                questions = connection.execute(
-                    f"""SELECT q.* FROM questions q
-                        JOIN (SELECT name, MAX(version) version, MIN(created_seq) first_seq
-                              FROM questions GROUP BY name) latest
-                        ON latest.name=q.name AND latest.version=q.version
-                        LEFT JOIN question_visibility qv ON qv.name=q.name
-                        WHERE q.name IN ({placeholders}) AND COALESCE(qv.visible,1)=1
-                        ORDER BY latest.first_seq""",
-                    question_names,
-                ).fetchall()
-            else:
-                questions = connection.execute(
-                    """SELECT q.* FROM questions q
-                       JOIN (SELECT name, MAX(version) version, MIN(created_seq) first_seq
-                             FROM questions GROUP BY name) latest
-                       ON latest.name=q.name AND latest.version=q.version
-                       LEFT JOIN question_visibility qv ON qv.name=q.name
-                       WHERE q.subject_kind=? AND COALESCE(qv.visible,1)=1
-                       ORDER BY latest.first_seq""",
-                    (entity_kind,),
-                ).fetchall()
-            rows: list[dict[str, Any]] = []
-            for entity in entities:
-                cells: dict[str, Any] = {}
-                entity_ids = self._entity_cluster(connection, str(entity["entity_id"]))
-                aliases = connection.execute(
-                    f"""SELECT alias FROM entity_aliases
-                        WHERE entity_id IN ({",".join("?" for _ in entity_ids)})
-                        ORDER BY created_seq""",
-                    entity_ids,
-                ).fetchall()
-                entity_placeholders = ",".join("?" for _ in entity_ids)
-                for question in questions:
-                    actor_clause = "AND claim_event.actor=?" if actor else ""
-                    claims = connection.execute(
-                        f"""SELECT c.* FROM claims c
-                           JOIN questions cq ON cq.question_id=c.question_id
-                           JOIN events claim_event ON claim_event.seq=c.created_seq
-                           WHERE c.subject_id IN ({entity_placeholders}) AND cq.name=?
-                           {actor_clause}
-                           AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
-                           AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
-                           AND NOT EXISTS (
-                             SELECT 1 FROM claim_validity_ends ve
-                             JOIN events vee ON vee.seq=ve.created_seq
-                             WHERE ve.claim_id=c.claim_id AND vee.recorded_at<=? AND ve.valid_to<=?
-                           )
-                           ORDER BY c.valid_from DESC, c.created_seq DESC""",
-                        (
-                            *entity_ids,
-                            question["name"],
-                            *((actor,) if actor else ()),
-                            cutoff,
-                            cutoff,
-                            valid,
-                            valid,
-                            cutoff,
-                            valid,
-                        ),
-                    ).fetchall()
-                    definition = json.loads(question["definition_json"])
-                    task = connection.execute(
-                        f"""SELECT t.* FROM research_tasks t
-                           JOIN questions tq ON tq.question_id=t.question_id
-                           WHERE t.subject_id IN ({entity_placeholders}) AND tq.name=?
-                           ORDER BY t.created_seq DESC LIMIT 1""",
-                        (*entity_ids, question["name"]),
-                    ).fetchone()
-                    cell = self._project_cell(connection, claims, definition, task, cutoff)
-                    cells[str(question["name"])] = self._decorate_reference_cell(
-                        connection, cell, str(question["value_type"])
-                    )
-                rows.append(
-                    {
-                        "entity_id": entity["entity_id"],
-                        "name": entity["name"],
-                        "aliases": [str(row["alias"]) for row in aliases],
-                        "merged_entity_ids": [
-                            entity_id
-                            for entity_id in entity_ids
-                            if entity_id != entity["entity_id"]
-                        ],
-                        "attributes": json.loads(entity["attributes_json"]),
-                        "cells": cells,
-                    }
-                )
-            projected_questions = []
-            for question in questions:
-                open_challenges = self._open_question_challenges(connection, str(question["name"]))
-                projected_questions.append(
-                    {
-                        "question_id": question["question_id"],
-                        "name": question["name"],
-                        "value_type": question["value_type"],
-                        "definition": json.loads(question["definition_json"]),
-                        "schema_state": "challenged" if open_challenges else "active",
-                        "open_challenges": open_challenges,
-                    }
-                )
-        return {
-            "entity_kind": entity_kind,
-            "known_at": known_at,
-            "valid_at": valid_at,
-            "actor": actor,
-            "questions": projected_questions,
-            "rows": rows,
-        }
+            connection.execute("BEGIN")
+            return Projection(connection, known_at or "9999-12-31T23:59:59Z").matrix(
+                entity_kind, question_names, known_at, valid_at, actor,
+            )
 
     def list_claims(
         self,
@@ -4206,29 +3845,6 @@ class Store:
             }
             for row in rows
         ]
-
-    def _decorate_reference_cell(
-        self, connection: sqlite3.Connection, cell: dict[str, Any], value_type: str
-    ) -> dict[str, Any]:
-        if not value_type.startswith("Ref["):
-            return cell
-        references: list[dict[str, str]] = []
-        for value in cell.get("values", []):
-            if not isinstance(value, str):
-                continue
-            entity = self._resolve_entity(connection, value)
-            item = {
-                "entity_id": str(entity["entity_id"]),
-                "name": str(entity["name"]),
-                "kind": str(entity["kind"]),
-            }
-            if item not in references:
-                references.append(item)
-        cell["references"] = references
-        if cell.get("value") is not None and references:
-            cell["display_value"] = references[0]
-        cell["display_values"] = references
-        return cell
 
     def query_rows(
         self,
@@ -4540,181 +4156,6 @@ class Store:
             "event_count": len(events),
             "content_sha256": digest,
             "events": events,
-        }
-
-    @staticmethod
-    def _open_question_challenges(
-        connection: sqlite3.Connection, question_name: str
-    ) -> list[dict[str, str]]:
-        rows = connection.execute(
-            """SELECT qc.challenge_id,qc.problem,qc.explanation
-               FROM question_challenges qc
-               JOIN questions q ON q.question_id=qc.question_id
-               WHERE q.name=? AND qc.status='open' ORDER BY qc.created_seq""",
-            (question_name,),
-        ).fetchall()
-        return [
-            {
-                "challenge_id": str(row["challenge_id"]),
-                "problem": str(row["problem"]),
-                "explanation": str(row["explanation"]),
-            }
-            for row in rows
-        ]
-
-    def _project_cell(
-        self,
-        connection: sqlite3.Connection,
-        claims: list[sqlite3.Row],
-        definition: dict[str, Any],
-        task: sqlite3.Row | None = None,
-        cutoff: str = "9999-12-31T23:59:59Z",
-    ) -> dict[str, Any]:
-        if not claims:
-            if task and task["status"] == "not_found":
-                return {
-                    "state": "NotFound",
-                    "values": [],
-                    "lineage": [],
-                    "research": {
-                        "task_id": task["task_id"],
-                        "query": task["query"],
-                        "notes": task["notes"],
-                    },
-                }
-            return {"state": "Unasked", "values": [], "lineage": []}
-        values = [json.loads(claim["value_json"]) for claim in claims]
-        unique = {_json(value) for value in values}
-        cardinality = definition.get("cardinality", "one")
-        if cardinality == "many":
-            state = "Answered"
-        elif len(unique) > 1:
-            state = "Contested"
-        else:
-            state = "Answered"
-        lineage: list[dict[str, Any]] = []
-        for claim in claims:
-            evidence_rows = connection.execute(
-                """SELECT ce.evidence_id,e.excerpt,s.url,s.source_type,s.title,
-                          s.published_at,s.retrieved_at,source_event.actor evidence_actor,
-                          source_event.payload_json evidence_payload,s.locator_json,
-                          s.linked_entity_id
-                   FROM claim_evidence ce
-                   JOIN evidence e ON e.evidence_id=ce.evidence_id
-                   JOIN sources s ON s.source_id=e.source_id
-                   JOIN events source_event ON source_event.seq=e.created_seq
-                   JOIN events ev ON ev.seq=ce.created_seq
-                   JOIN claims owner ON owner.claim_id=ce.claim_id
-                   WHERE ce.claim_id=? AND (ce.created_seq=owner.created_seq OR ev.recorded_at<=?)
-                   ORDER BY ce.ordinal""",
-                (claim["claim_id"], cutoff),
-            ).fetchall()
-            derivation = connection.execute(
-                "SELECT * FROM derivations WHERE claim_id=?", (claim["claim_id"],)
-            ).fetchone()
-            claim_event = connection.execute(
-                "SELECT actor,payload_json FROM events WHERE seq=?", (claim["created_seq"],)
-            ).fetchone()
-            claim_payload = json.loads(str(claim_event["payload_json"]))
-            input_claim_ids = [
-                str(row["input_claim_id"])
-                for row in connection.execute(
-                    """SELECT ci.input_claim_id FROM claim_inputs ci
-                       JOIN events ev ON ev.seq=ci.created_seq
-                       JOIN claims owner ON owner.claim_id=ci.claim_id
-                       WHERE ci.claim_id=?
-                       AND (ci.created_seq=owner.created_seq OR ev.recorded_at<=?)
-                       ORDER BY ci.ordinal""",
-                    (claim["claim_id"], cutoff),
-                )
-            ]
-            dependencies = [
-                {
-                    "claim_id": str(row["dependency_claim_id"]),
-                    "role": str(row["role"]),
-                }
-                for row in connection.execute(
-                    """SELECT dependency_claim_id,role FROM derivation_dependencies
-                       WHERE claim_id=? ORDER BY role,ordinal""",
-                    (claim["claim_id"],),
-                )
-            ]
-            for evidence_row in evidence_rows:
-                assessment = connection.execute(
-                    """SELECT a.status,a.reason FROM evidence_assessments a
-                       JOIN events ev ON ev.seq=a.created_seq
-                       WHERE a.evidence_id=? AND ev.recorded_at<=?
-                       ORDER BY a.created_seq DESC LIMIT 1""",
-                    (evidence_row["evidence_id"], cutoff),
-                ).fetchone()
-                item = {
-                    "token": f"p_{claim['claim_id']}",
-                    "claim_id": claim["claim_id"],
-                    "value": json.loads(claim["value_json"]),
-                    "confidence": claim["confidence"],
-                    "actor": str(claim_event["actor"]),
-                    "submitted_by": claim_payload.get("submitted_by"),
-                    "evidence_id": evidence_row["evidence_id"],
-                    "source": {
-                        "title": evidence_row["title"],
-                        "url": evidence_row["url"],
-                        "source_type": evidence_row["source_type"],
-                        "actor": evidence_row["evidence_actor"],
-                        "submitted_by": json.loads(str(evidence_row["evidence_payload"])).get(
-                            "submitted_by"
-                        ),
-                        "published_at": evidence_row["published_at"],
-                        "retrieved_at": evidence_row["retrieved_at"],
-                        "locator": json.loads(str(evidence_row["locator_json"])),
-                        "linked_entity_id": evidence_row["linked_entity_id"],
-                    },
-                    "as_of": claim["valid_from"],
-                    "temporal_basis": claim["temporal_basis"],
-                    "excerpt": evidence_row["excerpt"],
-                    "evidence_status": str(assessment["status"]) if assessment else "unassessed",
-                    "evidence_assessment_reason": (
-                        str(assessment["reason"]) if assessment else None
-                    ),
-                }
-                if derivation:
-                    item["derivation"] = {
-                        "operation": derivation["operation"],
-                        "parameters": json.loads(derivation["parameters_json"]),
-                        "input_claim_ids": input_claim_ids,
-                        "dependencies": dependencies,
-                    }
-                lineage.append(item)
-        volatility = definition.get("volatility", "stable")
-        freshness_days = definition.get("freshness_days")
-        newest_as_of = max((str(claim["valid_from"]) for claim in claims), default=None)
-        freshness = "not_applicable" if volatility == "stable" else "unknown"
-        age_days = None
-        basis = str(claims[0]["temporal_basis"]) if claims else "unknown"
-        if (
-            volatility != "stable"
-            and newest_as_of
-            and basis != "unknown"
-            and isinstance(freshness_days, int)
-        ):
-            try:
-                age_days = (date.today() - date.fromisoformat(newest_as_of[:10])).days
-                freshness = "fresh" if age_days <= freshness_days else "stale"
-            except ValueError:
-                freshness = "unknown"
-        return {
-            "state": state,
-            "value": values[0] if cardinality == "one" and len(unique) == 1 else None,
-            "values": values,
-            "confidence": claims[0]["confidence"] if len(claims) == 1 else None,
-            "lineage": lineage,
-            "temporal": {
-                "volatility": volatility,
-                "freshness_days": freshness_days,
-                "as_of": newest_as_of,
-                "age_days": age_days,
-                "freshness": freshness,
-                "basis": basis,
-            },
         }
 
     def record_not_found(

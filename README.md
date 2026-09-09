@@ -719,6 +719,9 @@ epiq matrix --kind Town --known-at 2026-01-01T00:00:00Z
 ```
 
 At fixed valid- and transaction-time cutoffs, the projection is deterministic.
+`--known-at` also limits which rows, field versions, aliases, merges, retirements, research
+outcomes and evidence assessments are visible. Later research cannot turn a historical `Unasked`
+cell into `NotFound`. Each table is read from one SQLite snapshot, including its evidence lineage.
 
 ### 8. Record research that did not find an answer
 
@@ -1616,12 +1619,26 @@ interface is finished. See [ROADMAP.md](ROADMAP.md) for the production sequence 
 uv sync --extra test --extra web --extra web-test
 uv run ruff check .
 uv run pytest -q
-npm --prefix web install
+npm --prefix web ci
+web/node_modules/.bin/playwright install chromium
+npm --prefix web test
 npm --prefix web run build
 uv build
 ```
 
-GitHub Actions runs lint and tests on every push and pull request.
+GitHub Actions runs Python lint/tests, Chromium interaction tests, the frontend build, and an
+installed-wheel smoke test on every push and pull request. Build the frontend before the wheel
+to include browser assets; core-only builds still work without Node.js or built assets.
+
+The implementation separates SQLite upgrades (`migrations.py`), bulk historical reads
+(`projections.py`), worker scheduling (`jobs.py`), and scoped frontend requests (`useTableData.ts`).
+The public Python `Database` facade remains the embedding interface.
+
+The web server defaults to six background workers and at most 1,000 waiting tasks. Configure these
+with positive integers in `EPIQ_RESEARCH_CONCURRENCY` and `EPIQ_RESEARCH_QUEUE_CAPACITY`. Queue
+overflow returns HTTP 429 with `research_queue_full`; already accepted jobs remain available in
+Activity. A cancelled queued job skips its runner when dequeued. Cancellation of work already
+executing remains cooperative.
 
 ## License
 
