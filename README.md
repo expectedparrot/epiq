@@ -11,6 +11,16 @@ behavior testable.
 
 This README builds a database from scratch before introducing the packaged examples.
 
+## Design paper and executable example
+
+Read [Epiq: An Epistemic Database for Agent-Driven Research](docs/epiq-short-paper.pdf)
+for the design philosophy, architecture diagram, core semantics, and implementation limits.
+The [Markdown source](docs/epiq-short-paper.md) includes a
+[CLI walkthrough](docs/epiq-short-paper.md#appendix-a-an-executable-research-cycle)
+whose exact snippets run in CI, checking all four cell states, evidence lineage, explicit
+correction, and historical reads. The [TikZ source](docs/figures/epiq-operation.tex) and
+[build script](docs/build-short-paper.sh) keep the paper and vector diagram reproducible.
+
 ## Run the web app locally — paste this into your coding agent
 
 Copy the following prompt into Codex, Claude Code, or another terminal-capable coding agent. Replace

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute bash fences immediately preceded by ``<!-- epiq-example -->``."""
+"""Execute marked bash fences, optionally sharing one session per document."""
 
 from __future__ import annotations
 
@@ -14,12 +14,23 @@ from pathlib import Path
 BLOCK = re.compile(r"<!--\s*epiq-example\s*-->\s*```bash\n(.*?)\n```", re.DOTALL)
 
 
+def example_sessions(content: str) -> list[list[str]]:
+    """Keep opt-in sequential tutorials in one shell; other blocks stay isolated."""
+    blocks = BLOCK.findall(content)
+    if "<!-- epiq-example-session -->" in content:
+        return [blocks] if blocks else []
+    return [[block] for block in blocks]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="*", type=Path)
     args = parser.parse_args()
     root = Path(__file__).parents[1]
-    paths = args.paths or sorted((root / "examples/cli").glob("*/README.md"))
+    paths = args.paths or [
+        *sorted((root / "examples/cli").glob("*/README.md")),
+        root / "docs/epiq-short-paper.md",
+    ]
     executable = shutil.which("epiq")
     if executable is None:
         raise SystemExit("epiq executable not found on PATH")
@@ -32,8 +43,7 @@ def main() -> None:
         (temporary / "examples").symlink_to(root / "examples", target_is_directory=True)
         for path in paths:
             resolved = path if path.is_absolute() else root / path
-            blocks = BLOCK.findall(resolved.read_text())
-            for index, block in enumerate(blocks):
+            for index, blocks in enumerate(example_sessions(resolved.read_text())):
                 database = temporary / f"{resolved.parent.name}-{index}.sqlite"
                 environment = {
                     **os.environ,
@@ -41,12 +51,12 @@ def main() -> None:
                     "EPIQ_EXAMPLE_DB": str(database),
                 }
                 subprocess.run(
-                    ["bash", "-eu", "-o", "pipefail", "-c", block],
+                    ["bash", "-eu", "-o", "pipefail", "-c", "\n\n".join(blocks)],
                     cwd=temporary,
                     env=environment,
                     check=True,
                 )
-                executed += 1
+                executed += len(blocks)
     if executed == 0:
         raise SystemExit("no executable Markdown examples found")
     print(f"Executed {executed} Markdown example blocks")

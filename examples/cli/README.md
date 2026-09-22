@@ -4,7 +4,12 @@ These are tutorials, not just sample databases. Each one starts with the questio
 explains how that question becomes entities, fields, evidence, and claims, and then builds the
 database one CLI command at a time.
 
-If you are new to Epiq, read them in this order:
+For a compact introduction to the design principles, start with the paper's
+[executable CLI walkthrough](../../docs/epiq-short-paper.md#appendix-a-an-executable-research-cycle).
+It follows one synthetic company through all four cell states, correction, and a historical read.
+The displayed commands themselves run in CI, with assertions on the resulting states and lineage.
+
+For domain tutorials, read them in this order:
 
 1. [Competitor features](competitor-features/README.md) — the basic row, column, evidence, and cell
    model.
@@ -99,10 +104,18 @@ examples/cli/build-all.sh /tmp/epiq-cli-examples
 The builders are convergent and rerunnable. `apply` skips unchanged entities and questions, while
 evidence and claim idempotency prevent duplicates. They never replace an existing project.
 
-The code fences marked `<!-- epiq-example -->` are exercised in CI:
+The code fences marked `<!-- epiq-example -->` are exercised in CI, including the paper's appendix:
 
 ```bash
 python scripts/check_markdown_examples.py
+```
+
+A document containing `<!-- epiq-example-session -->` runs its marked blocks in order in one Bash
+session, sharing shell variables and a temporary database. Other marked blocks remain independent.
+To run just the paper's example from an environment with the checkout's CLI on `PATH`:
+
+```bash
+python scripts/check_markdown_examples.py docs/epiq-short-paper.md
 ```
 
 All companies, candidates, assessments, and investment recommendations in these examples are
