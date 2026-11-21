@@ -708,6 +708,108 @@ def create_ledger_app(
         current = database()
         return _web_matrix(current.matrix(entity_kind), current)
 
+    @app.get("/api/related/{entity_id}")
+    def related(
+        entity_id: str,
+        via: str | None = None,
+        direction: Literal["incoming", "outgoing", "both"] = "both",
+        depth: int = 1,
+    ) -> dict[str, Any]:
+        if depth < 1 or depth > 20:
+            raise EpiqError("invalid_depth", "Relationship depth must be between 1 and 20")
+        current = database()
+        entities = {item["entity_id"]: item for item in current.entities()}
+        target = entities.get(entity_id)
+        if target is None:
+            raise EpiqError("missing_domain_object", f"Missing entity_id: {entity_id}")
+        questions = {
+            item["question_id"]: item
+            for item in current.questions()
+            if str(item["value_type"]).startswith("Ref[")
+            and (via is None or item["name"] == via)
+        }
+        graph_edges = []
+        for claim in current.claims():
+            question = questions.get(claim["question_id"])
+            if question is None:
+                continue
+            identifiers = claim["value"] if isinstance(claim["value"], list) else [claim["value"]]
+            for identifier in identifiers:
+                destination = entities.get(str(identifier))
+                source = entities.get(claim["subject_id"])
+                if source is None or destination is None:
+                    continue
+                graph_edges.append(
+                    {
+                        "question": question["name"],
+                        "claim_ids": [claim["claim_id"]],
+                        "from": {
+                            "entity_id": source["entity_id"],
+                            "name": source["name"],
+                            "kind": source["kind"],
+                        },
+                        "to": {
+                            "entity_id": destination["entity_id"],
+                            "name": destination["name"],
+                            "kind": destination["kind"],
+                        },
+                    }
+                )
+        edges = []
+        frontier = {entity_id: []}
+        visited_entities = {entity_id}
+        visited_edges: set[tuple[str, str, str, str]] = set()
+        for level in range(1, depth + 1):
+            next_frontier: dict[str, list[str]] = {}
+            for edge in graph_edges:
+                candidates = []
+                if direction in {"outgoing", "both"} and edge["from"]["entity_id"] in frontier:
+                    candidates.append(("outgoing", edge["to"]["entity_id"]))
+                if direction in {"incoming", "both"} and edge["to"]["entity_id"] in frontier:
+                    candidates.append(("incoming", edge["from"]["entity_id"]))
+                for edge_direction, next_id in candidates:
+                    key = (
+                        edge["from"]["entity_id"],
+                        edge["to"]["entity_id"],
+                        edge["question"],
+                        edge_direction,
+                    )
+                    if key in visited_edges:
+                        continue
+                    visited_edges.add(key)
+                    current_id = (
+                        edge["from"]["entity_id"]
+                        if edge_direction == "outgoing"
+                        else edge["to"]["entity_id"]
+                    )
+                    path_claim_ids = [*frontier[current_id], *edge["claim_ids"]]
+                    edges.append(
+                        {
+                            **edge,
+                            "direction": edge_direction,
+                            "depth": level,
+                            "path_claim_ids": path_claim_ids,
+                        }
+                    )
+                    if next_id not in visited_entities:
+                        next_frontier[next_id] = path_claim_ids
+                        visited_entities.add(next_id)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return {
+            "entity": {
+                "entity_id": target["entity_id"],
+                "name": target["name"],
+                "kind": target["kind"],
+            },
+            "via": via,
+            "direction": direction,
+            "depth": depth,
+            "count": len(edges),
+            "edges": edges,
+        }
+
     @app.get("/api/conflicts")
     def conflicts() -> dict[str, Any]:
         items = database().conflicts()

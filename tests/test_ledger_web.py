@@ -352,10 +352,24 @@ def test_web_matrix_resolves_references_and_preserves_derivations(tmp_path: Path
         parameters={"multiplier": 2},
     )
 
-    row = TestClient(create_ledger_app(root)).get("/api/matrix/Company").json()["rows"][0]
+    client = TestClient(create_ledger_app(root))
+    row = client.get("/api/matrix/Company").json()["rows"][0]
     assert row["cells"]["founder"]["references"] == [
         {"entity_id": founder, "kind": "Person", "name": "Ada"}
     ]
     derivation = row["cells"]["employees_doubled"]["lineage"][0]["derivation"]
     assert derivation["operation"] == "linear"
     assert derivation["dependencies"] == [{"claim_id": input_claim, "role": "operand"}]
+    graph = client.get(f"/api/related/{company}").json()
+    assert graph["entity"]["name"] == "Acme"
+    assert graph["edges"] == [
+        {
+            "question": "founder",
+            "claim_ids": [row["cells"]["founder"]["claims"][0]["claim_id"]],
+            "from": {"entity_id": company, "name": "Acme", "kind": "Company"},
+            "to": {"entity_id": founder, "name": "Ada", "kind": "Person"},
+            "direction": "outgoing",
+            "depth": 1,
+            "path_claim_ids": [row["cells"]["founder"]["claims"][0]["claim_id"]],
+        }
+    ]

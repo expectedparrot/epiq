@@ -699,13 +699,32 @@ button:hover {
   opacity: 1;
 }
 .entity-relationships-drawer .drawer-body {
-  display: grid;
-  gap: 24px;
+  display: block;
+}
+.drawer.entity-relationships-drawer {
+  width: min(560px, 48vw);
+}
+.row-detail-heading {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  margin-top: 12px;
+}
+.row-detail-heading img {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  height: 76px;
+  object-fit: cover;
+  width: 76px;
+}
+.row-detail-heading h2 {
+  margin-top: 0;
 }
 .back-reference-section,
 .outgoing-reference-section {
   display: grid;
   gap: 10px;
+  margin-top: 24px;
 }
 .row-detail-table {
   border: 1px solid var(--line);
@@ -721,7 +740,7 @@ button:hover {
   cursor: pointer;
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(110px, 0.8fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.4fr);
   padding: 11px 12px;
   text-align: left;
   width: 100%;
@@ -738,9 +757,13 @@ button:hover {
   gap: 3px;
   min-width: 0;
 }
-.row-detail-field b,
 .row-detail-value strong {
   overflow-wrap: anywhere;
+}
+.row-detail-field > span:first-child b {
+  overflow-wrap: normal;
+  text-transform: capitalize;
+  word-break: normal;
 }
 .row-detail-field small {
   color: var(--muted);
@@ -752,6 +775,14 @@ button:hover {
   height: 88px;
   object-fit: cover;
   width: 88px;
+}
+@media (max-width: 700px) {
+  .drawer.entity-relationships-drawer {
+    width: 100vw;
+  }
+  .row-detail-field {
+    grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.2fr);
+  }
 }
 .back-reference-group {
   border: 1px solid var(--line);

@@ -272,7 +272,17 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     headers: { "Content-Type": "application/json", ...options?.headers },
   });
-  const body = await response.json();
+  const text = await response.text();
+  let body: Record<string, any> = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    if (response.ok)
+      throw new ApiError(
+        "invalid_response",
+        `Server returned a non-JSON response (${response.status})`,
+      );
+  }
   if (!response.ok) {
     const validation = Array.isArray(body.detail)
       ? body.detail
@@ -285,7 +295,10 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     const error = body.error ?? {
       code: "invalid_request",
       message:
-        validation || body.detail || `Request failed (${response.status})`,
+        validation ||
+        body.detail ||
+        text.trim().slice(0, 200) ||
+        `Request failed (${response.status})`,
     };
     throw new ApiError(error.code, error.message, error.suggestion);
   }

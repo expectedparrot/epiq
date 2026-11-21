@@ -6537,6 +6537,12 @@ function EntityRelationshipsDrawer({
       }
     >(),
   );
+  const imageQuestion = questions.find((question) => question.value_type === "Image");
+  const imageCell = imageQuestion ? row.cells[imageQuestion.name] : undefined;
+  const imageUrl =
+    imageCell?.state === "Answered" && typeof imageCell.value === "string"
+      ? imageCell.value
+      : null;
   return (
     <aside className="drawer entity-relationships-drawer">
       <div className="drawer-head">
@@ -6546,8 +6552,20 @@ function EntityRelationshipsDrawer({
         <button className="close" onClick={onClose}>
           ×
         </button>
-        <h2>{selection.entityName}</h2>
-        <p>{selection.entityKind} · row details</p>
+        <div className="row-detail-heading">
+          {imageUrl && (
+            <img
+              src={imageUrl}
+              alt={selection.entityName}
+              loading="eager"
+              referrerPolicy="no-referrer"
+            />
+          )}
+          <div>
+            <h2>{selection.entityName}</h2>
+            <p>{selection.entityKind} · row details</p>
+          </div>
+        </div>
       </div>
       <div className="drawer-body">
         <section className="row-detail-table">
@@ -6561,7 +6579,11 @@ function EntityRelationshipsDrawer({
                 onClick={() => onInspect(question, cell)}
               >
                 <span>
-                  <b>{String(question.definition.label ?? question.name)}</b>
+                  <b>
+                    {String(
+                      question.definition.label ?? question.name.replaceAll("_", " "),
+                    )}
+                  </b>
                   <small>{question.value_type}</small>
                 </span>
                 <span className="row-detail-value">
