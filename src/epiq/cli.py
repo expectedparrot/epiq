@@ -27,6 +27,7 @@ from .agent_interface import (
     status_data,
     version_data,
 )
+from .artifacts import ArtifactStore
 from .demo import load_patriots
 from .dsl import describe, parse
 from .edsl_export import write_edsl
@@ -862,6 +863,35 @@ def parser() -> argparse.ArgumentParser:
     )
     ledger_review_proposal.add_argument("--reason", required=True)
     ledger_review_proposal.add_argument("--accepted-operation-id", action="append", default=[])
+    ledger_artifact_add = ledger_commands.add_parser(
+        "artifact-add", help="Retain content by SHA-256 or record an external hash"
+    )
+    ledger_artifact_add.add_argument("--path", default=".")
+    ledger_artifact_add.add_argument("--input", required=True)
+    ledger_artifact_add.add_argument(
+        "--retention", choices=["git", "git-lfs", "external"], default="git"
+    )
+    ledger_artifact_verify = ledger_commands.add_parser(
+        "artifact-verify", help="Verify one or all retained artifacts"
+    )
+    ledger_artifact_verify.add_argument("--path", default=".")
+    ledger_artifact_verify.add_argument("--digest", action="append")
+    ledger_bundle = ledger_mutation("bundle-record", "Record a durable source bundle")
+    ledger_bundle.add_argument("--job-id", required=True)
+    ledger_bundle.add_argument("--request", required=True)
+    ledger_bundle.add_argument("--bundle", required=True)
+    ledger_bundles = ledger_commands.add_parser("bundles", help="List source bundle records")
+    ledger_bundles.add_argument("--path", default=".")
+    ledger_report = ledger_mutation("report-record", "Retain and record a generated report")
+    ledger_report.add_argument("--type", dest="report_type", required=True)
+    ledger_report.add_argument("--input", required=True)
+    ledger_report.add_argument("--parameters")
+    ledger_report.add_argument("--input-transaction-id", action="append", default=[])
+    ledger_report.add_argument(
+        "--retention", choices=["git", "git-lfs", "external"], default="git"
+    )
+    ledger_reports = ledger_commands.add_parser("reports", help="List durable report records")
+    ledger_reports.add_argument("--path", default=".")
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1395,6 +1425,21 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "projection": projection,
             }
         repository = LedgerRepository(root)
+        if args.ledger_command in {"artifact-add", "artifact-verify"}:
+            store = ArtifactStore(root)
+            if args.ledger_command == "artifact-add":
+                return store.retain(
+                    Path(args.input).read_bytes(), retention=args.retention
+                ).as_dict()
+            references = (
+                [store.verify(digest) for digest in args.digest]
+                if args.digest
+                else store.verify_all()
+            )
+            return {
+                "count": len(references),
+                "artifacts": [item.as_dict() for item in references],
+            }
         if args.ledger_command in {
             "kind",
             "entity",
@@ -1422,6 +1467,10 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "propose",
             "proposals",
             "review-proposal",
+            "bundle-record",
+            "bundles",
+            "report-record",
+            "reports",
         }:
             database = LedgerDatabase(root)
             if args.ledger_command == "kind":
@@ -1638,6 +1687,38 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     recorded_at=args.recorded_at,
                     idempotency_key=args.idempotency_key,
                 )
+            if args.ledger_command == "bundle-record":
+                request = _json_file(args.request)
+                bundle = _json_file(args.bundle)
+                if not isinstance(request, dict) or not isinstance(bundle, dict):
+                    raise EpiqError(
+                        "invalid_source_bundle", "Request and bundle inputs must be JSON objects"
+                    )
+                return database.record_source_bundle(
+                    args.job_id,
+                    request,
+                    bundle,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "bundles":
+                bundles = database.source_bundles()
+                return {"count": len(bundles), "bundles": bundles}
+            if args.ledger_command == "report-record":
+                return database.record_report(
+                    args.report_type,
+                    Path(args.input).read_bytes(),
+                    parameters=_attributes(args.parameters),
+                    input_transaction_ids=args.input_transaction_id,
+                    retention=args.retention,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "reports":
+                reports = database.reports()
+                return {"count": len(reports), "reports": reports}
             return database.record_not_found(
                 args.subject_id,
                 args.question_id,

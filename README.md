@@ -55,6 +55,22 @@ epiq ledger matrix --path research --kind Company
 The record command commits evidence capture and claim assertion in one immutable transaction.
 Supplying an idempotency key makes safe retries reuse the same transaction and object IDs.
 
+Retain full captures or generated reports by content digest:
+
+```bash
+epiq ledger artifact-add --path research --input capture.html --retention git
+epiq ledger artifact-verify --path research
+epiq ledger bundle-record --path research --job-id job_123 \
+  --request request.json --bundle source-bundle.json
+epiq ledger report-record --path research --type summary --input report.md \
+  --input-transaction-id txn_... --parameters '{"format":"markdown"}'
+epiq ledger reports --path research
+```
+
+`git` and `git-lfs` retention write atomic files under `artifacts/sha256/`; `external` records the
+digest without retaining bytes locally. `ledger doctor` verifies every retained artifact and every
+locally retained report reference.
+
 `epiq-web` now opens the ledger project directory selected by `EPIQ_PROJECT` (default:
 `.epiq/project`). Its core project, entity, question, evidence, claim, matrix, conflict, and doctor
 endpoints use `LedgerDatabase` exclusively. The older `create_app` factory remains temporarily for

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .artifacts import ArtifactStore
 from .ledger import OPERATION_VERSION, LedgerRepository, Operation, canonical_bytes, new_domain_id
 from .ledger_view import LedgerView
 from .ledger_writer import LedgerWriter
@@ -783,6 +784,74 @@ class LedgerDatabase:
         )
         return {"review_id": identifier, "decision": decision, **result}
 
+    def record_source_bundle(
+        self,
+        job_id: str,
+        request: dict[str, Any],
+        bundle: dict[str, Any],
+        *,
+        bundle_id: str | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id("bnd", bundle_id, actor, idempotency_key, "source-bundle")
+        result = self.transact(
+            [
+                {
+                    "type": "source.bundle_record",
+                    "payload": {
+                        "bundle_id": identifier,
+                        "job_id": job_id,
+                        "request": request,
+                        "bundle": bundle,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"bundle_id": identifier, **result}
+
+    def record_report(
+        self,
+        report_type: str,
+        content: bytes,
+        *,
+        parameters: dict[str, Any] | None = None,
+        input_transaction_ids: list[str] | None = None,
+        retention: str = "git",
+        report_id: str | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        artifact = ArtifactStore(self.path).retain(content, retention=retention)
+        identifier = self._domain_id("rpt", report_id, actor, idempotency_key, "report")
+        report_parameters = dict(parameters or {})
+        if "artifact_retention" in report_parameters:
+            raise ValueError("artifact_retention is managed by record_report")
+        report_parameters["artifact_retention"] = retention
+        result = self.transact(
+            [
+                {
+                    "type": "report.record",
+                    "payload": {
+                        "report_id": identifier,
+                        "report_type": report_type,
+                        "parameters": report_parameters,
+                        "input_transaction_ids": input_transaction_ids or [],
+                        "content_digest": artifact.digest,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"report_id": identifier, "artifact": artifact.as_dict(), **result}
+
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.entities(kind=kind)
 
@@ -830,6 +899,12 @@ class LedgerDatabase:
 
     def proposals(self) -> list[dict[str, Any]]:
         return self.view.proposals()
+
+    def source_bundles(self) -> list[dict[str, Any]]:
+        return self.view.source_bundles()
+
+    def reports(self) -> list[dict[str, Any]]:
+        return self.view.reports()
 
     def status(self) -> dict[str, Any]:
         return self.writer.projector.build()

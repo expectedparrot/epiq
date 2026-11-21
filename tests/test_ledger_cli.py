@@ -148,7 +148,7 @@ def test_ledger_cli_transacts_logs_retries_and_reports_conflicts(tmp_path: Path,
     doctor = data(capsys)
     assert doctor["healthy"] is True
     assert doctor["clean"] is False
-    assert doctor["checks"][-1] == {
+    assert {item["name"]: item for item in doctor["checks"]}["domain_conflicts"] == {
         "name": "domain_conflicts",
         "status": "warn",
         "count": 1,
@@ -590,3 +590,104 @@ def test_ledger_cli_records_derivations_and_proposal_reviews(tmp_path: Path, cap
     proposal = data(capsys)["proposals"][0]
     assert proposal["document"] == {"operations": [{"type": "entity.alias"}]}
     assert proposal["reviews"][0]["decision"] == "accepted"
+
+
+def test_ledger_cli_retains_artifacts_bundles_and_reports(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "ledger",
+            "init",
+            "--path",
+            str(root),
+            "--name",
+            "Research",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    initialized = data(capsys)
+    genesis_id = initialized["ledger"]["frontier"][0]
+    report_path = tmp_path / "report.md"
+    report_path.write_text("# Findings\n\nEvidence-backed report.\n")
+    main(
+        [
+            "ledger",
+            "artifact-add",
+            "--path",
+            str(root),
+            "--input",
+            str(report_path),
+        ]
+    )
+    artifact = data(capsys)
+    main(
+        [
+            "ledger",
+            "artifact-verify",
+            "--path",
+            str(root),
+            "--digest",
+            artifact["digest"],
+        ]
+    )
+    assert data(capsys)["count"] == 1
+
+    request_path = tmp_path / "request.json"
+    request_path.write_text('{"query":"example"}')
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text(
+        json.dumps({"documents": [{"artifact_digest": artifact["digest"]}]})
+    )
+    main(
+        [
+            "ledger",
+            "bundle-record",
+            "--path",
+            str(root),
+            "--job-id",
+            "job_one",
+            "--request",
+            str(request_path),
+            "--bundle",
+            str(bundle_path),
+            "--idempotency-key",
+            "bundle-one",
+        ]
+    )
+    bundle_id = data(capsys)["bundle_id"]
+    report_args = [
+        "ledger",
+        "report-record",
+        "--path",
+        str(root),
+        "--type",
+        "summary",
+        "--input",
+        str(report_path),
+        "--input-transaction-id",
+        genesis_id,
+        "--parameters",
+        '{"format":"markdown"}',
+        "--idempotency-key",
+        "report-one",
+    ]
+    main(report_args)
+    report = data(capsys)
+    main(report_args)
+    assert data(capsys)["created"] is False
+
+    (root / ".epiq" / "projection.sqlite").unlink()
+    main(["ledger", "bundles", "--path", str(root)])
+    assert data(capsys)["bundles"][0]["bundle_id"] == bundle_id
+    main(["ledger", "reports", "--path", str(root)])
+    projected = data(capsys)["reports"][0]
+    assert projected["report_id"] == report["report_id"]
+    assert projected["content_digest"] == artifact["digest"]
+    main(["ledger", "doctor", "--path", str(root)])
+    checks = {item["name"]: item for item in data(capsys)["checks"]}
+    assert checks["retained_artifacts"] == {
+        "name": "retained_artifacts",
+        "status": "pass",
+        "count": 1,
+    }

@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from .artifacts import ArtifactStore
 from .ledger import LedgerRepository
 from .ledger_projection import LedgerProjector
 
@@ -32,6 +33,17 @@ def diagnose(root: str | Path, *, rebuild: bool = False) -> dict[str, Any]:
                    FROM projected_conflicts ORDER BY conflict_type,conflict_id"""
             )
         ]
+        retained_reports = [
+            (str(row[0]), json.loads(str(row[1])))
+            for row in connection.execute(
+                "SELECT content_digest,parameters_json FROM projected_reports"
+            )
+        ]
+    artifact_store = ArtifactStore(repository.root)
+    artifacts = artifact_store.verify_all()
+    for digest, parameters in retained_reports:
+        if parameters.get("artifact_retention") in {"git", "git-lfs"}:
+            artifact_store.verify(digest)
     ignored = _projection_is_ignored(repository.root)
     checks = [
         {"name": "ledger_integrity", "status": "pass"},
@@ -50,6 +62,11 @@ def diagnose(root: str | Path, *, rebuild: bool = False) -> dict[str, Any]:
             "name": "domain_conflicts",
             "status": "pass" if not conflicts else "warn",
             "count": len(conflicts),
+        },
+        {
+            "name": "retained_artifacts",
+            "status": "pass",
+            "count": len(artifacts),
         },
     ]
     return {

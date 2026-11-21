@@ -372,6 +372,42 @@ class LedgerView:
             for row in rows
         ]
 
+    def source_bundles(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT bundle_id,job_id,request_json,bundle_json,transaction_id
+                   FROM projected_source_bundles ORDER BY bundle_id"""
+            ).fetchall()
+        return [
+            {
+                "bundle_id": row["bundle_id"],
+                "job_id": row["job_id"],
+                "request": _decode(row["request_json"]),
+                "bundle": _decode(row["bundle_json"]),
+                "transaction_id": row["transaction_id"],
+            }
+            for row in rows
+        ]
+
+    def reports(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT report_id,report_type,parameters_json,input_transaction_ids_json,
+                          content_digest,transaction_id
+                   FROM projected_reports ORDER BY report_id"""
+            ).fetchall()
+        return [
+            {
+                "report_id": row["report_id"],
+                "report_type": row["report_type"],
+                "parameters": _decode(row["parameters_json"]),
+                "input_transaction_ids": _decode(row["input_transaction_ids_json"]),
+                "content_digest": row["content_digest"],
+                "transaction_id": row["transaction_id"],
+            }
+            for row in rows
+        ]
+
     @staticmethod
     def _supports(
         connection: sqlite3.Connection, claim_ids: list[str]
