@@ -15,9 +15,11 @@ from .ledger_domain import DOMAIN_SCHEMA
 from .ledger_domain import apply as apply_domain_operation
 from .ledger_facts import FACT_SCHEMA
 from .ledger_facts import apply as apply_fact_operation
+from .ledger_workflows import WORKFLOW_SCHEMA
+from .ledger_workflows import apply as apply_workflow_operation
 
 REDUCER_VERSION = "1"
-PROJECTION_SCHEMA_VERSION = "3"
+PROJECTION_SCHEMA_VERSION = "4"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -58,7 +60,7 @@ CREATE TABLE ledger_operations (
 );
 
 CREATE INDEX idx_ledger_operation_type ON ledger_operations(operation_type, transaction_id);
-""" + DOMAIN_SCHEMA + FACT_SCHEMA
+""" + DOMAIN_SCHEMA + FACT_SCHEMA + WORKFLOW_SCHEMA
 
 
 class LedgerProjector:
@@ -304,6 +306,13 @@ class LedgerProjector:
                 operation.payload,
             )
             apply_fact_operation(
+                connection,
+                transaction.transaction_id,
+                operation.operation_id,
+                operation.type,
+                operation.payload,
+            )
+            apply_workflow_operation(
                 connection,
                 transaction.transaction_id,
                 operation.operation_id,
