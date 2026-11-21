@@ -5152,8 +5152,7 @@ function WorkspaceAgentPanel({
     onDraftConsumed();
   }, [draft, onDraftConsumed]);
   const ordered = jobs
-    .filter((job) => job.job_type === "workspace_agent")
-    .reverse();
+    .filter((job) => job.job_type === "workspace_agent");
   const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
   useEffect(() => {
     const list = listRef.current;
