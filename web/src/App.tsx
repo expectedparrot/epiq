@@ -318,9 +318,10 @@ export default function App() {
     entityName: string;
     missing: number;
   } | null>(null);
-  const [showActivity, setShowActivity] = useState(false);
-  const [showWorkspaceAgent, setShowWorkspaceAgent] = useState(true);
-  const [showReview, setShowReview] = useState(false);
+  const [rightPane, setRightPane] = useState<
+    "agent" | "inspect" | "activity" | "review" | null
+  >("agent");
+  const [centerView, setCenterView] = useState<"table" | "row">("table");
   const [reviewItems, setReviewItems] = useState<{
     stale: DiagnosticCell[];
     contradictions: DiagnosticCell[];
@@ -612,7 +613,7 @@ export default function App() {
     });
     setJobs((current) => mergeJobs(current, [job]));
     jobsRef.current = mergeJobs(jobsRef.current, [job]);
-    setShowWorkspaceAgent(true);
+    setRightPane("agent");
   };
   const approveWorkspacePlan = async (jobId: string) => {
     const job = await post<ResearchJob>(
@@ -642,7 +643,7 @@ export default function App() {
       question,
       cell: row.cells[question.name],
     });
-    setShowReview(false);
+    setRightPane("inspect");
   };
   const projectReady = async () => {
     ++overviewGeneration.current;
@@ -872,7 +873,7 @@ export default function App() {
       });
       setJobs((current) => mergeJobs(current, [job]));
       setDialog(null);
-      setShowActivity(true);
+      setRightPane("activity");
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not suggest rows",
@@ -891,7 +892,7 @@ export default function App() {
       });
       setJobs((current) => mergeJobs(current, [job]));
       setDialog(null);
-      setShowActivity(true);
+      setRightPane("activity");
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not suggest fields",
@@ -1564,10 +1565,10 @@ export default function App() {
           </button>
         </div>
         <div className="header-actions">
-          <button className="agent-command-button" onClick={() => setShowWorkspaceAgent(true)}>
+          <button className="agent-command-button" onClick={() => setRightPane("agent")}>
             <span>✦ Ask Epiq</span>
           </button>
-          <button className="ghost" onClick={() => setShowActivity(true)}>
+          <button className="ghost" onClick={() => setRightPane("activity")}>
             <span>✦ Activity</span>
             {jobs.filter(
               (job) => job.status === "queued" || job.status === "running",
@@ -1582,7 +1583,7 @@ export default function App() {
               </strong>
             ) : null}
           </button>
-          <button className="ghost" onClick={() => setShowReview(true)}>
+          <button className="ghost" onClick={() => setRightPane("review")}>
             <span>◈ Review</span>
             {reviewItems.stale.length +
             reviewItems.contradictions.length +
@@ -1701,7 +1702,7 @@ export default function App() {
               <div className="blank-workspace-actions">
                 <button
                   className="primary"
-                  onClick={() => setShowWorkspaceAgent(true)}
+                  onClick={() => setRightPane("agent")}
                 >
                   ✦ Ask Epiq
                 </button>
@@ -1996,14 +1997,15 @@ export default function App() {
               />
               <code>{activeSelection.cell.state}</code>
               <button
-                onClick={() =>
+                onClick={() => {
                   setSelection({
                     entityId: activeSelection.row.entity_id,
                     entityName: activeSelection.row.name,
                     question: activeSelection.question,
                     cell: activeSelection.cell,
-                  })
-                }
+                  });
+                  setRightPane("inspect");
+                }}
               >
                 Inspect
               </button>
@@ -2017,6 +2019,36 @@ export default function App() {
                 )}
             </div>
           )}
+          <div className="center-view-switch" aria-label="Data view">
+            <button
+              className={centerView === "table" ? "active" : ""}
+              onClick={() => setCenterView("table")}
+            >
+              Table
+            </button>
+            <button
+              className={centerView === "row" ? "active" : ""}
+              disabled={!entitySelection}
+              onClick={() => setCenterView("row")}
+            >
+              Row
+            </button>
+          </div>
+          {centerView === "row" && entitySelection && matrix ? (
+            <CenterRowView
+              row={matrix.rows.find((row) => row.entity_id === entitySelection.entityId)!}
+              questions={matrix.questions}
+              onInspect={(question, cell) => {
+                setSelection({
+                  entityId: entitySelection.entityId,
+                  entityName: entitySelection.entityName,
+                  question,
+                  cell,
+                });
+                setRightPane("inspect");
+              }}
+            />
+          ) : (
           <div className="grid-wrap">
             <table
               className={`grid ${wrapText ? "wrap-text" : "compact-rows"}`}
@@ -2375,6 +2407,8 @@ export default function App() {
                             entityName: row.name,
                             entityKind: kind,
                           });
+                          setCenterView("row");
+                          setRightPane("inspect");
                         }}
                       >
                         <div className="entity-inner">
@@ -2478,6 +2512,7 @@ export default function App() {
                                 question,
                                 cell,
                               });
+                              setRightPane("inspect");
                             }}
                           >
                             <div className="cell-value">
@@ -2630,6 +2665,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
+          )}
           <div className="toast-region" aria-live="polite" aria-atomic="true">
             {clipboardNotice && (
               <div className="app-toast success">
@@ -2643,7 +2679,7 @@ export default function App() {
                 <p>{jobNotice}</p>
                 <button
                   onClick={() => {
-                    setShowActivity(true);
+                    setRightPane("activity");
                     setJobNotice("");
                   }}
                 >
@@ -2664,7 +2700,22 @@ export default function App() {
             </>
           )}
         </main>
-        {selection && (
+        {rightPane && (
+          <aside className="workspace-pane">
+            <nav className="workspace-pane-tabs">
+              {(["agent", "inspect", "activity", "review"] as const).map((pane) => (
+                <button
+                  key={pane}
+                  className={rightPane === pane ? "active" : ""}
+                  onClick={() => setRightPane(pane)}
+                >
+                  {pane === "agent" ? "Ask Epiq" : pane[0].toUpperCase() + pane.slice(1)}
+                </button>
+              ))}
+              <button className="workspace-pane-collapse" onClick={() => setRightPane(null)}>×</button>
+            </nav>
+            <div className="workspace-pane-content">
+        {rightPane === "inspect" && selection && (
           <CellDrawer
             selection={selection}
             provisionalRelationships={tableProvisionalRelationships.filter(
@@ -2677,7 +2728,7 @@ export default function App() {
               selection.entityId,
               selection.question.question_id,
             )}
-            onClose={() => setSelection(null)}
+            onClose={() => setRightPane(null)}
             onAdd={() => setDialog("claim")}
             onNotFound={() => setDialog("notFound")}
             onEnrich={() =>
@@ -2727,17 +2778,17 @@ export default function App() {
             }}
           />
         )}
-        {entitySelection && matrix && (
+        {rightPane === "inspect" && !selection && entitySelection && matrix && (
           <EntityRelationshipsDrawer
             selection={entitySelection}
             row={matrix.rows.find(
               (row) => row.entity_id === entitySelection.entityId,
             )!}
             questions={matrix.questions}
-            onClose={() => setEntitySelection(null)}
+            showFields={centerView !== "row"}
+            onClose={() => setRightPane(null)}
             onMerge={() => setDialog("mergeEntity")}
             onInspect={(question, cell) => {
-              setEntitySelection(null);
               setSelection({
                 entityId: entitySelection.entityId,
                 entityName: entitySelection.entityName,
@@ -2752,10 +2803,13 @@ export default function App() {
             }}
           />
         )}
-        {showActivity && (
+        {rightPane === "inspect" && !selection && !entitySelection && (
+          <div className="workspace-pane-empty"><b>Select a row or cell</b><p>Its values, evidence, and relationships will appear here.</p></div>
+        )}
+        {rightPane === "activity" && (
           <ActivityPanel
             jobs={jobs}
-            onClose={() => setShowActivity(false)}
+            onClose={() => setRightPane(null)}
             onSuggestion={updateSuggestion}
             onAcceptFields={acceptFieldSuggestions}
             onAcceptRelationships={acceptRelationshipSuggestions}
@@ -2764,23 +2818,23 @@ export default function App() {
             onRetry={retryResearch}
           />
         )}
-        {showWorkspaceAgent && (
+        {rightPane === "agent" && (
           <WorkspaceAgentPanel
             jobs={jobs}
-            onClose={() => setShowWorkspaceAgent(false)}
+            onClose={() => setRightPane(null)}
             onSend={directWorkspaceAgent}
             onCancel={cancelResearch}
             onApprove={approveWorkspacePlan}
             onReject={rejectWorkspacePlan}
           />
         )}
-        {showReview && (
+        {rightPane === "review" && (
           <ReviewPanel
             stale={reviewItems.stale}
             contradictions={reviewItems.contradictions}
             staleDerivations={staleDerivations}
             provisionalRelationships={tableProvisionalRelationships}
-            onClose={() => setShowReview(false)}
+            onClose={() => setRightPane(null)}
             onInspect={inspectDiagnostic}
             onRecalculate={async (item) => {
               const question = matrix?.questions.find(
@@ -2803,7 +2857,7 @@ export default function App() {
                 question,
                 cell: row.cells[question.name],
               });
-              setShowReview(false);
+              setRightPane("inspect");
             }}
             onAcceptProvisional={(suggestions) =>
               acceptProvisionalRelationships(suggestions, "cell")
@@ -2824,6 +2878,9 @@ export default function App() {
               )
             }
           />
+        )}
+            </div>
+          </aside>
         )}
         {showSchemaReview && (
           <SchemaReviewPanel
@@ -6471,10 +6528,54 @@ function SchemaReviewPanel({
   );
 }
 
+function CenterRowView({
+  row,
+  questions,
+  onInspect,
+}: {
+  row: Matrix["rows"][number];
+  questions: Question[];
+  onInspect: (question: Question, cell: Cell) => void;
+}) {
+  const imageQuestion = questions.find((question) => question.value_type === "Image");
+  const imageCell = imageQuestion ? row.cells[imageQuestion.name] : undefined;
+  const imageUrl =
+    imageCell?.state === "Answered" && typeof imageCell.value === "string"
+      ? imageCell.value
+      : null;
+  return (
+    <section className="center-row-view">
+      <header>
+        {imageUrl && <img src={imageUrl} alt={row.name} referrerPolicy="no-referrer" />}
+        <div><span>ROW</span><h2>{row.name}</h2></div>
+      </header>
+      <div className="center-row-fields">
+        {questions.map((question) => {
+          const cell = row.cells[question.name];
+          return (
+            <button key={question.question_id} onClick={() => onInspect(question, cell)}>
+              <span><b>{String(question.definition.label ?? question.name.replaceAll("_", " "))}</b><small>{question.value_type}</small></span>
+              <span>
+                {question.value_type === "Image" && typeof cell.value === "string" ? (
+                  <img src={cell.value} alt="" referrerPolicy="no-referrer" />
+                ) : cell.references?.length ? (
+                  <><strong>{cell.references.map((item) => item.name).join(", ")}</strong><small>↗ {cell.references.map((item) => item.entity_id).join(", ")}</small></>
+                ) : <strong>{cellDisplay(cell, question)}</strong>}
+                <small>{cell.state}{cell.lineage.some((item) => item.derivation) ? " · ƒ derived" : ""}{cell.lineage.length ? ` · ${cell.lineage.length} src` : ""}</small>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function EntityRelationshipsDrawer({
   selection,
   row,
   questions,
+  showFields,
   onClose,
   onMerge,
   onNavigate,
@@ -6483,6 +6584,7 @@ function EntityRelationshipsDrawer({
   selection: EntitySelection;
   row: Matrix["rows"][number];
   questions: Question[];
+  showFields: boolean;
   onClose: () => void;
   onMerge: () => void;
   onNavigate: (entity: RelatedEntity) => void;
@@ -6568,7 +6670,7 @@ function EntityRelationshipsDrawer({
         </div>
       </div>
       <div className="drawer-body">
-        <section className="row-detail-table">
+        {showFields && <section className="row-detail-table">
           {questions.map((question) => {
             const cell = row.cells[question.name];
             return (
@@ -6618,7 +6720,7 @@ function EntityRelationshipsDrawer({
               </button>
             );
           })}
-        </section>
+        </section>}
         {error && <div className="form-error">{error}</div>}
         {!graph && !error && (
           <div className="center">

@@ -3717,3 +3717,33 @@ button:hover {
 .source-assurance { display: block; margin: 8px 0; color: var(--muted, #6b7280); }
 .capture-details { margin: 8px 0; font-size: 12px; }
 .capture-details code { display: block; overflow-wrap: anywhere; margin-top: 4px; }
+
+/* Stable workspace panes */
+.workspace-pane { background:var(--paper);border-left:1px solid var(--line);display:flex;flex:0 0 min(480px,38vw);flex-direction:column;min-width:360px;overflow:hidden }
+.workspace-pane-tabs { align-items:center;border-bottom:1px solid var(--line);display:flex;flex:none;gap:2px;min-height:42px;padding:5px 7px }
+.workspace-pane-tabs button { background:transparent;border:0;border-radius:5px;color:var(--muted);font-size:11px;padding:7px 8px }
+.workspace-pane-tabs button.active { background:#e8f2ec;color:var(--green);font-weight:700 }
+.workspace-pane-tabs .workspace-pane-collapse { font-size:17px;margin-left:auto }
+.workspace-pane-content { display:flex;flex:1;min-height:0;overflow:hidden }
+.workspace-pane-content > .drawer,.workspace-pane-content > .workspace-agent-panel,.workspace-pane-content > .activity-panel,.workspace-pane-content > .review-panel { border:0;box-shadow:none;flex:1;height:auto;min-width:0;position:static;width:100% }
+.workspace-pane-content .drawer-head .close { display:none }
+.workspace-pane-empty { color:var(--muted);padding:30px 24px }
+.workspace-pane-empty p { font-size:12px }
+.center-view-switch { display:flex;gap:3px;padding:7px 12px 0 }
+.center-view-switch button { background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;color:var(--muted);font-size:11px;padding:7px 10px }
+.center-view-switch button.active { border-bottom-color:var(--green);color:var(--text);font-weight:700 }
+.center-row-view { overflow:auto;padding:22px }
+.center-row-view > header { align-items:center;display:flex;gap:16px;margin:0 auto 20px;max-width:880px }
+.center-row-view > header img { border:1px solid var(--line);border-radius:10px;height:88px;object-fit:cover;width:88px }
+.center-row-view > header span { color:var(--muted);font:9px var(--mono);letter-spacing:.12em }
+.center-row-view > header h2 { font-size:25px;margin:4px 0 0 }
+.center-row-fields { border:1px solid var(--line);border-radius:10px;margin:auto;max-width:880px;overflow:hidden }
+.center-row-fields button { align-items:start;background:var(--paper);border:0;border-top:1px solid var(--line);display:grid;gap:24px;grid-template-columns:minmax(180px,.7fr) minmax(0,1.5fr);padding:13px 15px;text-align:left;width:100% }
+.center-row-fields button:first-child { border-top:0 }
+.center-row-fields button:hover { background:#f3f7f4 }
+.center-row-fields button > span { display:flex;flex-direction:column;gap:4px;min-width:0 }
+.center-row-fields b { text-transform:capitalize }
+.center-row-fields strong { overflow-wrap:anywhere }
+.center-row-fields small { color:var(--muted);font:9px/1.4 var(--mono) }
+.center-row-fields img { border-radius:7px;height:96px;object-fit:cover;width:96px }
+@media (max-width:900px) { .workspace-pane { bottom:0;flex-basis:auto;min-width:0;position:fixed;right:0;top:64px;width:min(480px,100vw);z-index:12 } }
