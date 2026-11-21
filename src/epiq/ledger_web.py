@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import threading
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,6 +18,12 @@ from pydantic import BaseModel, Field
 from .errors import EpiqError
 from .ledger_api import LedgerDatabase
 from .ledger_diagnostics import diagnose
+from .research import (
+    OpenAIResearchRunner,
+    OpenAIWorkspaceAgentRunner,
+    ResearchRunner,
+    WorkspaceAgentRunner,
+)
 
 
 class ProjectCreate(BaseModel):
@@ -112,8 +121,15 @@ class NotFoundCreate(BaseModel):
     idempotency_key: str | None = None
 
 
+class WorkspaceAgentCreate(BaseModel):
+    message: str = Field(min_length=1)
+
+
 def create_ledger_app(
-    project: str | Path | None = None, frontend: str | Path | None = None
+    project: str | Path | None = None,
+    frontend: str | Path | None = None,
+    workspace_agent_runner: WorkspaceAgentRunner | None = None,
+    research_runner: ResearchRunner | None = None,
 ) -> FastAPI:
     """Create the ledger-only local web API."""
     root = Path(project or os.environ.get("EPIQ_PROJECT", ".epiq/project")).resolve()
@@ -124,6 +140,10 @@ def create_ledger_app(
     ).resolve()
     app = FastAPI(title="Epiq", version="0.1.0")
     app.state.project = root
+    app.state.workspace_agent_runner = workspace_agent_runner or OpenAIWorkspaceAgentRunner()
+    app.state.research_runner = research_runner or OpenAIResearchRunner()
+    app.state.research_jobs: dict[str, dict[str, Any]] = {}
+    app.state.research_lock = threading.RLock()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -143,6 +163,284 @@ def create_ledger_app(
                 "POST /api/project with a project name.",
             )
         return LedgerDatabase(root)
+
+    def now() -> str:
+        return datetime.now(UTC).isoformat()
+
+    def workspace_context(current: LedgerDatabase) -> dict[str, Any]:
+        return {
+            "project": current.project(),
+            "storage": "git-ledger",
+            "tables": [
+                {
+                    "kind": kind,
+                    "rows": [row["name"] for row in current.matrix(kind)["entities"]],
+                    "questions": [
+                        {
+                            "name": question["name"],
+                            "value_type": question["value_type"],
+                            "definition": question["definition"],
+                        }
+                        for question in current.matrix(kind)["questions"]
+                    ],
+                }
+                for kind in current.kinds()
+            ],
+        }
+
+    def update_job(job_id: str, **changes: Any) -> None:
+        with app.state.research_lock:
+            app.state.research_jobs[job_id].update(changes)
+
+    def plan_workspace(job_id: str, message: str) -> None:
+        def progress(text: str) -> None:
+            with app.state.research_lock:
+                app.state.research_jobs[job_id]["messages"].append({"at": now(), "message": text})
+
+        update_job(job_id, status="running", started_at=now())
+        try:
+            current = database()
+            progress("Designing a bounded, additive workspace plan")
+            plan = app.state.workspace_agent_runner(message, workspace_context(current), progress)
+            plan = {
+                **plan,
+                "entity_kinds": list(dict.fromkeys(str(x) for x in plan["entity_kinds"]))[:6],
+                "entities": list(plan["entities"])[:15],
+                "questions": list(plan["questions"])[:24],
+                "research": list(plan["research"])[:24],
+            }
+            estimated = sum(len(item.get("entity_names", [])) for item in plan["research"])
+            proposal = current.create_proposal(
+                {"user_message": message, "workspace_plan": plan},
+                proposal_type="workspace_agent",
+                actor="agent:web",
+                idempotency_key=job_id,
+            )
+            update_job(
+                job_id,
+                status="completed",
+                outcome="workspace_proposal",
+                assistant_summary=str(plan["summary"]).strip(),
+                workspace_plan=plan,
+                approval_status="pending",
+                estimated_research_cells=estimated,
+                proposal_id=proposal["proposal_id"],
+                finished_at=now(),
+            )
+        except Exception as error:
+            update_job(job_id, status="failed", error=str(error), finished_at=now())
+
+    def apply_workspace_plan(job_id: str) -> None:
+        with app.state.research_lock:
+            job = app.state.research_jobs[job_id]
+            plan = job.get("workspace_plan")
+        if not plan:
+            raise EpiqError("workspace_plan_unavailable", "This workspace plan is unavailable")
+        current = database()
+        existing_kinds = set(current.kinds())
+        existing_entities = {(item["kind"], item["name"].casefold()) for item in current.entities()}
+        existing_questions = {
+            (item["subject_kind"], item["name"]) for item in current.questions()
+        }
+        written = 0
+        for kind in dict.fromkeys(
+            [
+                *plan["entity_kinds"],
+                *[item["kind"] for item in plan["entities"]],
+                *[item["kind"] for item in plan["questions"]],
+            ]
+        ):
+            if kind not in existing_kinds:
+                current.define_kind(
+                    kind, actor="agent:web", idempotency_key=f"{job_id}:kind:{kind}"
+                )
+                existing_kinds.add(kind)
+                written += 1
+        for item in plan["entities"]:
+            key = (item["kind"], item["name"].casefold())
+            if key not in existing_entities:
+                current.create_entity(
+                    item["kind"],
+                    item["name"],
+                    actor="agent:web",
+                    idempotency_key=f"{job_id}:entity:{item['kind']}:{item['name']}",
+                )
+                existing_entities.add(key)
+                written += 1
+        for item in plan["questions"]:
+            key = (item["kind"], item["name"])
+            if key not in existing_questions:
+                current.define_question(
+                    item["name"],
+                    item["kind"],
+                    item["value_type"],
+                    definition={
+                        "label": item.get("label") or item["name"].replace("_", " ").title(),
+                        "cardinality": item.get("cardinality", "one"),
+                        "volatility": item.get("volatility", "stable"),
+                        "freshness_days": item.get("freshness_days"),
+                        "research_guidance": item.get("research_guidance", ""),
+                    },
+                    actor="agent:web",
+                    idempotency_key=f"{job_id}:question:{item['kind']}:{item['name']}",
+                )
+                existing_questions.add(key)
+                written += 1
+        current.review_proposal(
+            job["proposal_id"],
+            "accepted",
+            "Approved in the workspace agent console",
+            actor="human:web",
+            idempotency_key=f"{job_id}:approve",
+        )
+        messages = [
+            *job["messages"],
+            {
+                "at": now(),
+                "message": f"Applied {written} schema and row changes.",
+            },
+        ]
+        if plan["research"]:
+            update_job(
+                job_id,
+                status="queued",
+                outcome=None,
+                approval_status="approved",
+                written=written,
+                messages=messages,
+            )
+            threading.Thread(
+                target=execute_workspace_research,
+                args=(job_id,),
+                daemon=True,
+                name=f"epiq-research-{job_id}",
+            ).start()
+        else:
+            update_job(
+                job_id,
+                status="completed",
+                outcome="changed",
+                approval_status="approved",
+                written=written,
+                finished_at=now(),
+                messages=messages,
+            )
+
+    def execute_workspace_research(job_id: str) -> None:
+        def progress(text: str) -> None:
+            with app.state.research_lock:
+                app.state.research_jobs[job_id]["messages"].append({"at": now(), "message": text})
+
+        update_job(job_id, status="running", started_at=now())
+        try:
+            current = database()
+            with app.state.research_lock:
+                plan = app.state.research_jobs[job_id]["workspace_plan"]
+                schema_writes = int(app.state.research_jobs[job_id].get("written", 0))
+            written = 0
+            no_result = 0
+            total = sum(len(item.get("entity_names", [])) for item in plan["research"])
+            update_job(job_id, total=total, completed=0)
+            for request in plan["research"]:
+                with app.state.research_lock:
+                    if app.state.research_jobs[job_id].get("cancel_requested"):
+                        update_job(job_id, status="cancelled", finished_at=now())
+                        return
+                projection = current.matrix(str(request["kind"]))
+                question = next(
+                    (
+                        item
+                        for item in projection["questions"]
+                        if item["name"] == str(request["question"])
+                    ),
+                    None,
+                )
+                if question is None:
+                    progress(f"Skipped missing field {request['kind']}.{request['question']}")
+                    continue
+                if str(question["value_type"]).startswith("Ref["):
+                    field = f"{request['kind']}.{request['question']}"
+                    progress(
+                        f"Skipped relationship research for {field}; "
+                        "relationship proposals are not yet supported by the ledger console"
+                    )
+                    continue
+                requested = {str(name).casefold() for name in request.get("entity_names", [])}
+                targets = [
+                    {
+                        "entity_id": row["entity_id"],
+                        "name": row["name"],
+                        "attributes": row.get("attributes", {}),
+                    }
+                    for row in projection["entities"]
+                    if not requested or str(row["name"]).casefold() in requested
+                ]
+                research_question = {
+                    **question,
+                    "task_mode": "fill_missing",
+                    "instructions": str(request.get("instructions", "")),
+                }
+                findings = app.state.research_runner(
+                    str(request["kind"]), research_question, targets, progress
+                )
+                targets_by_id = {item["entity_id"]: item for item in targets}
+                for finding in findings:
+                    with app.state.research_lock:
+                        if app.state.research_jobs[job_id].get("cancel_requested"):
+                            update_job(job_id, status="cancelled", finished_at=now())
+                            return
+                    target = targets_by_id.get(str(finding.get("entity_id")))
+                    if target is None:
+                        continue
+                    if finding.get("status") == "not_found":
+                        current.record_not_found(
+                            target["entity_id"],
+                            question["question_id"],
+                            f"Agent research for {question['name']}",
+                            str(finding.get("notes") or "No sufficient evidence found."),
+                            actor="agent:web",
+                        )
+                        no_result += 1
+                    elif finding.get("status") == "answered":
+                        current.record(
+                            target["entity_id"],
+                            question["question_id"],
+                            finding["value"],
+                            valid_from=str(
+                                finding.get("observed_as_of")
+                                or finding.get("source_published_at")
+                                or datetime.now(UTC).date().isoformat()
+                            ),
+                            source_title=str(finding["source_title"]),
+                            source_type=str(finding.get("source_type") or "web"),
+                            url=str(finding["source_url"]),
+                            retrieved_at=datetime.now(UTC).date().isoformat(),
+                            excerpt=str(finding["excerpt"]),
+                            published_at=finding.get("source_published_at"),
+                            confidence=str(finding.get("confidence") or "medium"),
+                            temporal_basis=(
+                                "observed"
+                                if finding.get("observed_as_of")
+                                else "source"
+                                if finding.get("source_published_at")
+                                else "unknown"
+                            ),
+                            actor="agent:web",
+                        )
+                        written += 1
+                    with app.state.research_lock:
+                        app.state.research_jobs[job_id]["completed"] += 1
+            progress(f"Research finished: {written} answers, {no_result} without a result")
+            update_job(
+                job_id,
+                status="completed",
+                outcome="changed" if written or schema_writes else "no_change",
+                written=schema_writes + written,
+                no_result=no_result,
+                finished_at=now(),
+            )
+        except Exception as error:
+            update_job(job_id, status="failed", error=str(error), finished_at=now())
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -388,7 +686,85 @@ def create_ledger_app(
 
     @app.get("/api/research/jobs")
     def research_jobs() -> list[dict[str, Any]]:
-        return []
+        with app.state.research_lock:
+            return list(app.state.research_jobs.values())
+
+    @app.post("/api/workspace-agent/jobs", status_code=202)
+    def launch_workspace_agent(body: WorkspaceAgentCreate) -> dict[str, Any]:
+        database().project()
+        job_id = f"job_{uuid.uuid4().hex[:16]}"
+        job = {
+            "job_id": job_id,
+            "job_type": "workspace_agent",
+            "entity_kind": "Workspace",
+            "question_id": "",
+            "mode": "workspace_agent",
+            "instructions": body.message,
+            "user_message": body.message,
+            "status": "queued",
+            "total": 0,
+            "completed": 0,
+            "target_entity_ids": [],
+            "created_at": now(),
+            "error": None,
+            "messages": [{"at": now(), "message": "Workspace agent queued"}],
+        }
+        with app.state.research_lock:
+            app.state.research_jobs[job_id] = job
+        threading.Thread(
+            target=plan_workspace,
+            args=(job_id, body.message),
+            daemon=True,
+            name=f"epiq-{job_id}",
+        ).start()
+        return job
+
+    @app.post("/api/workspace-agent/jobs/{job_id}/approve", status_code=202)
+    def approve_workspace_agent(job_id: str) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None:
+                raise EpiqError("workspace_job_not_found", f"Workspace job not found: {job_id}")
+            if job.get("approval_status") != "pending":
+                raise EpiqError(
+                    "workspace_plan_unavailable", "This workspace plan is not awaiting approval"
+                )
+        apply_workspace_plan(job_id)
+        with app.state.research_lock:
+            return app.state.research_jobs[job_id]
+
+    @app.post("/api/workspace-agent/jobs/{job_id}/reject")
+    def reject_workspace_agent(job_id: str) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None:
+                raise EpiqError("workspace_job_not_found", f"Workspace job not found: {job_id}")
+            if job.get("approval_status") != "pending":
+                raise EpiqError(
+                    "workspace_plan_unavailable", "This workspace plan is not awaiting approval"
+                )
+        database().review_proposal(
+            job["proposal_id"],
+            "rejected",
+            "Dismissed in the workspace agent console",
+            actor="human:web",
+            idempotency_key=f"{job_id}:reject",
+        )
+        update_job(job_id, approval_status="rejected", finished_at=now())
+        with app.state.research_lock:
+            return app.state.research_jobs[job_id]
+
+    @app.post("/api/research/jobs/{job_id}/cancel")
+    def cancel_research_job(job_id: str) -> dict[str, Any]:
+        with app.state.research_lock:
+            job = app.state.research_jobs.get(job_id)
+            if job is None:
+                raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
+            job["cancel_requested"] = True
+            if job["status"] == "queued":
+                job["status"] = "cancelled"
+                job["finished_at"] = now()
+            return job
 
     @app.post("/api/research/not-found", status_code=201)
     def not_found(body: NotFoundCreate) -> dict[str, str]:

@@ -1,8 +1,59 @@
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from epiq.ledger_api import LedgerDatabase
 from epiq.ledger_web import create_ledger_app
+
+
+def workspace_plan(_goal, _context, progress=None):
+    if progress:
+        progress("Prepared a photo enrichment plan")
+    return {
+        "summary": "Add profile photos for every faculty member.",
+        "entity_kinds": ["Faculty"],
+        "entities": [{"kind": "Faculty", "name": "Ada Lovelace"}],
+        "questions": [
+            {
+                "kind": "Faculty",
+                "name": "profile_image",
+                "label": "Profile image",
+                "value_type": "Image",
+                "cardinality": "one",
+                "volatility": "dynamic",
+                "freshness_days": 365,
+                "research_guidance": "Use an official portrait when available.",
+            }
+        ],
+        "research": [
+            {
+                "kind": "Faculty",
+                "question": "profile_image",
+                "entity_names": ["Ada Lovelace"],
+                "instructions": "Find an official portrait.",
+            }
+        ],
+    }
+
+
+def photo_research(_kind, _question, entities, progress=None):
+    if progress:
+        progress("Found an official portrait")
+    return [
+        {
+            "entity_id": entities[0]["entity_id"],
+            "status": "answered",
+            "value": "https://images.example/ada.jpg",
+            "source_title": "Official faculty profile",
+            "source_url": "https://example.test/ada",
+            "source_type": "web",
+            "excerpt": "Official portrait of Ada Lovelace.",
+            "confidence": "high",
+            "source_published_at": None,
+            "observed_as_of": "2026-11-21",
+        }
+    ]
 
 
 def test_ledger_web_runs_core_spreadsheet_workflow_and_rebuilds(tmp_path: Path) -> None:
@@ -183,3 +234,54 @@ def test_not_found_remains_distinct_after_projection_rebuild(tmp_path: Path) -> 
     assert restarted.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"][
         "state"
     ] == "NotFound"
+
+
+def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    client = TestClient(
+        create_ledger_app(
+            root,
+            workspace_agent_runner=workspace_plan,
+            research_runner=photo_research,
+        )
+    )
+    client.post("/api/project", json={"name": "Faculty research"})
+
+    launched = client.post(
+        "/api/workspace-agent/jobs", json={"message": "Add photos"}
+    )
+    assert launched.status_code == 202
+    job_id = launched.json()["job_id"]
+    for _ in range(100):
+        job = next(
+            item for item in client.get("/api/research/jobs").json() if item["job_id"] == job_id
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["outcome"] == "workspace_proposal"
+    assert job["approval_status"] == "pending"
+    assert client.get("/api/project").json()["entity_kinds"] == []
+
+    approved = client.post(f"/api/workspace-agent/jobs/{job_id}/approve")
+    assert approved.status_code == 202
+    assert approved.json()["approval_status"] == "approved"
+    for _ in range(100):
+        job = next(
+            item for item in client.get("/api/research/jobs").json() if item["job_id"] == job_id
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+    assert not job.get("error"), job["error"]
+    assert job["status"] == "completed"
+    matrix = client.get("/api/matrix/Faculty").json()
+    assert [row["name"] for row in matrix["rows"]] == ["Ada Lovelace"]
+    assert matrix["questions"][0]["value_type"] == "Image"
+    assert matrix["rows"][0]["cells"]["profile_image"]["value"] == (
+        "https://images.example/ada.jpg"
+    )
+
+    proposals = LedgerDatabase(root).proposals()
+    assert proposals[0]["proposal_type"] == "workspace_agent"

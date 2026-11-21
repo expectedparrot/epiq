@@ -186,8 +186,12 @@ appends a `report.record` transaction naming every input transaction.
 
 `epiq-web` now opens the ledger project directory selected by `EPIQ_PROJECT` (default:
 `.epiq/project`). Its core project, entity, question, evidence, claim, matrix, conflict, and doctor
-endpoints use `LedgerDatabase` exclusively. The older `create_app` factory remains temporarily for
-workflows that have not yet been ported; it is no longer the executable's default application.
+endpoints use `LedgerDatabase` exclusively. The **Ask Epiq** console accepts directions such as
+“find more examples,” “add official photos,” or “create a Papers table.” It first presents a bounded
+schema, row, and research plan; nothing changes until the user approves it. Approved scalar
+research captures evidence and claims as ledger transactions. Relationship research is not yet
+executed by this console. The older `create_app` factory remains temporarily for workflows that
+have not yet been ported; it is no longer the executable's default application.
 
 ## Design paper and executable example
 
@@ -215,11 +219,11 @@ Set up and launch the Epiq web application locally for me.
      uv sync --extra web
      npm --prefix web ci
      npm --prefix web run build
-4. Create the project directory if needed, then select a persistent database for this checkout:
-     mkdir -p .epiq/projects
-     uv run epiq use .epiq/projects/my-research.sqlite
-   Do not initialize or overwrite the file from the terminal. If it is new, let me name and create
-   the project from the web welcome screen.
+4. Choose a persistent Git-ledger project directory and pass it to the server:
+     export EPIQ_PROJECT="$PWD/.epiq/projects/my-research"
+     mkdir -p "$(dirname "$EPIQ_PROJECT")"
+   Do not initialize or overwrite the project from the terminal. If it is new, let me name and
+   create it from the web welcome screen.
 5. If OPENAI_API_KEY is already present in the environment, pass it through without printing,
    logging, or writing it into the repository. If it is absent, explain that the spreadsheet and
    manual evidence workflows will work but AI research buttons will require the variable.
@@ -229,7 +233,7 @@ Set up and launch the Epiq web application locally for me.
    server, do not kill it until you have checked for active research jobs and confirmed whether it
    can be reused.
 7. Verify that the server started, open http://127.0.0.1:8000 in my browser, and tell me:
-   - the selected SQLite database path;
+   - the selected ledger project path;
    - whether agent research is enabled;
    - the local URL; and
    - how to stop and restart the server safely.
@@ -238,10 +242,10 @@ Keep the server running after you finish. Do not expose it to the public network
 generated databases, workspace configuration, credentials, or build artifacts.
 ```
 
-The selected database is remembered in `.epiq/config.json`, so subsequent launches only need:
+Keep `EPIQ_PROJECT` set to the same directory on subsequent launches:
 
 ```bash
-uv run --extra web epiq-web
+EPIQ_PROJECT="$PWD/.epiq/projects/my-research" uv run --extra web epiq-web
 ```
 
 ## The model in one minute
