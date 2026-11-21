@@ -35,6 +35,7 @@ epiq status
 `EPIQ_PROJECT` provides the same selection for scripts and CI. The explicit `epiq ledger ...`
 namespace remains a compatibility alias during the cutover. Commands using `--db` continue to
 address the quarantined SQLite implementation and are not part of the target architecture.
+Inside a project directory containing `epiq.toml`, Epiq discovers the project automatically.
 
 Agents append typed operation batches with `epiq transact`. Independent branches normally
 add different transaction files, so Git merges them as a set union. After merging, run:

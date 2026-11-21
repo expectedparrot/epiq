@@ -61,6 +61,10 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "kind",
         "entity",
         "question",
+        "evidence",
+        "assert",
+        "support-claim",
+        "supersede-claim",
         "record",
         "matrix",
         "claims",
@@ -775,6 +779,14 @@ def parser() -> argparse.ArgumentParser:
     ledger_question.add_argument("--definition")
     ledger_question.add_argument("--recorded-at")
     ledger_question.add_argument("--idempotency-key")
+
+    def ledger_mutation(name: str, help_text: str) -> argparse.ArgumentParser:
+        command = ledger_commands.add_parser(name, help=help_text)
+        command.add_argument("--path", default=".")
+        command.add_argument("--recorded-at")
+        command.add_argument("--idempotency-key")
+        return command
+
     ledger_record = ledger_commands.add_parser(
         "record", help="Atomically capture evidence and assert one claim"
     )
@@ -796,6 +808,43 @@ def parser() -> argparse.ArgumentParser:
     )
     ledger_record.add_argument("--recorded-at")
     ledger_record.add_argument("--idempotency-key")
+    ledger_evidence = ledger_mutation("evidence", "Capture immutable evidence")
+    ledger_evidence.add_argument("--source-title", required=True)
+    ledger_evidence.add_argument("--source-type", required=True)
+    ledger_evidence.add_argument("--url", required=True)
+    ledger_evidence.add_argument("--retrieved-at", required=True)
+    ledger_evidence.add_argument("--excerpt", required=True)
+    ledger_evidence.add_argument("--published-at")
+    ledger_evidence.add_argument("--locator")
+    ledger_assert = ledger_mutation("assert", "Assert an evidence-backed claim")
+    ledger_assert.add_argument("--subject-id", required=True)
+    ledger_assert.add_argument("--question-id", required=True)
+    ledger_assert.add_argument("--value", required=True)
+    ledger_assert.add_argument("--valid-from", required=True)
+    ledger_assert.add_argument("--evidence-id", action="append", required=True)
+    ledger_assert.add_argument("--confidence", choices=["low", "medium", "high"], default="high")
+    ledger_assert.add_argument(
+        "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
+    )
+    ledger_support = ledger_mutation("support-claim", "Add evidence support to an exact claim")
+    ledger_support.add_argument("claim_id")
+    ledger_support.add_argument("evidence_id")
+    ledger_support.add_argument("--exact-quote")
+    ledger_support.add_argument("--locator")
+    ledger_supersede = ledger_mutation(
+        "supersede-claim", "Atomically assert a replacement and supersede an exact claim"
+    )
+    ledger_supersede.add_argument("claim_id")
+    ledger_supersede.add_argument("--value", required=True)
+    ledger_supersede.add_argument("--valid-from", required=True)
+    ledger_supersede.add_argument("--evidence-id", action="append", required=True)
+    ledger_supersede.add_argument("--reason", required=True)
+    ledger_supersede.add_argument(
+        "--confidence", choices=["low", "medium", "high"], default="high"
+    )
+    ledger_supersede.add_argument(
+        "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
+    )
     ledger_matrix = ledger_commands.add_parser("matrix", help="Read a ledger-backed matrix")
     ledger_matrix.add_argument("--path", default=".")
     ledger_matrix.add_argument("--kind", required=True)
@@ -804,13 +853,6 @@ def parser() -> argparse.ArgumentParser:
     ledger_claims.add_argument("--kind")
     ledger_claims.add_argument("--question")
     ledger_claims.add_argument("--include-closed", action="store_true")
-
-    def ledger_mutation(name: str, help_text: str) -> argparse.ArgumentParser:
-        command = ledger_commands.add_parser(name, help=help_text)
-        command.add_argument("--path", default=".")
-        command.add_argument("--recorded-at")
-        command.add_argument("--idempotency-key")
-        return command
 
     for name, help_text in (
         ("retire-entity", "Retire an entity without erasing history"),
@@ -1519,6 +1561,10 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "kind",
             "entity",
             "question",
+            "evidence",
+            "assert",
+            "support-claim",
+            "supersede-claim",
             "record",
             "matrix",
             "claims",
@@ -1592,6 +1638,55 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     excerpt=args.excerpt,
                     published_at=args.published_at,
                     locator=_attributes(args.locator),
+                    confidence=args.confidence,
+                    temporal_basis=args.temporal_basis,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "evidence":
+                return database.capture_evidence(
+                    source_title=args.source_title,
+                    source_type=args.source_type,
+                    url=args.url,
+                    retrieved_at=args.retrieved_at,
+                    excerpt=args.excerpt,
+                    published_at=args.published_at,
+                    locator=_attributes(args.locator),
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "assert":
+                return database.assert_claim(
+                    args.subject_id,
+                    args.question_id,
+                    _value(args.value),
+                    valid_from=args.valid_from,
+                    evidence_ids=args.evidence_id,
+                    confidence=args.confidence,
+                    temporal_basis=args.temporal_basis,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "support-claim":
+                return database.support_claim(
+                    args.claim_id,
+                    args.evidence_id,
+                    exact_quote=args.exact_quote,
+                    locator=_attributes(args.locator),
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "supersede-claim":
+                return database.supersede_claim(
+                    args.claim_id,
+                    _value(args.value),
+                    valid_from=args.valid_from,
+                    evidence_ids=args.evidence_id,
+                    reason=args.reason,
                     confidence=args.confidence,
                     temporal_basis=args.temporal_basis,
                     actor=args.actor,
@@ -2761,7 +2856,11 @@ def _promote_ledger_arguments(arguments: list[str]) -> list[str]:
         project = values[index + 1]
         del values[index : index + 2]
     elif "--db" not in values:
-        project = os.environ.get("EPIQ_PROJECT") or _configured_ledger_project()
+        project = (
+            os.environ.get("EPIQ_PROJECT")
+            or _configured_ledger_project()
+            or ("." if Path("epiq.toml").is_file() else None)
+        )
     if project is None or "ledger" in values:
         return values
     command_index = next(

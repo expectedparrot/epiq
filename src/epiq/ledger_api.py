@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .artifacts import ArtifactStore
+from .errors import EpiqError
 from .ledger import OPERATION_VERSION, LedgerRepository, Operation, canonical_bytes, new_domain_id
 from .ledger_view import LedgerView
 from .ledger_writer import LedgerWriter
@@ -230,6 +231,91 @@ class LedgerDatabase:
             idempotency_key=idempotency_key,
         )
         return {"claim_id": claim, **result}
+
+    def support_claim(
+        self,
+        claim_id: str,
+        evidence_id: str,
+        *,
+        exact_quote: str | None = None,
+        locator: dict[str, Any] | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "claim_id": claim_id,
+            "evidence_id": evidence_id,
+            "locator": locator or {},
+        }
+        if exact_quote is not None:
+            payload["exact_quote"] = exact_quote
+        result = self.transact(
+            [{"type": "claim.support", "payload": payload}],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"claim_id": claim_id, "evidence_id": evidence_id, **result}
+
+    def supersede_claim(
+        self,
+        claim_id: str,
+        value: Any,
+        *,
+        valid_from: str,
+        evidence_ids: list[str],
+        reason: str,
+        replacement_claim_id: str | None = None,
+        confidence: str = "high",
+        temporal_basis: str = "observed",
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        matches = [
+            item for item in self.claims(include_closed=True) if item["claim_id"] == claim_id
+        ]
+        if not matches:
+            raise EpiqError("missing_domain_object", f"Missing claim_id: {claim_id}")
+        original = matches[0]
+        replacement = self._domain_id(
+            "clm", replacement_claim_id, actor, idempotency_key, "replacement-claim"
+        )
+        result = self.transact(
+            [
+                {
+                    "type": "claim.assert",
+                    "payload": {
+                        "claim_id": replacement,
+                        "subject_id": original["subject_id"],
+                        "question_id": original["question_id"],
+                        "value": value,
+                        "valid_from": valid_from,
+                        "evidence_ids": evidence_ids,
+                        "confidence": confidence,
+                        "temporal_basis": temporal_basis,
+                    },
+                },
+                {
+                    "type": "claim.supersede",
+                    "payload": {
+                        "claim_id": claim_id,
+                        "replacement_claim_id": replacement,
+                        "reason": reason,
+                    },
+                },
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "claim_id": claim_id,
+            "status": "superseded",
+            "replacement_claim_id": replacement,
+            **result,
+        }
 
     def record(
         self,

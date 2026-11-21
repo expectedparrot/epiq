@@ -112,6 +112,29 @@ def test_selected_project_promotes_subsequent_commands(
     assert data(capsys)["project_id"].startswith("prj_")
 
 
+def test_commands_auto_discover_project_from_working_directory(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "--project",
+            str(root),
+            "init",
+            "--name",
+            "Local",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+    monkeypatch.chdir(root)
+    main(["kind", "Item"])
+    assert data(capsys)["kind"] == "Item"
+    main(["status"])
+    assert data(capsys)["state"] == "ready"
+
+
 def test_ledger_cli_transacts_logs_retries_and_reports_conflicts(tmp_path: Path, capsys) -> None:
     root = tmp_path / "research"
     main(
@@ -784,3 +807,100 @@ def test_ledger_cli_exports_and_records_manifest(tmp_path: Path, capsys) -> None
     report = data(capsys)["reports"][0]
     assert report["report_type"] == "export:matrix-csv"
     assert report["parameters"]["kind"] == "Company"
+
+
+def test_top_level_evidence_assert_support_and_supersede(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "--project",
+            str(root),
+            "init",
+            "--name",
+            "Claims",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+    main(["--project", str(root), "kind", "Item"])
+    data(capsys)
+    main(["--project", str(root), "entity", "Item", "One"])
+    entity_id = data(capsys)["entity_id"]
+    main(["--project", str(root), "question", "value", "--for", "Item", "--type", "Int"])
+    question_id = data(capsys)["question_id"]
+
+    evidence_ids = []
+    for index in (1, 2):
+        main(
+            [
+                "--project",
+                str(root),
+                "evidence",
+                "--source-title",
+                f"Source {index}",
+                "--source-type",
+                "web",
+                "--url",
+                f"https://example.test/{index}",
+                "--retrieved-at",
+                "2026-11-21",
+                "--excerpt",
+                f"Value source {index}.",
+            ]
+        )
+        evidence_ids.append(data(capsys)["evidence_id"])
+    main(
+        [
+            "--project",
+            str(root),
+            "assert",
+            "--subject-id",
+            entity_id,
+            "--question-id",
+            question_id,
+            "--value",
+            "1",
+            "--valid-from",
+            "2026-11-21",
+            "--evidence-id",
+            evidence_ids[0],
+        ]
+    )
+    original = data(capsys)["claim_id"]
+    main(
+        [
+            "--project",
+            str(root),
+            "support-claim",
+            original,
+            evidence_ids[1],
+            "--exact-quote",
+            "Value source 2.",
+        ]
+    )
+    data(capsys)
+    main(
+        [
+            "--project",
+            str(root),
+            "supersede-claim",
+            original,
+            "--value",
+            "2",
+            "--valid-from",
+            "2026-11-22",
+            "--evidence-id",
+            evidence_ids[1],
+            "--reason",
+            "New source",
+            "--idempotency-key",
+            "replace-value",
+        ]
+    )
+    replacement = data(capsys)["replacement_claim_id"]
+    main(["--project", str(root), "claims"])
+    assert [item["claim_id"] for item in data(capsys)["claims"]] == [replacement]
+    main(["--project", str(root), "claims", "--include-closed"])
+    claims = {item["claim_id"]: item for item in data(capsys)["claims"]}
+    assert claims[original]["evidence_ids"] == evidence_ids
