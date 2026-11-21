@@ -249,6 +249,7 @@ function parseValue(raw: string, type: string): unknown {
   if (
     type === "String" ||
     type === "URL" ||
+    type === "Image" ||
     type.startsWith("Enum[") ||
     type.startsWith("Ref[")
   )
@@ -2366,8 +2367,8 @@ export default function App() {
                       </td>
                       <td
                         className="entity-name"
-                        title="Double-click to inspect relationships and back-references"
-                        onDoubleClick={() => {
+                        title="Open row details"
+                        onClick={() => {
                           setSelection(null);
                           setEntitySelection({
                             entityId: row.entity_id,
@@ -2726,11 +2727,24 @@ export default function App() {
             }}
           />
         )}
-        {entitySelection && (
+        {entitySelection && matrix && (
           <EntityRelationshipsDrawer
             selection={entitySelection}
+            row={matrix.rows.find(
+              (row) => row.entity_id === entitySelection.entityId,
+            )!}
+            questions={matrix.questions}
             onClose={() => setEntitySelection(null)}
             onMerge={() => setDialog("mergeEntity")}
+            onInspect={(question, cell) => {
+              setEntitySelection(null);
+              setSelection({
+                entityId: entitySelection.entityId,
+                entityName: entitySelection.entityName,
+                question,
+                cell,
+              });
+            }}
             onNavigate={(entity) => {
               setEntitySelection(null);
               setKind(entity.kind);
@@ -6459,14 +6473,20 @@ function SchemaReviewPanel({
 
 function EntityRelationshipsDrawer({
   selection,
+  row,
+  questions,
   onClose,
   onMerge,
   onNavigate,
+  onInspect,
 }: {
   selection: EntitySelection;
+  row: Matrix["rows"][number];
+  questions: Question[];
   onClose: () => void;
   onMerge: () => void;
   onNavigate: (entity: RelatedEntity) => void;
+  onInspect: (question: Question, cell: Cell) => void;
 }) {
   const [graph, setGraph] = useState<RelationshipGraph | null>(null);
   const [error, setError] = useState("");
@@ -6527,9 +6547,56 @@ function EntityRelationshipsDrawer({
           ×
         </button>
         <h2>{selection.entityName}</h2>
-        <p>{selection.entityKind} · relationship graph</p>
+        <p>{selection.entityKind} · row details</p>
       </div>
       <div className="drawer-body">
+        <section className="row-detail-table">
+          {questions.map((question) => {
+            const cell = row.cells[question.name];
+            return (
+              <button
+                type="button"
+                className="row-detail-field"
+                key={question.question_id}
+                onClick={() => onInspect(question, cell)}
+              >
+                <span>
+                  <b>{String(question.definition.label ?? question.name)}</b>
+                  <small>{question.value_type}</small>
+                </span>
+                <span className="row-detail-value">
+                  {question.value_type === "Image" &&
+                  cell.state === "Answered" &&
+                  typeof cell.value === "string" ? (
+                    <img
+                      className="row-detail-image"
+                      src={cell.value}
+                      alt={`${selection.entityName} · ${question.name}`}
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : cell.references?.length ? (
+                    <>
+                      <strong>
+                        {cell.references.map((reference) => reference.name).join(", ")}
+                      </strong>
+                      <small>
+                        ↗ {cell.references.map((reference) => reference.entity_id).join(", ")}
+                      </small>
+                    </>
+                  ) : (
+                    <strong>{cellDisplay(cell, question)}</strong>
+                  )}
+                  <small>
+                    {cell.state}
+                    {cell.lineage.some((item) => item.derivation) ? " · ƒ derived" : ""}
+                    {cell.lineage.length ? ` · ${cell.lineage.length} src` : ""}
+                  </small>
+                </span>
+              </button>
+            );
+          })}
+        </section>
         {error && <div className="form-error">{error}</div>}
         {!graph && !error && (
           <div className="center">

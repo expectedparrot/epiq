@@ -113,6 +113,27 @@ def test_uninitialized_ledger_web_uses_frontend_compatible_error(tmp_path: Path)
     assert response.json()["error"]["code"] == "project_not_found"
 
 
+def test_ledger_web_can_close_and_reopen_configured_project(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    client = TestClient(create_ledger_app(root))
+    project = client.post("/api/project", json={"name": "Closeable"}).json()["project"]
+
+    assert client.get("/api/projects").json()[0]["active"] is True
+    assert client.post("/api/projects/close", json={}).json() == {"closed": True}
+    assert client.get("/api/health").json()["project"] == "closed"
+    closed = client.get("/api/project")
+    assert closed.status_code == 400
+    assert closed.json()["error"]["code"] == "project_not_selected"
+    assert client.get("/api/projects").json()[0]["active"] is False
+
+    opened = client.post(
+        "/api/projects/open", json={"project_id": project["project_id"]}
+    )
+    assert opened.status_code == 200
+    assert opened.json()["active"] is True
+    assert client.get("/api/project").json()["project"]["name"] == "Closeable"
+
+
 def test_ledger_web_review_visibility_and_retraction_are_durable(tmp_path: Path) -> None:
     root = tmp_path / "project"
     client = TestClient(create_ledger_app(root))

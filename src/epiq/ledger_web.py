@@ -31,6 +31,10 @@ class ProjectCreate(BaseModel):
     actor: str = "human:web"
 
 
+class ProjectOpen(BaseModel):
+    project_id: str = Field(min_length=1)
+
+
 class KindCreate(BaseModel):
     kind: str = Field(min_length=1)
     actor: str = "human:web"
@@ -140,6 +144,7 @@ def create_ledger_app(
     ).resolve()
     app = FastAPI(title="Epiq", version="0.1.0")
     app.state.project = root
+    app.state.project_open = root.exists()
     app.state.workspace_agent_runner = workspace_agent_runner or OpenAIWorkspaceAgentRunner()
     app.state.research_runner = research_runner or OpenAIResearchRunner()
     app.state.research_jobs: dict[str, dict[str, Any]] = {}
@@ -161,6 +166,12 @@ def create_ledger_app(
                 "project_not_found",
                 "No ledger project has been initialized",
                 "POST /api/project with a project name.",
+            )
+        if not app.state.project_open:
+            raise EpiqError(
+                "project_not_selected",
+                "No project is currently open",
+                "Open the configured ledger project.",
             )
         return LedgerDatabase(root)
 
@@ -446,7 +457,13 @@ def create_ledger_app(
     def health() -> dict[str, Any]:
         return {
             "ok": True,
-            "project": "ready" if root.exists() else "uninitialized",
+            "project": (
+                "ready"
+                if root.exists() and app.state.project_open
+                else "closed"
+                if root.exists()
+                else "uninitialized"
+            ),
             "path": str(root),
             "initialized": root.exists(),
             "storage": "git-ledger",
@@ -455,7 +472,51 @@ def create_ledger_app(
     @app.post("/api/project", status_code=201)
     def create_project(body: ProjectCreate) -> dict[str, Any]:
         created = LedgerDatabase(root, create=True, name=body.name, actor=body.actor)
+        app.state.project_open = True
         return {"project": created.project(), "path": str(root)}
+
+    @app.get("/api/projects")
+    def projects() -> list[dict[str, Any]]:
+        if not root.exists():
+            return []
+        project = LedgerDatabase(root).project()
+        return [
+            {
+                "project_id": project["project_id"],
+                "name": project["name"],
+                "path": str(root),
+                "active": bool(app.state.project_open),
+            }
+        ]
+
+    @app.post("/api/projects/open")
+    def open_project(body: ProjectOpen) -> dict[str, Any]:
+        if not root.exists():
+            raise EpiqError("project_not_found", "The configured project no longer exists")
+        project = LedgerDatabase(root).project()
+        if body.project_id != project["project_id"]:
+            raise EpiqError("project_not_found", "The selected project is not configured")
+        app.state.project_open = True
+        return {
+            "project_id": project["project_id"],
+            "name": project["name"],
+            "path": str(root),
+            "active": True,
+        }
+
+    @app.post("/api/projects/close")
+    def close_project() -> dict[str, bool]:
+        with app.state.research_lock:
+            active = any(
+                job["status"] in {"queued", "running"}
+                for job in app.state.research_jobs.values()
+            )
+        if active:
+            raise EpiqError(
+                "research_active", "Wait for active research before closing this project"
+            )
+        app.state.project_open = False
+        return {"closed": True}
 
     @app.get("/api/project")
     def project_info() -> dict[str, Any]:

@@ -707,6 +707,52 @@ button:hover {
   display: grid;
   gap: 10px;
 }
+.row-detail-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 22px;
+  overflow: hidden;
+}
+.row-detail-field {
+  align-items: start;
+  background: var(--paper);
+  border: 0;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(110px, 0.8fr) minmax(0, 1.4fr);
+  padding: 11px 12px;
+  text-align: left;
+  width: 100%;
+}
+.row-detail-field:first-child {
+  border-top: 0;
+}
+.row-detail-field:hover {
+  background: #f3f7f4;
+}
+.row-detail-field > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.row-detail-field b,
+.row-detail-value strong {
+  overflow-wrap: anywhere;
+}
+.row-detail-field small {
+  color: var(--muted);
+  font: 9px/1.4 var(--mono);
+}
+.row-detail-image {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  height: 88px;
+  object-fit: cover;
+  width: 88px;
+}
 .back-reference-group {
   border: 1px solid var(--line);
   border-radius: 10px;
