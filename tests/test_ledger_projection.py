@@ -1,4 +1,6 @@
 import json
+import random
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -48,6 +50,51 @@ def projected_ids(projector: LedgerProjector) -> list[str]:
                 "SELECT transaction_id FROM ledger_transactions ORDER BY ordinal"
             )
         ]
+
+
+def semantic_snapshot(projector: LedgerProjector) -> dict[str, object]:
+    """Capture projection meaning without depending on SQLite page layout."""
+    with sqlite3.connect(projector.path) as connection:
+        objects = connection.execute(
+            """SELECT name,type FROM sqlite_master
+               WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'
+               ORDER BY name"""
+        ).fetchall()
+        snapshot: dict[str, object] = {}
+        for name, object_type in objects:
+            columns = tuple(
+                str(row[1])
+                for row in connection.execute(f'PRAGMA table_info("{name}")')
+            )
+            rows = [
+                tuple(row)
+                for row in connection.execute(f'SELECT * FROM "{name}"')
+            ]
+            snapshot[str(name)] = {
+                "type": str(object_type),
+                "columns": columns,
+                "rows": tuple(sorted(rows, key=repr)),
+            }
+        return snapshot
+
+
+def append_concurrent_history(repository: LedgerRepository) -> None:
+    genesis = repository.frontier()[0]
+    left = append(
+        repository,
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        parents=(genesis,),
+    )
+    right = append(
+        repository,
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+        parents=(genesis,),
+    )
+    append(
+        repository,
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+        parents=(left.transaction_id, right.transaction_id),
+    )
 
 
 def test_full_rebuild_is_disposable_and_verifiable(tmp_path: Path) -> None:
@@ -137,3 +184,45 @@ def test_invalid_ledger_does_not_replace_good_projection(tmp_path: Path) -> None
         projector.build(force=True)
     assert error.value.code == "ledger_digest_mismatch"
     assert projector.path.read_bytes() == before
+
+
+def test_projection_is_independent_of_transaction_discovery_order(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+    append_concurrent_history(repository)
+    paths = repository.transaction_paths()
+    expected_ids = [item.transaction_id for item in repository.ordered()]
+    expected_snapshot: dict[str, object] | None = None
+
+    for seed in range(12):
+        shuffled = paths.copy()
+        random.Random(seed).shuffle(shuffled)
+        repository.transaction_paths = lambda shuffled=shuffled: shuffled  # type: ignore[method-assign]
+
+        assert [item.transaction_id for item in repository.ordered()] == expected_ids
+        projector.build(force=True)
+        current = semantic_snapshot(projector)
+        if expected_snapshot is None:
+            expected_snapshot = current
+        else:
+            assert current == expected_snapshot
+
+
+def test_clean_checkout_rebuilds_identical_projection(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+    append_concurrent_history(repository)
+    projector.build(force=True)
+    expected = semantic_snapshot(projector)
+
+    checkout = tmp_path / "clean-checkout"
+    shutil.copytree(
+        repository.root,
+        checkout,
+        ignore=shutil.ignore_patterns(".epiq", ".git"),
+    )
+    clean_projector = LedgerProjector(LedgerRepository(checkout))
+
+    assert not clean_projector.path.exists()
+    result = clean_projector.build()
+    assert result["mode"] == "rebuild"
+    assert clean_projector.verify()["verified"] is True
+    assert semantic_snapshot(clean_projector) == expected
