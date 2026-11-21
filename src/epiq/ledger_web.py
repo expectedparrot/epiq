@@ -296,6 +296,56 @@ def create_ledger_app(
             )
         return payload
 
+    def hydrate_workspace_history() -> None:
+        if not root.exists() or not app.state.project_open:
+            return
+        current = LedgerDatabase(root)
+        for proposal in current.proposals():
+            if proposal.get("proposal_type") != "workspace_agent":
+                continue
+            document = proposal.get("document", {})
+            plan = document.get("workspace_plan")
+            message = document.get("user_message")
+            if not isinstance(plan, dict) or not isinstance(message, str):
+                continue
+            reviews = proposal.get("reviews", [])
+            review = reviews[-1] if reviews else None
+            decision = review.get("decision") if isinstance(review, dict) else None
+            approval = (
+                "approved"
+                if decision == "accepted"
+                else "rejected"
+                if decision == "rejected"
+                else "pending"
+            )
+            job_id = f"history_{proposal['proposal_id']}"
+            estimated = sum(len(item.get("entity_names", [])) for item in plan["research"])
+            app.state.research_jobs[job_id] = {
+                "job_id": job_id,
+                "job_type": "workspace_agent",
+                "entity_kind": "Workspace",
+                "question_id": "",
+                "mode": "workspace_agent",
+                "instructions": message,
+                "user_message": message,
+                "status": "completed",
+                "total": estimated,
+                "completed": estimated if approval == "approved" else 0,
+                "target_entity_ids": [],
+                "error": None,
+                "messages": [{"at": "", "message": "Loaded from the project ledger"}],
+                "outcome": "workspace_proposal" if approval == "pending" else "changed",
+                "assistant_summary": str(plan.get("summary", "")).strip(),
+                "workspace_plan": plan,
+                "approval_status": approval,
+                "estimated_research_cells": estimated,
+                "proposal_id": proposal["proposal_id"],
+                "command_transcript": plan_commands(plan),
+                "historical": True,
+            }
+
+    hydrate_workspace_history()
+
     def plan_workspace(job_id: str, message: str) -> None:
         def progress(text: str) -> None:
             with app.state.research_lock:

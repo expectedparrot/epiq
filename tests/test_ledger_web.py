@@ -325,6 +325,15 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
     proposals = LedgerDatabase(root).proposals()
     assert proposals[0]["proposal_type"] == "workspace_agent"
 
+    restarted = TestClient(create_ledger_app(root, research_runner=photo_research))
+    history = restarted.get("/api/research/jobs").json()
+    assert len(history) == 1
+    assert history[0]["historical"] is True
+    assert history[0]["user_message"] == "Add photos"
+    assert history[0]["assistant_summary"] == "Add profile photos for every faculty member."
+    assert history[0]["approval_status"] == "approved"
+    assert history[0]["command_transcript"][-1]["argv"][3] == "research"
+
 
 def test_control_center_executes_schema_through_cli_and_keeps_exact_envelope(
     tmp_path: Path,
