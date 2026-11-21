@@ -116,6 +116,72 @@ def test_ledger_research_is_one_json_enveloped_cli_operation(
     assert database.matrix("Company")["cells"][entity_id]
 
 
+def test_ledger_research_resolves_reference_objects_into_related_rows(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Relationship research")
+    database.define_kind("Faculty")
+    database.define_kind("EducationCredential")
+    faculty_id = database.create_entity("Faculty", "Ada Lovelace")["entity_id"]
+    database.define_question(
+        "bachelors_credential", "Faculty", "Ref[EducationCredential]"
+    )
+    database.define_question("graduation_year", "EducationCredential", "Year")
+
+    class FakeRunner:
+        def __call__(self, _kind, _question, entities):
+            return [
+                {
+                    "entity_id": entities[0]["entity_id"],
+                    "status": "answered",
+                    "value": {
+                        "name": "BA in Mathematics — University of London (1835)",
+                        "graduation_year": 1835,
+                    },
+                    "source_title": "University biography",
+                    "source_url": "https://example.test/ada",
+                    "source_type": "web",
+                    "excerpt": "She completed her degree in 1835.",
+                    "confidence": "high",
+                    "source_published_at": None,
+                    "observed_as_of": "1835-01-01",
+                }
+            ]
+
+    monkeypatch.setattr("epiq.cli.OpenAIResearchRunner", FakeRunner)
+    main(
+        [
+            "--project",
+            str(root),
+            "research",
+            "--kind",
+            "Faculty",
+            "--question",
+            "bachelors_credential",
+            "--entity-name",
+            "Ada Lovelace",
+        ]
+    )
+    result = _data(capsys)
+    related_id = result["writes"][0]["related_entity_ids"][0]
+    assert database.matrix("Faculty")["cells"][faculty_id][
+        next(
+            item["question_id"]
+            for item in database.questions(kind="Faculty")
+            if item["name"] == "bachelors_credential"
+        )
+    ][0]["value"] == related_id
+    credential = database.matrix("EducationCredential")
+    assert credential["entities"][0]["entity_id"] == related_id
+    graduation_question = next(
+        item["question_id"]
+        for item in credential["questions"]
+        if item["name"] == "graduation_year"
+    )
+    assert credential["cells"][related_id][graduation_question][0]["value"] == 1835
+
+
 def test_capabilities_are_machine_readable_without_a_project(tmp_path: Path, capsys) -> None:
     missing = tmp_path / "missing.sqlite"
     main(["--db", str(missing), "capabilities", "--command", "record"])

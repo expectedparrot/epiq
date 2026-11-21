@@ -183,24 +183,42 @@ def create_ledger_app(
         return datetime.now(UTC).isoformat()
 
     def workspace_context(current: LedgerDatabase) -> dict[str, Any]:
+        def table_context(kind: str) -> dict[str, Any]:
+            matrix = current.matrix(kind)
+            not_found = {
+                (item["subject_id"], item["question_id"])
+                for item in current.research_outcomes(kind=kind)
+            }
+            questions = []
+            for question in matrix["questions"]:
+                states = {"answered": 0, "not_found": 0, "unasked": 0}
+                for entity in matrix["entities"]:
+                    claims = matrix["cells"].get(entity["entity_id"], {}).get(
+                        question["question_id"], []
+                    )
+                    if claims:
+                        states["answered"] += 1
+                    else:
+                        outcome = (entity["entity_id"], question["question_id"]) in not_found
+                        states["not_found" if outcome else "unasked"] += 1
+                questions.append(
+                    {
+                        "name": question["name"],
+                        "value_type": question["value_type"],
+                        "definition": question["definition"],
+                        "coverage": states,
+                    }
+                )
+            return {
+                "kind": kind,
+                "rows": [row["name"] for row in matrix["entities"]],
+                "questions": questions,
+            }
+
         return {
             "project": current.project(),
             "storage": "git-ledger",
-            "tables": [
-                {
-                    "kind": kind,
-                    "rows": [row["name"] for row in current.matrix(kind)["entities"]],
-                    "questions": [
-                        {
-                            "name": question["name"],
-                            "value_type": question["value_type"],
-                            "definition": question["definition"],
-                        }
-                        for question in current.matrix(kind)["questions"]
-                    ],
-                }
-                for kind in current.kinds()
-            ],
+            "tables": [table_context(kind) for kind in current.kinds()],
         }
 
     def update_job(job_id: str, **changes: Any) -> None:
@@ -550,7 +568,14 @@ def create_ledger_app(
                     if item["argv"][3:4] == ["research"]
                 ]
             if app.state.cli_execution:
-                update_job(job_id, total=len(research_commands), completed=0)
+                estimated_targets = sum(
+                    len(item.get("entity_names", [])) for item in plan["research"]
+                )
+                update_job(
+                    job_id,
+                    total=estimated_targets or len(research_commands),
+                    completed=0,
+                )
                 written = 0
                 no_result = 0
                 for argv in research_commands:
@@ -561,13 +586,22 @@ def create_ledger_app(
                     result = execute_cli(argv)
                     data = result.get("data", {})
                     writes = data.get("writes", []) if isinstance(data, dict) else []
+                    target_count = int(data.get("target_count", len(writes)))
                     written += sum(item.get("status") == "answered" for item in writes)
                     no_result += sum(item.get("status") == "not_found" for item in writes)
                     with app.state.research_lock:
                         app.state.research_jobs[job_id].setdefault("command_results", []).append(
                             {"argv": argv, "result": result}
                         )
-                        app.state.research_jobs[job_id]["completed"] += 1
+                        app.state.research_jobs[job_id]["completed"] += target_count
+                        app.state.research_jobs[job_id]["total"] = max(
+                            app.state.research_jobs[job_id]["total"],
+                            app.state.research_jobs[job_id]["completed"],
+                        )
+                    progress(
+                        f"{data.get('kind', 'Research')} · {data.get('question', 'field')}: "
+                        f"processed {target_count} rows, wrote {len(writes)} results"
+                    )
                 progress(f"Research finished: {written} answers, {no_result} without a result")
                 update_job(
                     job_id,

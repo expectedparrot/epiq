@@ -1798,25 +1798,18 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 target_ids = {item["entity_id"] for item in targets}
                 writes: list[dict[str, Any]] = []
                 today = datetime.now(UTC).date().isoformat()
-                for index, finding in enumerate(findings):
-                    entity_id = str(finding.get("entity_id", ""))
-                    if entity_id not in target_ids:
-                        continue
-                    key = f"research:{args.kind}:{question['question_id']}:{entity_id}:{index}"
-                    if finding.get("status") == "not_found":
-                        result = database.record_not_found(
+
+                def record_finding_value(
+                    finding: dict[str, Any], entity_id: str, key: str
+                ) -> dict[str, Any]:
+                    """Persist a scalar finding, resolving Ref values into real ledger rows."""
+                    value = finding["value"]
+                    value_type = str(question["value_type"])
+                    if not (value_type.startswith("Ref[") and value_type.endswith("]")):
+                        return database.record(
                             entity_id,
                             question["question_id"],
-                            f"Agent research for {question['name']}",
-                            str(finding.get("notes") or "No sufficient evidence found."),
-                            actor=args.actor,
-                            idempotency_key=key,
-                        )
-                    elif finding.get("status") == "answered":
-                        result = database.record(
-                            entity_id,
-                            question["question_id"],
-                            finding["value"],
+                            value,
                             valid_from=str(
                                 finding.get("observed_as_of")
                                 or finding.get("source_published_at")
@@ -1839,6 +1832,109 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                             actor=args.actor,
                             idempotency_key=key,
                         )
+
+                    related_kind = value_type[4:-1]
+                    cardinality = str(question.get("definition", {}).get("cardinality", "one"))
+                    supplied = value if isinstance(value, list) else [value]
+                    existing = {
+                        str(item["name"]).casefold(): item
+                        for item in database.entities(kind=related_kind)
+                    }
+                    related_questions = {
+                        str(item["name"]): item for item in database.questions(kind=related_kind)
+                    }
+                    related_ids: list[str] = []
+                    related_writes: list[dict[str, Any]] = []
+                    for related_index, candidate in enumerate(supplied):
+                        fields = candidate if isinstance(candidate, dict) else {"name": candidate}
+                        name = str(fields.get("name") or "").strip()
+                        if not name:
+                            raise EpiqError(
+                                "invalid_reference_value",
+                                f"Research returned a {value_type} value without a name",
+                            )
+                        related = existing.get(name.casefold())
+                        if related is None:
+                            created = database.create_entity(
+                                related_kind,
+                                name,
+                                actor=args.actor,
+                                idempotency_key=f"{key}:related:{related_index}",
+                            )
+                            related = {"entity_id": created["entity_id"], "name": name}
+                            existing[name.casefold()] = related
+                        related_id = str(related["entity_id"])
+                        related_ids.append(related_id)
+                        for field_name, field_value in fields.items():
+                            if field_name == "name" or field_name not in related_questions:
+                                continue
+                            related_question = related_questions[field_name]
+                            recorded = database.record(
+                                related_id,
+                                related_question["question_id"],
+                                field_value,
+                                valid_from=str(
+                                    finding.get("observed_as_of")
+                                    or finding.get("source_published_at")
+                                    or today
+                                ),
+                                source_title=str(finding["source_title"]),
+                                source_type=str(finding.get("source_type") or "web"),
+                                url=str(finding["source_url"]),
+                                retrieved_at=today,
+                                excerpt=str(finding["excerpt"]),
+                                published_at=finding.get("source_published_at"),
+                                confidence=str(finding.get("confidence") or "medium"),
+                                temporal_basis="source",
+                                actor=args.actor,
+                                idempotency_key=f"{key}:related:{related_index}:{field_name}",
+                            )
+                            related_writes.append(
+                                {"entity_id": related_id, "question": field_name, **recorded}
+                            )
+                    parent_value: Any = related_ids if cardinality == "many" else related_ids[0]
+                    result = database.record(
+                        entity_id,
+                        question["question_id"],
+                        parent_value,
+                        valid_from=str(
+                            finding.get("observed_as_of")
+                            or finding.get("source_published_at")
+                            or today
+                        ),
+                        source_title=str(finding["source_title"]),
+                        source_type=str(finding.get("source_type") or "web"),
+                        url=str(finding["source_url"]),
+                        retrieved_at=today,
+                        excerpt=str(finding["excerpt"]),
+                        published_at=finding.get("source_published_at"),
+                        confidence=str(finding.get("confidence") or "medium"),
+                        temporal_basis="source",
+                        actor=args.actor,
+                        idempotency_key=key,
+                    )
+                    return {
+                        **result,
+                        "related_entity_ids": related_ids,
+                        "related_writes": related_writes,
+                    }
+
+                for index, finding in enumerate(findings):
+                    entity_id = str(finding.get("entity_id", ""))
+                    if entity_id not in target_ids:
+                        continue
+                    key = f"research:{args.kind}:{question['question_id']}:{entity_id}:{index}"
+                    if finding.get("status") == "not_found":
+                        result = database.record_not_found(
+                            entity_id,
+                            question["question_id"],
+                            f"Agent research for {question['name']}",
+                            str(finding.get("notes") or "No sufficient evidence found."),
+                            actor=args.actor,
+                            idempotency_key=key,
+                        )
+                    elif finding.get("status") == "answered":
+                        result = record_finding_value(finding, entity_id, key)
                     else:
                         continue
                     writes.append({"entity_id": entity_id, "status": finding["status"], **result})

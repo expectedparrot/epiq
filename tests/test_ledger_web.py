@@ -335,6 +335,61 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
     assert history[0]["command_transcript"][-1]["argv"][3] == "research"
 
 
+def test_workspace_agent_receives_cell_coverage(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    observed = {}
+
+    def capture_context(_goal, context, progress=None):
+        observed.update(context)
+        return {
+            "summary": "No changes needed.",
+            "entity_kinds": [],
+            "entities": [],
+            "questions": [],
+            "research": [],
+        }
+
+    database = LedgerDatabase(root, create=True, name="Coverage")
+    database.define_kind("Faculty")
+    answered = database.create_entity("Faculty", "Answered")["entity_id"]
+    missing = database.create_entity("Faculty", "Missing")["entity_id"]
+    question = database.define_question("birth_year", "Faculty", "Year")["question_id"]
+    database.record(
+        answered,
+        question,
+        1815,
+        valid_from="1815-01-01",
+        source_title="Biography",
+        source_type="web",
+        url="https://example.test/answered",
+        retrieved_at="2026-11-21",
+        excerpt="Born in 1815.",
+    )
+    database.record_not_found(
+        missing,
+        question,
+        "Missing birth year",
+        "No reliable source found",
+    )
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=capture_context))
+    job_id = client.post(
+        "/api/workspace-agent/jobs", json={"message": "What remains?"}
+    ).json()["job_id"]
+    for _ in range(100):
+        job = next(
+            item for item in client.get("/api/research/jobs").json() if item["job_id"] == job_id
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert observed["tables"][0]["questions"][0]["coverage"] == {
+        "answered": 1,
+        "not_found": 1,
+        "unasked": 0,
+    }
+
+
 def test_control_center_executes_schema_through_cli_and_keeps_exact_envelope(
     tmp_path: Path,
 ) -> None:
