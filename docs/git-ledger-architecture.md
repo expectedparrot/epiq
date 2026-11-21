@@ -83,12 +83,15 @@ written. Projection-local sequence numbers and SQLite row IDs never appear in th
 
 ## Canonical representation
 
-Transactions use UTF-8 JSON and RFC 8785 JSON Canonicalization Scheme bytes for hashing. Input
+Transactions use UTF-8 Epiq Canonical JSON 1 bytes for hashing: object keys are ordered
+lexicographically by Unicode code point, insignificant whitespace is absent, non-ASCII text is
+unescaped, and JSON numbers use Python's shortest round-trippable JSON representation. Input
 parsers reject duplicate object keys, non-finite numbers, invalid Unicode, and timestamps that
 cannot be normalized to an instant. Files end with one LF for ordinary text tooling; that LF is not
-part of the canonical digest.
+part of the canonical digest. This format is deliberately named and versioned so a future standards
+change cannot silently alter existing transaction hashes.
 
-The `digest` value is `sha256:<lowercase hex>` computed over the canonical document with its
+The `digest` value is `sha256:<lowercase hex>` computed over Epiq Canonical JSON 1 for the document with its
 top-level `digest` member omitted. A transaction ID collision with different canonical bytes is a
 hard integrity error. Re-reading identical bytes is idempotent.
 
