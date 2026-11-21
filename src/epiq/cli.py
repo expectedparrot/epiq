@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ from .edsl_export import write_edsl
 from .errors import EpiqError
 from .html import write_html
 from .importers import import_cham_corpus
+from .ledger import LedgerRepository
+from .ledger_projection import LedgerProjector
 from .operations import operation_catalog
 from .store import QUESTION_CHALLENGE_PROBLEMS, Store
 from .xlsx import write_xlsx
@@ -445,6 +448,8 @@ def _command_name(args: argparse.Namespace) -> str:
         parts.append(str(args.agent_command))
     elif args.command == "docs":
         parts.append(str(args.docs_command))
+    elif args.command == "ledger":
+        parts.append(str(args.ledger_command))
     return " ".join(parts)
 
 
@@ -656,6 +661,23 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("version", help="Report package and public contract versions")
     commands.add_parser("guide", help="Describe the complete Epiq workflow and boundaries")
     commands.add_parser("next", help="Return the safest useful next action for this project")
+
+    ledger_parser = commands.add_parser(
+        "ledger", help="Create, validate, and project a Git-native Epiq ledger"
+    )
+    ledger_commands = ledger_parser.add_subparsers(dest="ledger_command", required=True)
+    ledger_init = ledger_commands.add_parser("init", help="Create a ledger and genesis transaction")
+    ledger_init.add_argument("--path", default=".")
+    ledger_init.add_argument("--name", required=True)
+    ledger_init.add_argument("--project-id")
+    ledger_init.add_argument("--replica-id")
+    ledger_init.add_argument("--recorded-at")
+    for name in ("validate", "build", "status"):
+        command = ledger_commands.add_parser(name, help=f"{name.title()} a Git-native ledger")
+        command.add_argument("--path", default=".")
+        if name == "build":
+            command.add_argument("--force", action="store_true")
+            command.add_argument("--verify", action="store_true")
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1168,6 +1190,36 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         return docs_list_data() if args.docs_command == "list" else docs_show_data(args.name)
     if args.command == "agent" and args.agent_command == "schema":
         return schema_data(args.name)
+    if args.command == "ledger":
+        root = Path(args.path).expanduser().resolve()
+        if args.ledger_command == "init":
+            recorded_at = args.recorded_at or datetime.now(UTC).isoformat()
+            repository = LedgerRepository.initialize(
+                root,
+                args.name,
+                actor=args.actor,
+                recorded_at=recorded_at,
+                project_id=args.project_id,
+                replica_id=args.replica_id,
+            )
+            projection = LedgerProjector(repository).build()
+            return {
+                "ok": True,
+                "root": str(root),
+                "project": repository.config.__dict__,
+                "ledger": repository.validate(),
+                "projection": projection,
+            }
+        repository = LedgerRepository(root)
+        if args.ledger_command == "validate":
+            return {"ok": True, "root": str(root), **repository.validate()}
+        projector = LedgerProjector(repository)
+        if args.ledger_command == "status":
+            return {"root": str(root), **projector.status()}
+        result = projector.build(force=args.force)
+        if args.verify:
+            result = projector.verify()
+        return {"ok": True, "root": str(root), **result}
     if args.command == "use":
         database = Path(args.database).expanduser().resolve()
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)

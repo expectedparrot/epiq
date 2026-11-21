@@ -103,6 +103,11 @@ _BINDINGS = [
 ]
 
 _LOCAL_ONLY = [
+    (
+        "ledger",
+        "administrative",
+        "Git ledger creation and projection operate on a local repository checkout.",
+    ),
     ("migration-plan", "administrative", "Database-file migration inspection is server-local."),
     ("migrate", "administrative", "Hosted databases migrate under server lifecycle control."),
     ("import-bundle", "administrative", "Bundle upload needs a dedicated managed-project import."),
