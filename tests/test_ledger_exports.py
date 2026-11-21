@@ -119,6 +119,10 @@ def test_ledger_html_is_self_contained_deterministic_and_evidence_backed(
     assert "Acme has 42 employees and was founded by Ada." in content
     assert "https://example.test" in content
     assert "ledger-1.0" in content
+    assert "Portable snapshot · read only" in content
+    assert 'id="table-list"' in content
+    assert 'id="table-select"' not in content
+    assert "No database connection" not in content
 
     (database.path / ".epiq" / "projection.sqlite").unlink()
     rebuilt = export_ledger(database, tmp_path / "rebuilt.html", "html", kind="Company")

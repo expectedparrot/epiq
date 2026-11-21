@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from pathlib import Path
 from typing import Any
 
 from .edsl_export import write_edsl
 from .errors import EpiqError
-from .html import HTML
 from .ledger import canonical_bytes
 from .ledger_api import LedgerDatabase
+from .ledger_html import render_ledger_html
 
 
 def export_ledger(
@@ -121,8 +120,7 @@ def _html(database: LedgerDatabase, kind: str | None) -> str:
             "transaction_set_digest": database.repository.transaction_set_digest(transactions),
         },
     }
-    encoded = json.dumps(data, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
-    return HTML.replace("__DATA__", encoded)
+    return render_ledger_html(data)
 
 
 def _html_table(
