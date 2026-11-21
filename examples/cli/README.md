@@ -1,5 +1,9 @@
 # Learn Epiq from the command line
 
+> **Legacy SQLite examples.** These tutorials exercise the quarantined `--db` implementation and
+> remain as behavioral regression fixtures. New projects and coding agents should use the
+> Git-ledger workflow exposed by `epiq guide` and documented in the repository README.
+
 These are tutorials, not just sample databases. Each one starts with the question being modeled,
 explains how that question becomes entities, fields, evidence, and claims, and then builds the
 database one CLI command at a time.

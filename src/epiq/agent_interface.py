@@ -21,6 +21,8 @@ SCHEMA_NAMES = {
     "action": "action.schema.json",
     "agent-status": "agent-status.schema.json",
     "envelope": "envelope.schema.json",
+    "ledger-operation": "ledger-operation-1.schema.json",
+    "ledger-transaction": "ledger-transaction-1.schema.json",
 }
 DOC_NAMES = {
     "agent-interface": "agent-interface.md",
@@ -95,10 +97,10 @@ def capabilities_data() -> dict[str, Any]:
             "version": ["epiq", "version"],
             "capabilities": ["epiq", "capabilities"],
             "guide": ["epiq", "guide"],
-            "status": ["epiq", "agent", "status"],
-            "next": ["epiq", "next"],
+            "guide_topics": ["epiq", "guide", "<topic>"],
+            "project_status": ["epiq", "--project", "<directory>", "status"],
             "schema": ["epiq", "agent", "schema", "<name>"],
-            "doctor": ["epiq", "doctor"],
+            "doctor": ["epiq", "--project", "<directory>", "doctor"],
             "docs": ["epiq", "docs", "list"],
         },
         "schemas": sorted(SCHEMA_NAMES),
@@ -112,72 +114,140 @@ def capabilities_data() -> dict[str, Any]:
     }
 
 
-def guide_data() -> dict[str, Any]:
-    """Describe the complete Epiq lifecycle and execution boundary."""
-    return {
-        "schema_version": AGENT_SCHEMA_VERSION,
-        "lifecycle": [
+GUIDE_TOPICS: dict[str, dict[str, Any]] = {
+    "quickstart": {
+        "purpose": "Create or open a Git-ledger project and record one sourced fact.",
+        "commands": [
+            ["epiq", "--project", "research", "init", "--name", "Research"],
+            ["epiq", "--project", "research", "kind", "Company"],
+            ["epiq", "--project", "research", "entity", "Company", "Acme"],
+            [
+                "epiq",
+                "--project",
+                "research",
+                "question",
+                "employees",
+                "--for",
+                "Company",
+                "--type",
+                "Int",
+            ],
+            ["epiq", "--project", "research", "record", "..."],
+            ["epiq", "--project", "research", "matrix", "--kind", "Company"],
+            ["epiq", "--project", "research", "doctor"],
+        ],
+        "notes": [
+            "Use IDs returned by entity and question commands; do not invent them.",
+            "Use --actor and --idempotency-key on automated writes.",
+            "Run `epiq guide evidence` for the complete record contract.",
+        ],
+    },
+    "workflow": {
+        "purpose": "Follow the normal ledger-native research lifecycle.",
+        "stages": [
+            {"stage": "orient", "commands": [["epiq", "guide"], ["epiq", "status"]]},
             {
-                "stage": "select-project",
-                "purpose": "Select or initialize one SQLite research project.",
-                "commands": ["epiq db", "epiq use <path>", "epiq init --name <name>"],
+                "stage": "model",
+                "commands": [["epiq", "kind", "<kind>"], ["epiq", "question", "..."]],
             },
-            {
-                "stage": "design-schema",
-                "purpose": "Define entity tables, typed fields, relationships, and formulas.",
-                "commands": ["epiq schema", "epiq apply --input <project.json>"],
-            },
-            {
-                "stage": "populate-entities",
-                "purpose": "Create stable rows and aliases before researching their fields.",
-                "commands": ["epiq entity <kind> <name>", "epiq entity-alias <entity> <alias>"],
-            },
+            {"stage": "populate", "commands": [["epiq", "entity", "<kind>", "<name>"]]},
             {
                 "stage": "research",
-                "purpose": "Find gaps, generate bounded tasks, and record sourced findings.",
-                "commands": [
-                    "epiq gaps --kind <kind>",
-                    "epiq refresh-plan --kind <kind>",
-                    "epiq record ...",
-                ],
+                "commands": [["epiq", "record", "..."], ["epiq", "not-found", "..."]],
             },
-            {
-                "stage": "review-and-correct",
-                "purpose": (
-                    "Review proposals, contradictions, schema challenges, and duplicate identities."
-                ),
-                "commands": [
-                    "epiq claim-proposals",
-                    "epiq contradictions --kind <kind>",
-                    "epiq question-challenges",
-                ],
-            },
-            {
-                "stage": "maintain",
-                "purpose": "Refresh volatile facts and rematerialize stale derivations.",
-                "commands": [
-                    "epiq stale --kind <kind>",
-                    "epiq stale-derivations",
-                    "epiq materialize --kind <kind> --valid-from <date>",
-                ],
-            },
-            {
-                "stage": "export-and-protect",
-                "purpose": "Export projections and create recoverable project backups.",
-                "commands": [
-                    "epiq export ...",
-                    "epiq backup --output <path>",
-                    "epiq export-bundle --output <path>",
-                ],
-            },
+            {"stage": "review", "commands": [["epiq", "conflicts"], ["epiq", "proposals"]]},
+            {"stage": "verify", "commands": [["epiq", "doctor"], ["epiq", "build", "--verify"]]},
+            {"stage": "share", "commands": [["epiq", "remote", "publish", "--message", "..."]]},
         ],
-        "execution_boundary": {
-            "epiq": "Defines tasks, validates evidence and values, and owns database writes.",
-            "source_provider": "Discovers and captures sources but cannot write claims.",
-            "reasoning_backend": "Proposes typed findings but cannot write the database.",
+    },
+    "evidence": {
+        "purpose": "Record claims with bounded source evidence and explicit time semantics.",
+        "command": [
+            "epiq", "record", "--subject-id", "<entity-id>", "--question-id", "<question-id>",
+            "--value", "<json-value>", "--valid-from", "<date>", "--source-title", "<title>",
+            "--source-type", "<type>", "--url", "<url>", "--retrieved-at", "<date>",
+            "--excerpt", "<bounded-passage>", "--idempotency-key", "<stable-key>",
+        ],
+        "rules": [
+            "Never invent evidence or use not-found as a negative factual answer.",
+            "retrieved-at is when evidence was obtained; valid-from is when the fact became true.",
+            "Use propose/review when a human or another agent must approve the conclusion.",
+        ],
+    },
+    "git": {
+        "purpose": "Collaborate through Git while Epiq transaction IDs remain domain identities.",
+        "commands": [
+            ["epiq", "remote", "clone", "<url>", "--path", "<directory>"],
+            ["epiq", "remote", "fetch"],
+            ["git", "merge", "<remote-ref>"],
+            ["epiq", "merge-check"],
+            ["epiq", "conflicts"],
+            ["epiq", "remote", "publish", "--message", "<message>", "--pr"],
+        ],
+        "rules": [
+            "Fetch never silently integrates remote changes.",
+            "After merge or rebase, run merge-check before publishing.",
+            "Do not commit .epiq; it is a disposable local projection.",
+        ],
+    },
+    "recovery": {
+        "purpose": "Diagnose and recover without editing transaction files or SQLite directly.",
+        "commands": [
+            ["epiq", "validate"],
+            ["epiq", "build", "--force", "--verify"],
+            ["epiq", "doctor"],
+            ["epiq", "conflicts"],
+        ],
+        "rules": [
+            "Deleting .epiq/projection.sqlite is safe; deleting ledger files is not.",
+            "Resolve Git text conflicts explicitly, then let Epiq report domain conflicts.",
+            "Use corrective operations; never rewrite an acknowledged transaction.",
+        ],
+    },
+    "exports": {
+        "purpose": "Create deterministic projections without changing authoritative data.",
+        "commands": [
+            ["epiq", "export", "--format", "matrix-csv", "--kind", "<kind>", "--output", "<file>"],
+            ["epiq", "export", "--format", "claims-jsonl", "--output", "<file>"],
+            [
+                "epiq",
+                "export",
+                "--format",
+                "scenario-list",
+                "--kind",
+                "<kind>",
+                "--output",
+                "<file.ep>",
+            ],
+        ],
+    },
+}
+
+
+def guide_data(topic: str = "quickstart") -> dict[str, Any]:
+    """Return ledger-native, machine-readable guidance for one workflow topic."""
+    if topic not in GUIDE_TOPICS:
+        raise EpiqError(
+            "guide_topic_not_found",
+            f"Unknown guide topic: {topic}",
+            f"Available topics: {', '.join(sorted(GUIDE_TOPICS))}",
+        )
+    return {
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "architecture": {
+            "authority": "Git-versioned immutable transaction files",
+            "projection": ".epiq/projection.sqlite is disposable and must not be committed",
+            "selection": ["--project <directory>", "EPIQ_PROJECT", "epiq use-project <directory>"],
         },
-        "resume": "Run `epiq next` after every material stage.",
-        "documentation": {name: ["epiq", "docs", "show", name] for name in DOC_NAMES},
+        "topic": topic,
+        "available_topics": sorted(GUIDE_TOPICS),
+        "guidance": GUIDE_TOPICS[topic],
+        "more": ["epiq", "guide", "<topic>"],
+        "schemas": [
+            ["epiq", "agent", "schema", "ledger-transaction"],
+            ["epiq", "agent", "schema", "ledger-operation"],
+            ["epiq", "agent", "schema", "envelope"],
+        ],
     }
 
 

@@ -4,14 +4,15 @@ Epiq is agent-first. Every command emits one versioned JSON envelope to standard
 use the same envelope on standard error and exit nonzero. Treat `data` as the command result and
 execute only reviewed `next_steps`.
 
-Start with:
+The authoritative store is a Git-versioned directory of immutable transaction files. SQLite under
+`.epiq/` is a disposable projection; never edit it or commit it. Start with:
 
 ```bash
 epiq version
 epiq capabilities
 epiq guide
-epiq agent status
-epiq next
+epiq guide workflow
+epiq --project <directory> status
 ```
 
 Each next action provides an exact `argv` array and declares mutation, network, and approval
@@ -20,5 +21,6 @@ contracts. Human-readable output is opt-in through `--human`, `-H`, or a support
 format.
 
 Claims require evidence. External source providers and reasoning backends propose material; only
-Epiq validates and writes the database. Corrections are append-only events rather than edits to
-history.
+Epiq validates and appends ledger transactions. Corrections are new operations rather than edits to
+acknowledged transaction files. Use `epiq guide evidence`, `epiq guide git`, and `epiq guide
+recovery` for machine-readable task guidance.

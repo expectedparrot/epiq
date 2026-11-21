@@ -1,19 +1,20 @@
 # Epiq workflow
 
-Select one SQLite project, inspect its schema and context, then work through gaps and review queues
-without bypassing provenance.
+Select or initialize one Git-ledger project, define its entity kinds and typed questions, then append
+evidence-backed claims without bypassing provenance.
 
 ```bash
-epiq use research.sqlite
-epiq init --name "Research project"
-epiq schema
-epiq context
-epiq next
+epiq --project research init --name "Research project"
+epiq --project research kind Company
+epiq --project research entity Company Acme
+epiq --project research question employees --for Company --type Int
+epiq --project research record ...
+epiq --project research matrix --kind Company
 ```
 
-Define rows and typed fields before collecting evidence. Use `refresh-plan` to generate bounded
-external research tasks and `record` to atomically add a source and its supported answers. Use
-claim proposals for work that requires human review.
+Use IDs returned by the CLI rather than guessing them. `record` atomically captures bounded evidence
+and asserts its supported answer. Use proposals for conclusions that require review and `not-found`
+for an unsuccessful search, never as a negative factual answer.
 
-After every material stage, run `epiq next`. Before sharing or exporting a project, run `epiq
-doctor` and create a backup or project bundle.
+Before sharing, run `epiq doctor` and `epiq merge-check`. Publish Epiq-owned files with `epiq remote
+publish`; `.epiq/` remains local and disposable.

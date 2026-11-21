@@ -251,7 +251,16 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
         action for action in root._actions if isinstance(action, argparse._SubParsersAction)
     )
     summaries = {str(action.dest): action.help for action in subparsers._choices_actions}
-    if command is not None and command not in subparsers.choices:
+    ledger_parser = subparsers.choices["ledger"]
+    ledger_subparsers = next(
+        action
+        for action in ledger_parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    ledger_summaries = {
+        str(action.dest): action.help for action in ledger_subparsers._choices_actions
+    }
+    if command is not None and command not in subparsers.choices | ledger_subparsers.choices:
         raise EpiqError(
             "command_not_found",
             f"Unknown command: {command}",
@@ -304,7 +313,10 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
     }
     commands = []
     for name in names:
-        child = subparsers.choices[name]
+        is_ledger_command = name not in subparsers.choices
+        child = (
+            ledger_subparsers.choices[name] if is_ledger_command else subparsers.choices[name]
+        )
         groups = [
             {
                 "required": bool(group.required),
@@ -315,8 +327,18 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
         ]
         item: dict[str, Any] = {
             "name": name,
-            "summary": summaries.get(name),
-            "mutates_project": name in writes,
+            "summary": (ledger_summaries if is_ledger_command else summaries).get(name),
+            "mutates_project": name in writes
+            or name
+            in {
+                "kind",
+                "transact",
+                "remote",
+                "artifact-add",
+                "bundle-record",
+                "report-record",
+            },
+            "architecture": "git-ledger" if is_ledger_command else "shared-or-legacy",
         }
         if command is not None:
             item.update(
@@ -355,15 +377,18 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
             ],
         },
         "semantics": {
-            "source_of_truth": (
-                "append-only events and immutable evidence; matrices are projections"
-            ),
-            "writes": "validated and transactionally appended; corrections use retract/supersede",
+            "source_of_truth": "Git-versioned immutable JSON transaction files",
+            "projection": ".epiq/projection.sqlite is disposable and must not be committed",
+            "writes": "validated ledger transactions; corrections append explicit operations",
             "provenance": "claims require evidence; record atomically creates evidence and claims",
-            "idempotency": (
-                "entity compound identities, evidence content, and identical claims deduplicate"
-            ),
-            "database_resolution": ["--db", "EPIQ_DB", ".epiq/config.json", ".epiq/epiq.sqlite"],
+            "idempotency": "automated writes should provide stable --idempotency-key values",
+            "project_resolution": [
+                "--project <directory>",
+                "EPIQ_PROJECT",
+                "epiq use-project <directory>",
+                "current directory containing epiq.toml",
+            ],
+            "legacy_sqlite": "available only through explicit --db; not the target architecture",
             "time_fields": {
                 "retrieved_at": "when evidence was obtained",
                 "published_at": "when a source was published, if known",
@@ -423,57 +448,54 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
             "question.retire",
             "question.restore",
             "question.challenge",
-            "evidence.add",
+            "question.challenge_resolve",
+            "evidence.capture",
             "evidence.assess",
             "claim.assert",
-            "claim.derive",
-            "claim.evidence_link",
-            "claim.propose",
+            "claim.support",
             "claim.supersede",
             "claim.retract",
             "claim.validity_end",
+            "claim.review",
+            "derivation.declare",
+            "proposal.create",
+            "proposal.review",
             "research.not_found",
-            "report.generated",
+            "source.bundle_record",
+            "report.record",
         ],
         "document_schemas": {
+            "transaction": ["epiq", "agent", "schema", "ledger-transaction"],
+            "operation": ["epiq", "agent", "schema", "ledger-operation"],
+            "envelope": ["epiq", "agent", "schema", "envelope"],
             "apply": {
-                "project": {"name": "string"},
-                "entity_kinds": "string[]",
-                "entities": "[{kind,name?,attributes?,role?,identity?}]",
+                "architecture": "legacy-sqlite",
                 "questions": "[{name,subject_kind,value_type,definition?}]",
-                "aliases": "[{entity,alias}]",
-                "operations": "batch-write operations[]",
-            },
-            "batch_write_operations": {
-                "evidence.add": "{op,ref?,url?,source_type?,title,retrieved_at,excerpt,...}",
-                "claim.assert": "{op,subject,question,value,valid_from,evidence_refs,...}",
-            },
-            "question_definition": {
-                "label": "string",
-                "cardinality": "one|many",
-                "volatility": "stable|dynamic",
-                "freshness_days": "integer",
-                "research_guidance": "string",
-                "formula": (
-                    "{operation,inputs:string[],parameters?:object,confidence?:low|medium|high}"
-                ),
             },
         },
         "workflows": [
-            ["schema", "context", "gaps", "refresh-plan", "record"],
-            ["stale", "refresh-plan", "record", "delta"],
-            ["contradictions", "dossier", "supersede"],
-            ["stale-derivations", "dossier", "materialize"],
+            ["guide", "init", "kind", "entity", "question", "record", "doctor"],
+            ["remote fetch", "git merge", "merge-check", "conflicts", "remote publish"],
+            ["propose", "proposals", "review-proposal"],
+            ["derive", "derivations", "report-record", "export"],
         ],
         "common_errors": {
-            "project_not_found": "initialize or select a database",
-            "entity_not_found": "create the entity or use a returned suggestion",
-            "question_not_found": "define the question or inspect schema",
+            "ledger_not_initialized": "initialize or select a directory containing epiq.toml",
+            "entity_not_found": "create the entity or use an ID returned by Epiq",
+            "question_not_found": "define the question or use an ID returned by Epiq",
             "invalid_value": "match the question value_type",
             "evidence_required": "record evidence before asserting a claim",
-            "ambiguous_propagation": "resolve competing sources or restrict the path",
+            "projection_out_of_date": "run epiq build --force --verify",
+            "git_command_failed": "inspect Git state; integration is never silently forced",
         },
         "commands": commands,
+        "ledger_commands": [
+            {
+                "name": name,
+                "invocation": ["epiq", "--project", "<directory>", name],
+            }
+            for name in sorted(_PROMOTED_LEDGER_COMMANDS)
+        ],
         "agent_interface": capabilities_data(),
     }
 
@@ -724,7 +746,15 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     commands.add_parser("version", help="Report package and public contract versions")
-    commands.add_parser("guide", help="Describe the complete Epiq workflow and boundaries")
+    guide = commands.add_parser(
+        "guide", help="Return JSON-enveloped ledger-native usage guidance"
+    )
+    guide.add_argument(
+        "topic",
+        nargs="?",
+        default="quickstart",
+        help="quickstart, workflow, evidence, git, recovery, or exports",
+    )
     commands.add_parser("next", help="Return the safest useful next action for this project")
 
     ledger_parser = commands.add_parser(
@@ -1550,7 +1580,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     if args.command == "version":
         return version_data()
     if args.command == "guide":
-        return guide_data()
+        return guide_data(args.topic)
     if args.command == "docs":
         return docs_list_data() if args.docs_command == "list" else docs_show_data(args.name)
     if args.command == "agent" and args.agent_command == "schema":

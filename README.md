@@ -268,9 +268,11 @@ An agent can orient and resume without reading this README:
 epiq version
 epiq capabilities
 epiq guide
-epiq agent status
-epiq next
+epiq guide workflow
+epiq guide evidence
+epiq guide git
 epiq agent schema envelope
+epiq agent schema ledger-transaction
 epiq docs list
 ```
 
@@ -285,7 +287,8 @@ member unless the complete envelope is being discussed.
 Paste this into Codex, Claude Code, or another terminal-capable coding agent:
 
 ```text
-Use the Epiq CLI as the interface to Epiq; do not edit its SQLite database directly.
+Use the Epiq CLI as the interface to Epiq. The authoritative datastore is the project's immutable
+Git ledger. Never edit transaction files or `.epiq/projection.sqlite` directly.
 
 Check that `uv --version` works; if it does not, install `uv` from
 https://docs.astral.sh/uv/getting-started/installation/. Then install the current GitHub version of
@@ -300,23 +303,33 @@ Orient yourself with:
   epiq version
   epiq capabilities
   epiq guide
-  epiq db
-  epiq agent status
+  epiq guide workflow
+  epiq guide evidence
+  epiq guide git
 
 Commands return a JSON envelope. Read results from `data`, failures from `errors`, and inspect the
 safety metadata in `next_steps` before executing one. To learn exact syntax, run
 `epiq capabilities --command COMMAND`; do not guess flags or input shapes.
 
-Select a database once with `epiq use PATH.sqlite`. Inspect it with `schema`, `context`,
-`agent status`, and `next`. Record factual values with real evidence, retrieval dates, and supporting
-excerpts—prefer the atomic `record` command. Use `not-found` for an inconclusive search, never as a
-negative answer. Identify writes as, for example, `epiq --actor agent:codex record ...`.
+Clone or initialize a project directory and select it with `epiq use-project DIRECTORY`,
+`EPIQ_PROJECT`, or `--project DIRECTORY`. Record factual values with real evidence, retrieval dates,
+and bounded excerpts—prefer the atomic `record` command. Use IDs returned by Epiq, stable
+idempotency keys, and an actor such as `agent:codex`. Use `not-found` for an inconclusive search,
+never as a negative answer.
 
-After material changes, run `epiq doctor`. Never invent evidence, expose secrets, overwrite
-an existing project, or commit databases and `.epiq/config.json` unless explicitly asked.
+After material changes, run `epiq doctor`. After integrating Git changes, run `epiq merge-check`
+and inspect `epiq conflicts`. Never invent evidence, expose secrets, rewrite acknowledged
+transactions, or commit `.epiq/`.
 ```
 
-## Tutorial: build a town database
+## Legacy SQLite tutorial and reference
+
+The remaining long-form tutorial documents the quarantined `--db` interface and older examples.
+It is retained temporarily as a behavioral reference, not as guidance for new projects or agents.
+For the authoritative workflow, use `epiq guide`, the Git-native section above, and
+[the ledger architecture](docs/git-ledger-architecture.md).
+
+### Tutorial: build a town database
 
 ### 1. Select a database
 
@@ -1791,7 +1804,7 @@ Epiq is an executable vertical slice, not yet a production database server. In p
 - there are no web searches, scrapers, or LLM calls inside the CLI;
 - question replacement migrations are not yet exposed as a full CLI workflow;
 - EpiQL implements only question declarations and a narrow count-over-filter derivation;
-- SQLite is canonical; there is not yet a separate append-only JSONL interchange format.
+- legacy `--db` commands remain during the cutover but are not authoritative for Git-ledger projects.
 
 These boundaries are intentional enough to make experiments honest, but not promises that the
 interface is finished. See [ROADMAP.md](ROADMAP.md) for the production sequence and release gates.
