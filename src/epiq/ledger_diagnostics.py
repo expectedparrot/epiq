@@ -19,6 +19,7 @@ def diagnose(root: str | Path, *, rebuild: bool = False) -> dict[str, Any]:
     projector = LedgerProjector(repository)
     build = projector.build(force=rebuild)
     projection = projector.verify()
+    projection["semantic_fingerprint"] = projector.semantic_fingerprint()
     with sqlite3.connect(projector.path) as connection:
         foreign_keys = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
         conflicts = [

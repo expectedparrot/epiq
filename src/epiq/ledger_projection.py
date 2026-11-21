@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -176,6 +177,44 @@ class LedgerProjector:
                 "Run epiq build --force to rebuild the disposable projection.",
             )
         return {**actual, "verified": True}
+
+    def semantic_fingerprint(self) -> str:
+        """Hash every application table and view independent of SQLite file layout."""
+        if not self.path.exists():
+            raise EpiqError("projection_not_ready", "SQLite projection is missing")
+        objects: list[dict[str, Any]] = []
+        with self._connect() as connection:
+            definitions = connection.execute(
+                """SELECT name,type FROM sqlite_master
+                   WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'
+                   ORDER BY name"""
+            ).fetchall()
+            for definition in definitions:
+                name = str(definition["name"])
+                columns = [
+                    [
+                        int(row[0]),
+                        str(row[1]),
+                        str(row[2]),
+                        int(row[3]),
+                        row[4],
+                        int(row[5]),
+                    ]
+                    for row in connection.execute(f'PRAGMA table_info("{name}")')
+                ]
+                rows = [
+                    list(row) for row in connection.execute(f'SELECT * FROM "{name}"')
+                ]
+                rows.sort(key=canonical_bytes)
+                objects.append(
+                    {
+                        "name": name,
+                        "type": str(definition["type"]),
+                        "columns": columns,
+                        "rows": rows,
+                    }
+                )
+        return "sha256:" + hashlib.sha256(canonical_bytes(objects)).hexdigest()
 
     def dry_run(self, transaction: Transaction) -> None:
         """Validate one candidate against current state, rolling every projection write back."""

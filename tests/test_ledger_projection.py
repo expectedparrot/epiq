@@ -192,6 +192,7 @@ def test_projection_is_independent_of_transaction_discovery_order(tmp_path: Path
     paths = repository.transaction_paths()
     expected_ids = [item.transaction_id for item in repository.ordered()]
     expected_snapshot: dict[str, object] | None = None
+    expected_fingerprint: str | None = None
 
     for seed in range(12):
         shuffled = paths.copy()
@@ -201,10 +202,13 @@ def test_projection_is_independent_of_transaction_discovery_order(tmp_path: Path
         assert [item.transaction_id for item in repository.ordered()] == expected_ids
         projector.build(force=True)
         current = semantic_snapshot(projector)
+        current_fingerprint = projector.semantic_fingerprint()
         if expected_snapshot is None:
             expected_snapshot = current
+            expected_fingerprint = current_fingerprint
         else:
             assert current == expected_snapshot
+            assert current_fingerprint == expected_fingerprint
 
 
 def test_clean_checkout_rebuilds_identical_projection(tmp_path: Path) -> None:
@@ -226,3 +230,4 @@ def test_clean_checkout_rebuilds_identical_projection(tmp_path: Path) -> None:
     assert result["mode"] == "rebuild"
     assert clean_projector.verify()["verified"] is True
     assert semantic_snapshot(clean_projector) == expected
+    assert clean_projector.semantic_fingerprint() == projector.semantic_fingerprint()

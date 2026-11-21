@@ -23,5 +23,6 @@ def test_diagnostics_are_offline_and_rebuild_disposable_projection(tmp_path: Pat
     assert result["clean"] is True
     assert result["build_mode"] == "rebuild"
     assert result["projection"]["verified"] is True
+    assert result["projection"]["semantic_fingerprint"].startswith("sha256:")
     assert projection.exists()
     assert repository.validate()["transactions"] == 1
