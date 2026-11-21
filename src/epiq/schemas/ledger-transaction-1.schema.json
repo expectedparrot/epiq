@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://expectedparrot.com/schemas/epiq/ledger-transaction-1.json",
+  "title": "Epiq Ledger Transaction v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "transaction_id",
+    "replica_id",
+    "actor",
+    "recorded_at",
+    "parents",
+    "operations",
+    "digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "project_id": {"type": "string", "pattern": "^prj_[A-Za-z0-9_-]+$"},
+    "transaction_id": {
+      "type": "string",
+      "pattern": "^txn_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "replica_id": {"type": "string", "pattern": "^rep_[A-Za-z0-9_-]+$"},
+    "actor": {"type": "string", "minLength": 1, "maxLength": 512},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "parents": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^txn_[0-9A-HJKMNP-TV-Z]{26}$"},
+      "uniqueItems": true
+    },
+    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 512},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "ledger-operation-1.schema.json"}
+    },
+    "metadata": {"type": "object", "default": {}},
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

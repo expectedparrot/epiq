@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://expectedparrot.com/schemas/epiq/ledger-operation-1.json",
+  "title": "Epiq Ledger Operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation_id", "type", "version", "payload"],
+  "properties": {
+    "operation_id": {
+      "type": "string",
+      "pattern": "^op_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "type": {
+      "enum": [
+        "project.initialize",
+        "entity_kind.define",
+        "entity.create",
+        "entity.alias",
+        "entity.merge",
+        "entity.retire",
+        "entity.restore",
+        "question.define",
+        "question.evolve",
+        "question.retire",
+        "question.restore",
+        "question.challenge",
+        "question.challenge_resolve",
+        "evidence.capture",
+        "evidence.assess",
+        "claim.assert",
+        "claim.support",
+        "claim.supersede",
+        "claim.retract",
+        "claim.validity_end",
+        "claim.review",
+        "derivation.declare",
+        "proposal.create",
+        "proposal.review",
+        "research.not_found",
+        "source.bundle_record",
+        "report.record"
+      ]
+    },
+    "version": {"const": 1},
+    "requires": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "default": []
+    },
+    "payload": {"type": "object"},
+    "metadata": {"type": "object", "default": {}}
+  }
+}
