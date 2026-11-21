@@ -5263,10 +5263,6 @@ function WorkspaceAgentPanel({
                         </div>
                       ))}
                       <p>Nothing has been added yet. Approval creates this schema and starts the proposed research.</p>
-                      <div className="workspace-plan-actions">
-                        <button className="primary" onClick={() => void onApprove(job.job_id)}>Approve and populate</button>
-                        <button onClick={() => void onReject(job.job_id)}>Dismiss</button>
-                      </div>
                     </div>
                   )}
                   {job.approval_status === "rejected" && (
@@ -5275,12 +5271,18 @@ function WorkspaceAgentPanel({
                 </>
               )}
               {job.command_transcript && job.command_transcript.length > 0 && (
-                <details className="agent-command-transcript" open={job.approval_status === "pending"}>
+                <details className="agent-command-transcript">
                   <summary>{job.command_transcript.length} proposed CLI command{job.command_transcript.length === 1 ? "" : "s"}</summary>
                   {job.command_transcript.map((command, index) => (
                     <pre key={`${job.job_id}:command:${index}`}><code>$ {command.argv.map((part) => JSON.stringify(part)).join(" ")}</code></pre>
                   ))}
                 </details>
+              )}
+              {job.approval_status === "pending" && (
+                <div className="workspace-plan-actions">
+                  <button className="primary" onClick={() => void onApprove(job.job_id)}>Approve plan</button>
+                  <button onClick={() => void onReject(job.job_id)}>Dismiss</button>
+                </div>
               )}
               {job.command_results && job.command_results.length > 0 && (
                 <details className="agent-command-transcript">
