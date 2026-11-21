@@ -482,6 +482,43 @@ def test_control_center_executes_schema_through_cli_and_keeps_exact_envelope(
     assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
 
 
+def test_control_center_yolo_mode_applies_plan_without_separate_approval(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+
+    def schema_only(_goal, _context, progress=None):
+        return {
+            "summary": "Create a company table immediately.",
+            "entity_kinds": ["Company"],
+            "entities": [{"kind": "Company", "name": "Acme"}],
+            "questions": [],
+            "research": [],
+        }
+
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=schema_only))
+    client.post("/api/project", json={"name": "YOLO control center"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Add Acme", "auto_approve": True},
+    ).json()
+    for _ in range(100):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"} and job.get("approval_status") != "applying":
+            break
+        time.sleep(0.01)
+
+    assert job["status"] == "completed"
+    assert job["approval_status"] == "approved"
+    assert job["auto_approve"] is True
+    assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
+    assert any("YOLO mode enabled" in item["message"] for item in job["messages"])
+
+
 def test_web_matrix_resolves_references_and_preserves_derivations(tmp_path: Path) -> None:
     root = tmp_path / "project"
     database = LedgerDatabase(root, create=True, name="Relationships")

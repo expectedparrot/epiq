@@ -1,8 +1,15 @@
 import json
+import subprocess
 
 import pytest
 
-from epiq.research import OpenAIResearchRunner, OpenAIWorkspaceAgentRunner, _parse_values
+from epiq.research import (
+    EPIQ_PI_SYSTEM_PROMPT,
+    OpenAIResearchRunner,
+    OpenAIWorkspaceAgentRunner,
+    PiWorkspaceAgentRunner,
+    _parse_values,
+)
 
 
 class _StreamingResponse:
@@ -163,3 +170,50 @@ def test_workspace_planning_does_not_enable_web_search(monkeypatch) -> None:
     assert "tools" not in captured["payload"]
     assert "Do not perform web research during this planning step" in captured["payload"]["input"]
     assert result == plan
+
+
+def test_pi_workspace_agent_uses_persistent_tool_free_session(tmp_path, monkeypatch) -> None:
+    plan = {
+        "summary": "Add an exact affiliation field.",
+        "entity_kinds": [],
+        "entities": [],
+        "questions": [],
+        "research": [],
+    }
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(plan), stderr="")
+
+    monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
+    progress = []
+    runner = PiWorkspaceAgentRunner(tmp_path, model="openai/gpt-6.2-astra")
+
+    result = runner(
+        "Add an NBER member field",
+        {"project": {"project_id": "prj_test"}, "tables": []},
+        progress.append,
+    )
+
+    command = captured["command"]
+    assert result == plan
+    assert command[0] == "pi"
+    assert command[command.index("--session-id") + 1] == "epiq-control-center"
+    assert "--no-builtin-tools" in command
+    assert command[command.index("--model") + 1] == "openai/gpt-6.2-astra"
+    assert command[command.index("--system-prompt") + 1] == EPIQ_PI_SYSTEM_PROMPT
+    assert "institutional taxonomies" in EPIQ_PI_SYSTEM_PROMPT
+    assert captured["kwargs"]["cwd"] == tmp_path.resolve()
+    assert any("persistent Pi agent" in item for item in progress)
+
+
+def test_pi_workspace_agent_rejects_non_json_output(tmp_path, monkeypatch) -> None:
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="I would add a field.", stderr="")
+
+    monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="invalid workspace plan"):
+        PiWorkspaceAgentRunner(tmp_path)("Add a field", {"project": {}, "tables": []})

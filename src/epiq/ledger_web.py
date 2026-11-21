@@ -23,7 +23,7 @@ from .ledger_api import LedgerDatabase
 from .ledger_diagnostics import diagnose
 from .research import (
     OpenAIResearchRunner,
-    OpenAIWorkspaceAgentRunner,
+    PiWorkspaceAgentRunner,
     ResearchRunner,
     WorkspaceAgentRunner,
 )
@@ -130,6 +130,7 @@ class NotFoundCreate(BaseModel):
 
 class WorkspaceAgentCreate(BaseModel):
     message: str = Field(min_length=1)
+    auto_approve: bool = False
 
 
 def create_ledger_app(
@@ -148,7 +149,7 @@ def create_ledger_app(
     app = FastAPI(title="Epiq", version="0.1.0")
     app.state.project = root
     app.state.project_open = root.exists()
-    app.state.workspace_agent_runner = workspace_agent_runner or OpenAIWorkspaceAgentRunner()
+    app.state.workspace_agent_runner = workspace_agent_runner or PiWorkspaceAgentRunner(root)
     app.state.research_runner = research_runner or OpenAIResearchRunner()
     app.state.cli_execution = research_runner is None
     app.state.research_jobs: dict[str, dict[str, Any]] = {}
@@ -372,7 +373,7 @@ def create_ledger_app(
         update_job(job_id, status="running", started_at=now())
         try:
             current = database()
-            progress("Designing a bounded, additive workspace plan")
+            progress("Thinking through your request")
             context = workspace_context(current)
             plan = app.state.workspace_agent_runner(message, context, progress)
             entities = list(plan["entities"])[:15]
@@ -423,6 +424,13 @@ def create_ledger_app(
                 command_transcript=plan_commands(plan),
                 finished_at=now(),
             )
+            with app.state.research_lock:
+                auto_approve = bool(app.state.research_jobs[job_id].get("auto_approve"))
+                if auto_approve:
+                    app.state.research_jobs[job_id]["approval_status"] = "applying"
+            if auto_approve:
+                progress("YOLO mode enabled · applying the proposed CLI plan automatically")
+                apply_workspace_plan(job_id)
         except Exception as error:
             update_job(job_id, status="failed", error=str(error), finished_at=now())
 
@@ -606,6 +614,16 @@ def create_ledger_app(
                         if app.state.research_jobs[job_id].get("cancel_requested"):
                             update_job(job_id, status="cancelled", finished_at=now())
                             return
+                    question_name = (
+                        argv[argv.index("--question") + 1]
+                        if "--question" in argv
+                        else "field"
+                    )
+                    named_targets = argv.count("--entity-name")
+                    progress(
+                        f"Researching {question_name}"
+                        + (f" across {named_targets} rows" if named_targets else "")
+                    )
                     result = execute_cli(argv)
                     data = result.get("data", {})
                     writes = data.get("writes", []) if isinstance(data, dict) else []
@@ -1186,6 +1204,7 @@ def create_ledger_app(
             "mode": "workspace_agent",
             "instructions": body.message,
             "user_message": body.message,
+            "auto_approve": body.auto_approve,
             "status": "queued",
             "total": 0,
             "completed": 0,

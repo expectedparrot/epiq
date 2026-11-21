@@ -1779,6 +1779,13 @@ decaying claim confidence.
 `refresh-plan` turns those conditions into stable JSON tasks with typed questions, suggested search
 queries, interpretation guidance, existing values, and source URLs for an external research agent.
 
+The ledger web Control Center uses a persistent, project-scoped [Pi](https://pi.dev/) session for
+planning. Pi runs without builtin shell or filesystem tools; it receives the current Epiq snapshot
+and an Epiq-specific system prompt, while all mutations remain explicit validated `epiq` CLI
+commands. Configure the frontier planning model with `EPIQ_PI_MODEL` (default
+`openai/gpt-6.2-astra`) and reasoning level with `EPIQ_PI_THINKING` (default `high`). Repetitive
+row research remains separately configurable through `EPIQ_RESEARCH_MODEL`.
+
 Background research jobs and provisional entity/field suggestions are persisted in the project
 database. Completed review queues therefore survive a server restart. Startup recovers every queued
 or running job, including jobs older than the recent 200-job activity window. Interrupted jobs become

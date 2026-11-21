@@ -1923,7 +1923,18 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     entity_id = str(finding.get("entity_id", ""))
                     if entity_id not in target_ids:
                         continue
-                    key = f"research:{args.kind}:{question['question_id']}:{entity_id}:{index}"
+                    finding_digest = hashlib.sha256(
+                        json.dumps(
+                            finding,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        ).encode()
+                    ).hexdigest()[:20]
+                    key = (
+                        f"research:{args.kind}:{question['question_id']}:"
+                        f"{entity_id}:{index}:{finding_digest}"
+                    )
                     if finding.get("status") == "not_found":
                         result = database.record_not_found(
                             entity_id,

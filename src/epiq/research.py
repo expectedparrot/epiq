@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -234,6 +235,114 @@ WORKSPACE_PLAN_SCHEMA = {
         },
     },
 }
+
+EPIQ_PI_SYSTEM_PROMPT = """You are the persistent Control Center agent for an Epiq project.
+Epiq is an evidence-backed, Git-ledger database. The user's durable intent matters more than a
+literal reading of one message. Maintain continuity across turns, but treat the current workspace
+snapshot in each turn as authoritative.
+
+Design explicit, additive Epiq CLI plans. Before choosing a schema, critique whether it represents
+the user's actual concept. Detect ambiguous umbrella terms, institutional taxonomies, and lossy
+booleans. Prefer an exact categorical status plus a derived convenience field when an external
+organization uses multiple official categories. Never treat a different positive affiliation
+category as a negative. Absence of evidence is unknown, not false. If ambiguity would materially
+change the schema, say so in the summary and propose the information-preserving representation.
+
+Reuse existing schema and rows. Model durable things as entity rows, typed questions as columns,
+and repeated things as related tables with Ref[Kind]. Research guidance must define positive,
+negative, and unknown evidence standards. Do not claim research is complete during planning.
+
+Return only one JSON object matching the schema supplied in the user message. Do not use markdown
+fences or commentary outside the JSON object. The application—not you—validates and executes every
+CLI operation, so you have no shell or filesystem tools.
+"""
+
+
+class PiWorkspaceAgentRunner:
+    """Plan workspace changes in one persistent, tool-free Pi session per project."""
+
+    _locks: dict[str, threading.Lock] = {}
+    _locks_guard = threading.Lock()
+
+    def __init__(
+        self,
+        working_directory: str | Path,
+        *,
+        model: str | None = None,
+        executable: str | None = None,
+        session_id: str = "epiq-control-center",
+    ) -> None:
+        self.working_directory = Path(working_directory).resolve()
+        self.model = model or os.environ.get("EPIQ_PI_MODEL", "openai/gpt-6.2-astra")
+        self.executable = executable or os.environ.get("EPIQ_PI_EXECUTABLE", "pi")
+        self.session_id = session_id
+        self.session_directory = self.working_directory / ".epiq" / "pi-sessions"
+
+    def __call__(
+        self,
+        goal: str,
+        context: dict[str, Any],
+        progress: Progress | None = None,
+    ) -> dict[str, Any]:
+        self.session_directory.mkdir(parents=True, exist_ok=True)
+        if progress:
+            progress(f"Consulting persistent Pi agent · {self.model}")
+        prompt = f"""User direction: {goal}
+
+Current authoritative Epiq workspace snapshot:
+{json.dumps(context, sort_keys=True)}
+
+Create the next bounded plan. You may propose only additive entity kinds, entities, questions, and
+research requests. Question names must be snake_case. Use value types such as String, Bool, Int,
+Float, Year, Date, URL, Image, Probability, Enum[a,b], Quantity[USD], and Ref[Kind]. Every research
+request must use an exact table kind, exact question name, and existing or proposed row names.
+
+Required JSON Schema:
+{json.dumps(WORKSPACE_PLAN_SCHEMA, sort_keys=True)}
+"""
+        command = [
+            self.executable,
+            "--print",
+            "--no-builtin-tools",
+            "--no-extensions",
+            "--no-skills",
+            "--no-context-files",
+            "--model",
+            self.model,
+            "--thinking",
+            os.environ.get("EPIQ_PI_THINKING", "high"),
+            "--system-prompt",
+            EPIQ_PI_SYSTEM_PROMPT,
+            "--session-id",
+            self.session_id,
+            "--session-dir",
+            str(self.session_directory),
+            prompt,
+        ]
+        lock_key = str(self.session_directory / self.session_id)
+        with self._locks_guard:
+            lock = self._locks.setdefault(lock_key, threading.Lock())
+        with lock:
+            completed = subprocess.run(
+                command,
+                cwd=self.working_directory,
+                text=True,
+                capture_output=True,
+                timeout=900,
+                check=False,
+            )
+        if completed.returncode:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "Pi failed"
+            raise RuntimeError(f"Pi workspace agent failed: {detail[-2000:]}")
+        text = completed.stdout.strip()
+        try:
+            start, end = text.index("{"), text.rindex("}") + 1
+            plan = json.loads(text[start:end])
+        except (ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Pi returned an invalid workspace plan: {text[-2000:]}") from error
+        if progress:
+            progress("Pi reviewed the intent and proposed the next steps")
+        return plan
 
 
 class CodexResearchRunner:

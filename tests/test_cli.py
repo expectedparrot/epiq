@@ -182,6 +182,61 @@ def test_ledger_research_resolves_reference_objects_into_related_rows(
     assert credential["cells"][related_id][graduation_question][0]["value"] == 1835
 
 
+def test_ledger_research_allows_distinct_later_findings_for_same_cell(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Repeated research")
+    database.define_kind("Company")
+    entity_id = database.create_entity("Company", "Acme")["entity_id"]
+    question_id = database.define_question("website", "Company", "URL")["question_id"]
+    calls = 0
+
+    class FakeRunner:
+        def __call__(self, _kind, _question, entities):
+            nonlocal calls
+            calls += 1
+            return [
+                {
+                    "entity_id": entities[0]["entity_id"],
+                    "status": "answered",
+                    "value": f"https://acme.example/source-{calls}",
+                    "source_title": f"Acme source {calls}",
+                    "source_url": f"https://acme.example/source-{calls}",
+                    "source_type": "web",
+                    "excerpt": f"Independent source {calls}.",
+                    "confidence": "high",
+                    "source_published_at": None,
+                    "observed_as_of": "2026-11-21",
+                }
+            ]
+
+    monkeypatch.setattr("epiq.cli.OpenAIResearchRunner", FakeRunner)
+    command = [
+        "--project",
+        str(root),
+        "research",
+        "--kind",
+        "Company",
+        "--question",
+        "website",
+        "--entity-name",
+        "Acme",
+        "--mode",
+        "add_evidence",
+    ]
+    main(command)
+    _data(capsys)
+    main(command)
+    _data(capsys)
+
+    claims = database.matrix("Company")["cells"][entity_id][question_id]
+    assert [item["value"] for item in claims] == [
+        "https://acme.example/source-1",
+        "https://acme.example/source-2",
+    ]
+
+
 def test_capabilities_are_machine_readable_without_a_project(tmp_path: Path, capsys) -> None:
     missing = tmp_path / "missing.sqlite"
     main(["--db", str(missing), "capabilities", "--command", "record"])

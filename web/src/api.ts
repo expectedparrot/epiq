@@ -104,6 +104,7 @@ export interface QuestionChallenge {
 
 export interface ResearchJob {
   job_id: string;
+  created_at?: string;
   entity_kind: string;
   question_id: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -151,7 +152,8 @@ export interface ResearchJob {
     research: Array<{ kind: string; question: string; entity_names: string[] }>;
   };
   child_job_ids?: string[];
-  approval_status?: "pending" | "approved" | "rejected";
+  approval_status?: "pending" | "applying" | "approved" | "rejected";
+  auto_approve?: boolean;
   estimated_research_cells?: number;
   command_transcript?: Array<{ argv: string[]; status: "proposed" }>;
   command_results?: Array<{ argv: string[]; result: Record<string, unknown> }>;

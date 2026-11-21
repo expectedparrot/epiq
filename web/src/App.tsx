@@ -584,9 +584,10 @@ export default function App() {
     await loadMatrix();
     await loadReviewItems();
   };
-  const directWorkspaceAgent = async (message: string) => {
+  const directWorkspaceAgent = async (message: string, autoApprove: boolean) => {
     const job = await post<ResearchJob>("/api/workspace-agent/jobs", {
       message,
+      auto_approve: autoApprove,
     });
     setJobs((current) => mergeJobs(current, [job]));
     jobsRef.current = mergeJobs(jobsRef.current, [job]);
@@ -4919,7 +4920,7 @@ function WorkspaceAgentPanel({
   draft: string;
   onDraftConsumed: () => void;
   onClose: () => void;
-  onSend: (message: string) => Promise<void>;
+  onSend: (message: string, autoApprove: boolean) => Promise<void>;
   onCancel: (jobId: string) => Promise<void>;
   onApprove: (jobId: string) => Promise<void>;
   onReject: (jobId: string) => Promise<void>;
@@ -4927,6 +4928,9 @@ function WorkspaceAgentPanel({
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [yoloMode, setYoloMode] = useState(
+    () => window.localStorage.getItem("epiq-control-center-yolo") === "true",
+  );
   const listRef = useRef<HTMLDivElement>(null);
   const followConversationTail = useRef(true);
   useEffect(() => {
@@ -4935,12 +4939,26 @@ function WorkspaceAgentPanel({
     onDraftConsumed();
   }, [draft, onDraftConsumed]);
   const ordered = jobs
-    .filter((job) => job.job_type === "workspace_agent");
+    .map((job, index) => ({ job, index }))
+    .filter(({ job }) => job.job_type === "workspace_agent")
+    .sort((left, right) => {
+      const leftLive = left.job.created_at ? 1 : 0;
+      const rightLive = right.job.created_at ? 1 : 0;
+      if (leftLive !== rightLive) return leftLive - rightLive;
+      if (left.job.created_at && right.job.created_at) {
+        return left.job.created_at.localeCompare(right.job.created_at);
+      }
+      return left.index - right.index;
+    })
+    .map(({ job }) => job);
   const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
   useEffect(() => {
     const list = listRef.current;
     if (list && followConversationTail.current) {
-      list.scrollTo({ top: list.scrollHeight });
+      const frame = window.requestAnimationFrame(() => {
+        list.scrollTop = list.scrollHeight;
+      });
+      return () => window.cancelAnimationFrame(frame);
     }
   }, [jobs]);
   const submit = async (event: FormEvent) => {
@@ -4951,7 +4969,7 @@ function WorkspaceAgentPanel({
     setSendError("");
     followConversationTail.current = true;
     try {
-      await onSend(value);
+      await onSend(value, yoloMode);
       setMessage("");
     } catch (error) {
       setSendError(error instanceof Error ? error.message : "Request failed");
@@ -5016,6 +5034,11 @@ function WorkspaceAgentPanel({
               </div>
               {job.assistant_summary ? <p>{job.assistant_summary}</p> : (
                 <p>{job.messages.at(-1)?.message ?? "Preparing the workspace…"}</p>
+              )}
+              {isWorking && job.assistant_summary && job.messages.at(-1)?.message && (
+                <small className="agent-live-status">
+                  {job.messages.at(-1)?.message}
+                </small>
               )}
               {job.workspace_plan && (
                 <>
@@ -5116,9 +5139,28 @@ function WorkspaceAgentPanel({
           }}
         />
         <div>
-          <small>Enter to send · Shift+Enter for a new line</small>
+          <label
+            className={`yolo-toggle ${yoloMode ? "enabled" : ""}`}
+            title="Execute proposed CLI commands immediately without a separate approval step"
+          >
+            <input
+              type="checkbox"
+              checked={yoloMode}
+              onChange={(event) => {
+                const enabled = event.target.checked;
+                setYoloMode(enabled);
+                window.localStorage.setItem(
+                  "epiq-control-center-yolo",
+                  String(enabled),
+                );
+              }}
+            />
+            <span>YOLO mode</span>
+            <small>{yoloMode ? "Build immediately" : "Ask before building"}</small>
+          </label>
           <button disabled={sending || !message.trim()}>{sending ? "Starting…" : "Send direction ✦"}</button>
         </div>
+        <small className="composer-key-hint">Enter to send · Shift+Enter for a new line</small>
         {sendError && <div className="form-error">{sendError}</div>}
       </form>
     </aside>
