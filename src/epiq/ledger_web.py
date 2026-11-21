@@ -103,6 +103,15 @@ class ChallengeResolveCreate(BaseModel):
     idempotency_key: str | None = None
 
 
+class NotFoundCreate(BaseModel):
+    subject: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    notes: str = Field(min_length=1)
+    actor: str = "human:web"
+    idempotency_key: str | None = None
+
+
 def create_ledger_app(
     project: str | Path | None = None, frontend: str | Path | None = None
 ) -> FastAPI:
@@ -381,6 +390,18 @@ def create_ledger_app(
     def research_jobs() -> list[dict[str, Any]]:
         return []
 
+    @app.post("/api/research/not-found", status_code=201)
+    def not_found(body: NotFoundCreate) -> dict[str, str]:
+        result = database().record_not_found(
+            body.subject,
+            body.question,
+            body.query,
+            body.notes,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"task_id": result["outcome_id"], "state": "NotFound"}
+
     if frontend_path.exists():
         assets = frontend_path / "assets"
         if assets.exists():
@@ -402,6 +423,9 @@ def create_ledger_app(
 
 def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[str, Any]:
     questions = projection["questions"]
+    outcomes: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in database.research_outcomes(kind=projection["kind"]):
+        outcomes.setdefault((item["subject_id"], item["question_id"]), []).append(item)
     evidence = {
         item["evidence_id"]: item
         for item in database.evidence(
@@ -420,7 +444,16 @@ def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[st
         for question in questions:
             claims = projection["cells"][entity["entity_id"]][question["question_id"]]
             values = [claim["value"] for claim in claims]
-            state = "Unasked" if not claims else "Answered" if len(claims) == 1 else "Contested"
+            attempts = outcomes.get((entity["entity_id"], question["question_id"]), [])
+            state = (
+                "Answered"
+                if len(claims) == 1
+                else "Contested"
+                if claims
+                else "NotFound"
+                if attempts
+                else "Unasked"
+            )
             lineage = []
             for claim in claims:
                 reviews = claim["reviews"]
@@ -459,6 +492,16 @@ def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[st
                 "values": values,
                 "claims": claims,
                 "lineage": lineage,
+                "research": (
+                    {
+                        "task_id": ",".join(item["outcome_id"] for item in attempts),
+                        "query": "\n".join(dict.fromkeys(item["query"] for item in attempts)),
+                        "notes": "\n".join(dict.fromkeys(item["notes"] for item in attempts)),
+                        "attempts": attempts,
+                    }
+                    if attempts and not claims
+                    else None
+                ),
             }
         rows.append({**entity, "cells": cells})
     return {"entity_kind": projection["kind"], "questions": questions, "rows": rows}

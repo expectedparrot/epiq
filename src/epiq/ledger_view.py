@@ -295,6 +295,24 @@ class LedgerView:
         ]
         return [item for item in items if status is None or item["status"] == status]
 
+    def research_outcomes(self, *, kind: str | None = None) -> list[dict[str, Any]]:
+        query = """
+            SELECT outcome.outcome_id,outcome.subject_id,entity.name AS subject_name,
+                   entity.kind,outcome.question_id,question.name AS question_name,
+                   outcome.query,outcome.notes,outcome.transaction_id
+            FROM projected_research_outcomes outcome
+            JOIN projected_entities entity ON entity.entity_id=outcome.subject_id
+            JOIN projected_questions question ON question.question_id=outcome.question_id
+        """
+        parameters: tuple[str, ...] = ()
+        if kind is not None:
+            query += " WHERE entity.kind=?"
+            parameters = (kind,)
+        query += " ORDER BY entity.name_key,question.name,outcome.outcome_id"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [dict(row) for row in rows]
+
     @staticmethod
     def _supports(
         connection: sqlite3.Connection, claim_ids: list[str]

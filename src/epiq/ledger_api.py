@@ -513,6 +513,40 @@ class LedgerDatabase:
         )
         return {"resolution_id": identifier, "status": status, **result}
 
+    def record_not_found(
+        self,
+        subject_id: str,
+        question_id: str,
+        query: str,
+        notes: str,
+        *,
+        outcome_id: str | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id(
+            "out", outcome_id, actor, idempotency_key, "research-outcome"
+        )
+        result = self.transact(
+            [
+                {
+                    "type": "research.not_found",
+                    "payload": {
+                        "outcome_id": identifier,
+                        "subject_id": subject_id,
+                        "question_id": question_id,
+                        "query": query,
+                        "notes": notes,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"outcome_id": identifier, "state": "NotFound", **result}
+
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.entities(kind=kind)
 
@@ -551,6 +585,9 @@ class LedgerDatabase:
         self, *, question: str | None = None, status: str | None = None
     ) -> list[dict[str, Any]]:
         return self.view.question_challenges(question=question, status=status)
+
+    def research_outcomes(self, *, kind: str | None = None) -> list[dict[str, Any]]:
+        return self.view.research_outcomes(kind=kind)
 
     def status(self) -> dict[str, Any]:
         return self.writer.projector.build()

@@ -150,3 +150,36 @@ def test_question_challenges_round_trip_through_ledger_web(tmp_path: Path) -> No
     (root / ".epiq" / "projection.sqlite").unlink()
     restarted = TestClient(create_ledger_app(root))
     assert restarted.get("/api/question-challenges").json()[0]["status"] == "resolved"
+
+
+def test_not_found_remains_distinct_after_projection_rebuild(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    client = TestClient(create_ledger_app(root))
+    client.post("/api/project", json={"name": "Research"})
+    client.post("/api/entity-kinds", json={"kind": "Item"})
+    entity = client.post(
+        "/api/entities", json={"kind": "Item", "name": "One"}
+    ).json()["entity_id"]
+    question = client.post(
+        "/api/questions",
+        json={"name": "value", "subject_kind": "Item", "value_type": "String"},
+    ).json()["question_id"]
+    result = client.post(
+        "/api/research/not-found",
+        json={
+            "subject": entity,
+            "question": question,
+            "query": "item value",
+            "notes": "No reliable source found",
+        },
+    )
+    assert result.status_code == 201
+    cell = client.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"]
+    assert cell["state"] == "NotFound"
+    assert cell["research"]["notes"] == "No reliable source found"
+
+    (root / ".epiq" / "projection.sqlite").unlink()
+    restarted = TestClient(create_ledger_app(root))
+    assert restarted.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"][
+        "state"
+    ] == "NotFound"
