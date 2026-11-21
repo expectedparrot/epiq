@@ -175,6 +175,19 @@ class LedgerProjector:
             )
         return {**actual, "verified": True}
 
+    def dry_run(self, transaction: Transaction) -> None:
+        """Validate one candidate against current state, rolling every projection write back."""
+        self.build()
+        with self._connect() as connection:
+            ordinal = int(
+                connection.execute("SELECT COUNT(*) FROM ledger_transactions").fetchone()[0]
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._apply(connection, transaction, ordinal)
+            finally:
+                connection.rollback()
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
