@@ -200,6 +200,7 @@ class Operation:
 
     def validate(self) -> None:
         from .ledger_domain import validate_payload
+        from .ledger_facts import validate_payload as validate_fact_payload
 
         if not self.operation_id.startswith("op_") or len(self.operation_id) != 29:
             raise EpiqError("invalid_operation_id", f"Invalid operation ID: {self.operation_id}")
@@ -217,6 +218,7 @@ class Operation:
         _validate_json(self.payload, "$.payload")
         _validate_json(self.metadata, "$.metadata")
         validate_payload(self.type, self.payload)
+        validate_fact_payload(self.type, self.payload)
 
     def as_dict(self) -> dict[str, Any]:
         self.validate()
