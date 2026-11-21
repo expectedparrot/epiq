@@ -33,7 +33,7 @@ class LedgerDatabase:
     ) -> None:
         self.path = Path(path)
         self._clock = clock or _now
-        if create and not self.path.exists():
+        if create and not (self.path / "epiq.toml").exists():
             self.repository = LedgerRepository.initialize(
                 self.path,
                 name or self.path.name,
