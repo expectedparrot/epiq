@@ -1433,6 +1433,7 @@ class Store:
             "Bool",
             "String",
             "URL",
+            "Image",
             "Json",
             "Date",
             "DateTime",
@@ -3490,6 +3491,18 @@ class Store:
                     "value_type_error",
                     f"Expected absolute HTTP(S) URL; received {value!r}",
                 )
+        elif value_type == "Image":
+            if not isinstance(value, str) or not value.strip() or "\x00" in value:
+                raise EpiqError(
+                    "value_type_error",
+                    f"Expected image URL or path; received {value!r}",
+                )
+            parsed = urlsplit(value)
+            if parsed.scheme and parsed.scheme not in {"http", "https", "file"}:
+                raise EpiqError(
+                    "value_type_error",
+                    f"Expected HTTP(S), file URL, or image path; received {value!r}",
+                )
         elif value_type == "Date":
             if not isinstance(value, str):
                 raise EpiqError("value_type_error", f"Expected ISO Date; received {value!r}")
@@ -3545,6 +3558,7 @@ class Store:
             "Bool",
             "String",
             "URL",
+            "Image",
             "Json",
             "Probability",
             "Date",

@@ -908,6 +908,35 @@ def test_url_value_type_accepts_only_absolute_http_urls(store: Store) -> None:
         assert error.value.code == "value_type_error"
 
 
+@pytest.mark.parametrize(
+    "location",
+    ["https://images.example/acorn.jpg", "assets/acorn.png", "file:///tmp/acorn.webp"],
+)
+def test_image_value_type_accepts_urls_and_paths(store: Store, location: str) -> None:
+    item = store.add_entity("Company", "Acorn", {}, "test")
+    store.add_question("logo", "Company", "Image", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/source", "Company profile", "2026-08-17", "Acorn logo.", "test"
+    )
+
+    store.assert_claim(item, "logo", location, "2026-08-17", evidence, "test")
+
+    assert store.matrix("Company")["rows"][0]["cells"]["logo"]["value"] == location
+
+
+@pytest.mark.parametrize("location", ["", "javascript:alert(1)", 42])
+def test_image_value_type_rejects_invalid_locations(store: Store, location: object) -> None:
+    item = store.add_entity("Company", "Acorn", {}, "test")
+    store.add_question("logo", "Company", "Image", {}, "test")
+    _, evidence = store.add_evidence(
+        "https://example.test/source", "Company profile", "2026-08-17", "Acorn logo.", "test"
+    )
+
+    with pytest.raises(EpiqError) as error:
+        store.assert_claim(item, "logo", location, "2026-08-17", evidence, "test")
+    assert error.value.code == "value_type_error"
+
+
 def test_claim_proposals_are_invisible_until_atomically_approved(store: Store) -> None:
     company = store.add_entity("Company", "Acme", {}, "test")
     store.add_question("employees", "Company", "Int", {}, "test")

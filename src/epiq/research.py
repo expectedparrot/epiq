@@ -466,8 +466,8 @@ empty workspace, propose at most 3 tables, 5 recognizable seed rows, 8 initial f
 initial research cells. Seed rows are a bounded starting set, never a claim of exhaustive coverage.
 Broader entity discovery happens incrementally after approval. Research only the cells needed to
 make the starter workspace useful. Question names must be snake_case. Use Epiq
-value types such as String, Bool, Int,
-Float, Year, Date, URL, Probability, Enum[a,b], Quantity[USD], and Ref[Kind]. Put a concise label,
+value types such as String, Bool, Int, Float, Year, Date, URL, Image, Probability, Enum[a,b],
+Quantity[USD], and Ref[Kind]. Put a concise label,
 cardinality, volatility, freshness_days when appropriate, and precise research_guidance in each
 definition. Research requests must refer to a proposed or existing question and row. For a
 relationship field, research can return provisional related rows for human review.
@@ -645,8 +645,8 @@ Selection instructions: {
         }
 
 Each suggestion must be a field that can be answered independently for every row. Use a unique
-snake_case name, a concise human-readable label, and one valid Epiq value_type: String, URL, Int,
-Float, Probability, Bool, Json, Enum[a,b,c], Distribution[Float], or
+snake_case name, a concise human-readable label, and one valid Epiq value_type: String, URL, Image,
+Int, Float, Probability, Bool, Json, Enum[a,b,c], Distribution[Float], or
 Distribution[Enum[a,b,c]]. Prefer
 precise typed fields over broad biography-style prompts. In research_guidance, define ambiguous
 terms and state what evidence would count so a later research agent applies the field consistently.

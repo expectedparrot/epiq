@@ -29,6 +29,9 @@ def populated(tmp_path: Path) -> LedgerDatabase:
         "Ref[Person]",
         definition={"label": "Founders", "cardinality": "many"},
     )["question_id"]
+    logo = database.define_question(
+        "logo", "Company", "Image", definition={"label": "Logo"}
+    )["question_id"]
     evidence = database.capture_evidence(
         source_title="Acme",
         source_type="web",
@@ -47,6 +50,13 @@ def populated(tmp_path: Path) -> LedgerDatabase:
         company,
         founders,
         [founder],
+        valid_from="2026-11-21",
+        evidence_ids=[evidence],
+    )
+    database.assert_claim(
+        company,
+        logo,
+        "https://images.example/acme.png",
         valid_from="2026-11-21",
         evidence_ids=[evidence],
     )
@@ -123,6 +133,9 @@ def test_ledger_html_is_self_contained_deterministic_and_evidence_backed(
     assert 'id="table-list"' in content
     assert 'id="table-select"' not in content
     assert "No database connection" not in content
+    assert '"value_type":"Image"' in content
+    assert '"value":"https://images.example/acme.png"' in content
+    assert "q.value_type==='Image'" in content
 
     (database.path / ".epiq" / "projection.sqlite").unlink()
     rebuilt = export_ledger(database, tmp_path / "rebuilt.html", "html", kind="Company")

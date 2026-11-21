@@ -114,6 +114,7 @@ _PATTERNS: dict[str, dict[str, Any]] = {
             _q("Department", "institution", "Ref[Institution]", "one", "stable"),
             _q("Department", "official_url", "URL", "one", "stable"),
             _q("Faculty", "official_profile_url", "URL", "one", "stable"),
+            _q("Faculty", "profile_image", "Image", "one", "dynamic"),
             _q("Faculty", "orcid", "String", "one", "stable"),
             _q("Faculty", "research_topics", "Ref[ResearchTopic]", "many", "dynamic"),
             _q("Appointment", "faculty", "Ref[Faculty]", "one", "stable"),

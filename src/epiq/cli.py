@@ -404,6 +404,7 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
         "value_types": [
             "String",
             "URL",
+            "Image",
             "Date",
             "DateTime",
             "Year",
