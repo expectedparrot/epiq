@@ -122,3 +122,31 @@ def test_ledger_web_review_visibility_and_retraction_are_durable(tmp_path: Path)
     assert restarted.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"][
         "state"
     ] == "Unasked"
+
+
+def test_question_challenges_round_trip_through_ledger_web(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    client = TestClient(create_ledger_app(root))
+    client.post("/api/project", json={"name": "Questions"})
+    client.post("/api/entity-kinds", json={"kind": "Item"})
+    question = client.post(
+        "/api/questions",
+        json={"name": "value", "subject_kind": "Item", "value_type": "String"},
+    ).json()["question_id"]
+    challenge = client.post(
+        f"/api/questions/{question}/challenges",
+        json={"problem": "definition_ambiguity", "explanation": "Unit is unclear"},
+    ).json()["challenge_id"]
+
+    open_items = client.get("/api/question-challenges", params={"status": "open"}).json()
+    assert open_items[0]["challenge_id"] == challenge
+    client.post(
+        f"/api/question-challenges/{challenge}/resolve",
+        json={"status": "resolved", "resolution": "Unit is count"},
+    )
+    assert client.get("/api/question-challenges", params={"status": "open"}).json() == []
+    assert client.get("/api/question-challenges").json()[0]["resolution"] == "Unit is count"
+
+    (root / ".epiq" / "projection.sqlite").unlink()
+    restarted = TestClient(create_ledger_app(root))
+    assert restarted.get("/api/question-challenges").json()[0]["status"] == "resolved"

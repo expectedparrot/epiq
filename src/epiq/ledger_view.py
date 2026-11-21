@@ -226,6 +226,75 @@ class LedgerView:
             for row in rows
         ]
 
+    def question_challenges(
+        self, *, question: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT challenge.challenge_id,challenge.question_id,q.name AS question_name,
+                   challenge.problem,challenge.explanation,challenge.example_entity_id,
+                   entity.name AS example_entity_name,challenge.evidence_ids_json,
+                   challenge.proposed_replacement_json
+            FROM projected_question_challenges challenge
+            JOIN projected_questions q ON q.question_id=challenge.question_id
+            LEFT JOIN projected_entities entity
+              ON entity.entity_id=challenge.example_entity_id
+        """
+        parameters: list[str] = []
+        if question is not None:
+            query += " WHERE (challenge.question_id=? OR q.name=?)"
+            parameters.extend((question, question))
+        query += " ORDER BY challenge.challenge_id"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+            resolution_rows: dict[str, list[tuple[str, str]]] = {}
+            for resolution in connection.execute(
+                """SELECT challenge_id,status,resolution
+                   FROM projected_question_challenge_resolutions
+                   ORDER BY challenge_id,resolution_id"""
+            ):
+                resolution_rows.setdefault(str(resolution["challenge_id"]), []).append(
+                    (str(resolution["status"]), str(resolution["resolution"]))
+                )
+            resolutions: dict[str, dict[str, Any]] = {}
+            for challenge_id, resolution_items in resolution_rows.items():
+                decisions = sorted(set(resolution_items))
+                resolutions[challenge_id] = (
+                    {
+                        "status": decisions[0][0],
+                        "resolution": decisions[0][1],
+                        "resolution_conflicted": False,
+                    }
+                    if len(decisions) == 1
+                    else {
+                        "status": "open",
+                        "resolution": None,
+                        "resolution_conflicted": True,
+                    }
+                )
+        items = [
+            {
+                "challenge_id": row["challenge_id"],
+                "question_id": row["question_id"],
+                "question_name": row["question_name"],
+                "problem": row["problem"],
+                "explanation": row["explanation"],
+                "example_entity_id": row["example_entity_id"],
+                "example_entity_name": row["example_entity_name"],
+                "evidence_ids": _decode(row["evidence_ids_json"]),
+                "proposed_replacement": _decode(row["proposed_replacement_json"]),
+                **resolutions.get(
+                    str(row["challenge_id"]),
+                    {
+                        "status": "open",
+                        "resolution": None,
+                        "resolution_conflicted": False,
+                    },
+                ),
+            }
+            for row in rows
+        ]
+        return [item for item in items if status is None or item["status"] == status]
+
     @staticmethod
     def _supports(
         connection: sqlite3.Connection, claim_ids: list[str]

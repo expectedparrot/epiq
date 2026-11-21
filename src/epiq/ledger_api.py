@@ -445,6 +445,74 @@ class LedgerDatabase:
         )
         return {"claim_id": claim_id, "valid_to": valid_to, **result}
 
+    def challenge_question(
+        self,
+        question_id: str,
+        problem: str,
+        explanation: str,
+        *,
+        challenge_id: str | None = None,
+        example_entity_id: str | None = None,
+        evidence_ids: list[str] | None = None,
+        proposed_replacement: dict[str, Any] | None = None,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id(
+            "chg", challenge_id, actor, idempotency_key, "question-challenge"
+        )
+        payload: dict[str, Any] = {
+            "challenge_id": identifier,
+            "question_id": question_id,
+            "problem": problem,
+            "explanation": explanation,
+            "evidence_ids": evidence_ids or [],
+        }
+        if example_entity_id is not None:
+            payload["example_entity_id"] = example_entity_id
+        if proposed_replacement is not None:
+            payload["proposed_replacement"] = proposed_replacement
+        result = self.transact(
+            [{"type": "question.challenge", "payload": payload}],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"challenge_id": identifier, "status": "open", **result}
+
+    def resolve_question_challenge(
+        self,
+        challenge_id: str,
+        status: str,
+        resolution: str,
+        *,
+        resolution_id: str | None = None,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id(
+            "res", resolution_id, actor, idempotency_key, "challenge-resolution"
+        )
+        result = self.transact(
+            [
+                {
+                    "type": "question.challenge_resolve",
+                    "payload": {
+                        "resolution_id": identifier,
+                        "challenge_id": challenge_id,
+                        "status": status,
+                        "resolution": resolution,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"resolution_id": identifier, "status": status, **result}
+
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.entities(kind=kind)
 
@@ -478,6 +546,11 @@ class LedgerDatabase:
 
     def conflicts(self, *, conflict_type: str | None = None) -> list[dict[str, Any]]:
         return self.view.conflicts(conflict_type=conflict_type)
+
+    def question_challenges(
+        self, *, question: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        return self.view.question_challenges(question=question, status=status)
 
     def status(self) -> dict[str, Any]:
         return self.writer.projector.build()

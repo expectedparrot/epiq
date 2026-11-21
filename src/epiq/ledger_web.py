@@ -86,6 +86,23 @@ class ValidityEndCreate(VisibilityCreate):
     valid_to: str = Field(min_length=1)
 
 
+class ChallengeCreate(BaseModel):
+    problem: str = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+    example_entity: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    proposed_replacement: dict[str, Any] | None = None
+    actor: str = "human:web"
+    idempotency_key: str | None = None
+
+
+class ChallengeResolveCreate(BaseModel):
+    status: Literal["resolved", "dismissed"]
+    resolution: str = Field(min_length=1)
+    actor: str = "human:web"
+    idempotency_key: str | None = None
+
+
 def create_ledger_app(
     project: str | Path | None = None, frontend: str | Path | None = None
 ) -> FastAPI:
@@ -225,6 +242,20 @@ def create_ledger_app(
         )
         return {"question_id": question_id, "status": "active"}
 
+    @app.post("/api/questions/{question_id}/challenges", status_code=201)
+    def challenge_question(question_id: str, body: ChallengeCreate) -> dict[str, str]:
+        result = database().challenge_question(
+            question_id,
+            body.problem,
+            body.explanation,
+            example_entity_id=body.example_entity,
+            evidence_ids=body.evidence_ids,
+            proposed_replacement=body.proposed_replacement,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"challenge_id": result["challenge_id"], "status": "open"}
+
     @app.post("/api/evidence", status_code=201)
     def create_evidence(body: EvidenceCreate) -> dict[str, str]:
         if body.source_type == "web" and not body.url:
@@ -328,8 +359,23 @@ def create_ledger_app(
         return {"count": 0, "stale_derivations": []}
 
     @app.get("/api/question-challenges")
-    def question_challenges() -> list[dict[str, Any]]:
-        return []
+    def question_challenges(
+        question: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        return database().question_challenges(question=question, status=status)
+
+    @app.post("/api/question-challenges/{challenge_id}/resolve")
+    def resolve_question_challenge(
+        challenge_id: str, body: ChallengeResolveCreate
+    ) -> dict[str, str]:
+        database().resolve_question_challenge(
+            challenge_id,
+            body.status,
+            body.resolution,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"challenge_id": challenge_id, "status": body.status}
 
     @app.get("/api/research/jobs")
     def research_jobs() -> list[dict[str, Any]]:
