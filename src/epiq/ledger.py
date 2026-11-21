@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
+import os
 import secrets
+import tempfile
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -381,4 +385,266 @@ class Transaction:
     def relative_path(self) -> Path:
         token = self.transaction_id.removeprefix("txn_")
         return Path("ledger") / "transactions" / token[:2] / f"{self.transaction_id}.json"
+
+
+@dataclass(frozen=True)
+class ProjectConfig:
+    project_id: str
+    name: str
+    replica_id: str
+    format_version: str = SCHEMA_VERSION
+
+    @classmethod
+    def load(cls, path: str | Path) -> ProjectConfig:
+        config_path = Path(path)
+        try:
+            document = tomllib.loads(config_path.read_text())
+        except FileNotFoundError as error:
+            raise EpiqError(
+                "ledger_not_initialized",
+                f"Ledger project has no epiq.toml: {config_path.parent}",
+            ) from error
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise EpiqError(
+                "invalid_project_config", f"Cannot read {config_path}: {error}"
+            ) from error
+        expected = {"format_version", "project_id", "name", "replica_id"}
+        if set(document) != expected:
+            raise EpiqError(
+                "invalid_project_config",
+                f"epiq.toml keys must be exactly {sorted(expected)}",
+            )
+        config = cls(
+            str(document["project_id"]),
+            str(document["name"]),
+            str(document["replica_id"]),
+            str(document["format_version"]),
+        )
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        if self.format_version != SCHEMA_VERSION:
+            raise EpiqError(
+                "unsupported_ledger_version",
+                f"Unsupported project format: {self.format_version}",
+            )
+        if not self.project_id.startswith("prj_"):
+            raise EpiqError("invalid_project_id", f"Invalid project ID: {self.project_id}")
+        if not self.replica_id.startswith("rep_"):
+            raise EpiqError("invalid_replica_id", f"Invalid replica ID: {self.replica_id}")
+        if not self.name.strip():
+            raise EpiqError("invalid_project_name", "Project name cannot be empty")
+
+    def content(self) -> str:
+        self.validate()
+        return (
+            f"format_version = {json.dumps(self.format_version)}\n"
+            f"project_id = {json.dumps(self.project_id)}\n"
+            f"name = {json.dumps(self.name, ensure_ascii=False)}\n"
+            f"replica_id = {json.dumps(self.replica_id)}\n"
+        )
+
+
+class LedgerRepository:
+    """A local Git-friendly directory of immutable Epiq transactions."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.config = ProjectConfig.load(self.root / "epiq.toml")
+
+    @classmethod
+    def initialize(
+        cls,
+        root: str | Path,
+        name: str,
+        *,
+        actor: str,
+        recorded_at: str,
+        project_id: str | None = None,
+        replica_id: str | None = None,
+    ) -> LedgerRepository:
+        project_root = Path(root)
+        config_path = project_root / "epiq.toml"
+        if config_path.exists():
+            raise EpiqError("project_exists", f"Ledger project already exists: {project_root}")
+        config = ProjectConfig(
+            project_id or f"prj_{_ulid()}",
+            name,
+            replica_id or f"rep_{_ulid()}",
+        )
+        config.validate()
+        project_root.mkdir(parents=True, exist_ok=True)
+        (project_root / "ledger" / "transactions").mkdir(parents=True, exist_ok=True)
+        schemas = project_root / "ledger" / "schemas"
+        schemas.mkdir(parents=True, exist_ok=True)
+        package_schemas = Path(__file__).parent / "schemas"
+        for filename in ("ledger-operation-1.schema.json", "ledger-transaction-1.schema.json"):
+            (schemas / filename).write_bytes((package_schemas / filename).read_bytes())
+        _atomic_write(config_path, config.content().encode())
+        _ensure_projection_ignored(project_root / ".gitignore")
+        repository = cls(project_root)
+        genesis = Transaction.create(
+            config.project_id,
+            config.replica_id,
+            actor,
+            [
+                Operation.create(
+                    "project.initialize",
+                    {
+                        "project_id": config.project_id,
+                        "name": config.name,
+                        "format_version": config.format_version,
+                    },
+                )
+            ],
+            recorded_at=recorded_at,
+        )
+        repository.append(genesis)
+        return repository
+
+    @property
+    def transactions_path(self) -> Path:
+        return self.root / "ledger" / "transactions"
+
+    def append(self, transaction: Transaction) -> bool:
+        """Atomically append a transaction; return False for an identical retry."""
+        if transaction.project_id != self.config.project_id:
+            raise EpiqError(
+                "ledger_project_mismatch",
+                f"Transaction belongs to {transaction.project_id}, not {self.config.project_id}",
+            )
+        transaction.validate()
+        known = {item.transaction_id for item in self.transactions()}
+        missing = set(transaction.parents) - known
+        if missing:
+            raise EpiqError("missing_parent", f"Missing transaction parents: {sorted(missing)}")
+        destination = self.root / transaction.relative_path()
+        if destination.exists():
+            existing = Transaction.load(destination)
+            if existing == transaction:
+                return False
+            raise EpiqError(
+                "transaction_id_collision",
+                f"Transaction ID already has different content: {transaction.transaction_id}",
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(destination, transaction.canonical())
+        return True
+
+    def transaction_paths(self) -> list[Path]:
+        if not self.transactions_path.exists():
+            return []
+        return sorted(self.transactions_path.glob("*/*.json"))
+
+    def transactions(self) -> list[Transaction]:
+        transactions: list[Transaction] = []
+        seen: set[str] = set()
+        for path in self.transaction_paths():
+            transaction = Transaction.load(path)
+            expected = self.root / transaction.relative_path()
+            if path != expected:
+                raise EpiqError(
+                    "invalid_transaction_path",
+                    f"{transaction.transaction_id} must be stored at {expected}",
+                )
+            if transaction.transaction_id in seen:
+                raise EpiqError(
+                    "duplicate_transaction", f"Duplicate transaction: {transaction.transaction_id}"
+                )
+            seen.add(transaction.transaction_id)
+            transactions.append(transaction)
+        return transactions
+
+    def ordered(self) -> list[Transaction]:
+        """Return stable causal order, rejecting missing parents and cycles."""
+        transactions = {item.transaction_id: item for item in self.transactions()}
+        children: dict[str, list[str]] = {identifier: [] for identifier in transactions}
+        indegree: dict[str, int] = {}
+        for identifier, transaction in transactions.items():
+            missing = set(transaction.parents) - set(transactions)
+            if missing:
+                raise EpiqError(
+                    "missing_parent", f"{identifier} has missing parents: {sorted(missing)}"
+                )
+            indegree[identifier] = len(transaction.parents)
+            for parent in transaction.parents:
+                children[parent].append(identifier)
+        ready = [identifier for identifier, degree in indegree.items() if degree == 0]
+        heapq.heapify(ready)
+        result: list[Transaction] = []
+        while ready:
+            identifier = heapq.heappop(ready)
+            result.append(transactions[identifier])
+            for child in children[identifier]:
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    heapq.heappush(ready, child)
+        if len(result) != len(transactions):
+            cyclic = sorted(identifier for identifier, degree in indegree.items() if degree > 0)
+            raise EpiqError("causal_cycle", f"Transaction parent cycle: {cyclic}")
+        return result
+
+    def frontier(self) -> tuple[str, ...]:
+        transactions = self.ordered()
+        parents = {parent for transaction in transactions for parent in transaction.parents}
+        return tuple(
+            sorted(
+                item.transaction_id
+                for item in transactions
+                if item.transaction_id not in parents
+            )
+        )
+
+    def transaction_set_digest(self) -> str:
+        material = "\n".join(
+            f"{item.transaction_id} {item.digest}"
+            for item in sorted(
+                self.transactions(), key=lambda transaction: transaction.transaction_id
+            )
+        )
+        return "sha256:" + hashlib.sha256(material.encode()).hexdigest()
+
+    def validate(self) -> dict[str, Any]:
+        transactions = self.ordered()
+        for transaction in transactions:
+            if transaction.project_id != self.config.project_id:
+                raise EpiqError(
+                    "ledger_project_mismatch",
+                    f"Transaction belongs to {transaction.project_id}: "
+                    f"{transaction.transaction_id}",
+                )
+        return {
+            "project_id": self.config.project_id,
+            "transactions": len(transactions),
+            "operations": sum(len(item.operations) for item in transactions),
+            "frontier": list(self.frontier()),
+            "transaction_set_digest": self.transaction_set_digest(),
+        }
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _ensure_projection_ignored(path: Path) -> None:
+    existing = path.read_text().splitlines() if path.exists() else []
+    if ".epiq/" not in existing:
+        content = "\n".join([*existing, ".epiq/"]).lstrip("\n") + "\n"
+        _atomic_write(path, content.encode())
 
