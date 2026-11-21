@@ -192,6 +192,21 @@ set union at the file layer. `epiq ledger merge-check` validates the combined ca
 reports both
 integrity errors and newly visible domain conflicts.
 
+Git is a transport and review protocol, not the database API. The CLI may invoke `git` as a
+subprocess to clone a project, inspect or fetch a remote, and publish Epiq-owned files from the
+current branch. Publishing validates and projects the ledger before staging files. It must never
+stage unrelated workspace paths, silently integrate a divergent branch, force-push, or treat a Git
+commit hash as a transaction ID. Pull-request creation is an optional review step implemented via
+the GitHub `gh` CLI; the on-disk ledger format remains forge-independent.
+
+Remote integration is deliberately two-phase:
+
+1. fetch remote refs without changing the checked-out ledger;
+2. explicitly merge or rebase using Git, then run `epiq merge-check` before publishing.
+
+This boundary leaves textual conflict handling visible and ensures Epiq can diagnose the complete
+merged transaction set before an agent advertises it as valid.
+
 The expected offline CI sequence is:
 
 ```bash

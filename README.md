@@ -49,6 +49,28 @@ epiq --project research conflicts
 concurrent claims or visibility decisions can be structurally mergeable while reporting explicit
 domain conflicts. See [the architecture specification](docs/git-ledger-architecture.md).
 
+Use a Git repository as a collaboration remote without committing the disposable projection:
+
+```bash
+epiq remote clone git@github.com:example/research.git --path research
+epiq --project research remote status
+epiq --project research remote fetch
+epiq --project research remote publish --message "Add competitor evidence"
+epiq --project research remote publish --message "Add pricing review" --pr --base main
+```
+
+`remote publish` validates the project, stages only `epiq.toml`, `.gitignore`, `ledger/`, and
+`artifacts/`, commits, and pushes the current branch. It refuses to commit unrelated staged files.
+The optional `--pr` uses the GitHub `gh` CLI to create a pull request. Fetch does not integrate
+remote changes automatically; branch integration remains an explicit Git operation followed by
+`epiq merge-check`.
+
+Measure local storage behavior without contacting a remote:
+
+```bash
+epiq --project research benchmark --iterations 5
+```
+
 An ordinary evidence-backed workflow does not require raw transaction JSON:
 
 ```bash

@@ -39,6 +39,7 @@ from .ledger_api import LedgerDatabase
 from .ledger_benchmark import benchmark as benchmark_ledger
 from .ledger_diagnostics import diagnose as diagnose_ledger
 from .ledger_exports import export_ledger
+from .ledger_git import GitTransport
 from .ledger_projection import LedgerProjector
 from .ledger_writer import LedgerWriter
 from .operations import operation_catalog
@@ -59,6 +60,7 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "merge-check",
         "doctor",
         "benchmark",
+        "remote",
         "transact",
         "kind",
         "entity",
@@ -753,6 +755,25 @@ def parser() -> argparse.ArgumentParser:
     )
     ledger_benchmark.add_argument("--path", default=".")
     ledger_benchmark.add_argument("--iterations", type=int, default=5)
+    ledger_remote = ledger_commands.add_parser(
+        "remote", help="Clone, inspect, fetch, or publish a Git-backed ledger"
+    )
+    remote_commands = ledger_remote.add_subparsers(dest="remote_command", required=True)
+    remote_clone = remote_commands.add_parser("clone", help="Clone and validate a ledger")
+    remote_clone.add_argument("url")
+    remote_clone.add_argument("--path", required=True)
+    for name in ("status", "fetch"):
+        command = remote_commands.add_parser(name, help=f"{name.title()} a ledger remote")
+        command.add_argument("--path", default=".")
+        command.add_argument("--remote", default="origin")
+    remote_publish = remote_commands.add_parser(
+        "publish", help="Commit Epiq-owned files, push, and optionally open a PR"
+    )
+    remote_publish.add_argument("--path", default=".")
+    remote_publish.add_argument("--remote", default="origin")
+    remote_publish.add_argument("--message", required=True)
+    remote_publish.add_argument("--pr", action="store_true")
+    remote_publish.add_argument("--base")
     ledger_transact = ledger_commands.add_parser(
         "transact", help="Validate and atomically append typed operations"
     )
@@ -1530,6 +1551,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         return schema_data(args.name)
     if args.command == "ledger":
         root = Path(args.path).expanduser().resolve()
+        if args.ledger_command == "remote" and args.remote_command == "clone":
+            return GitTransport.clone(args.url, root)
         if args.ledger_command == "init":
             recorded_at = args.recorded_at or datetime.now(UTC).isoformat()
             repository = LedgerRepository.initialize(
@@ -1549,6 +1572,18 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "projection": projection,
             }
         repository = LedgerRepository(root)
+        if args.ledger_command == "remote":
+            transport = GitTransport(root)
+            if args.remote_command == "status":
+                return transport.status(args.remote)
+            if args.remote_command == "fetch":
+                return transport.fetch(args.remote)
+            return transport.publish(
+                message=args.message,
+                remote=args.remote,
+                create_pr=args.pr,
+                base=args.base,
+            )
         if args.ledger_command in {"artifact-add", "artifact-verify"}:
             store = ArtifactStore(root)
             if args.ledger_command == "artifact-add":
@@ -2870,7 +2905,7 @@ def _promote_ledger_arguments(arguments: list[str]) -> list[str]:
             or _configured_ledger_project()
             or ("." if Path("epiq.toml").is_file() else None)
         )
-    if project is None or "ledger" in values:
+    if "ledger" in values:
         return values
     command_index = next(
         (index for index, value in enumerate(values) if value in _PROMOTED_LEDGER_COMMANDS),
@@ -2879,6 +2914,20 @@ def _promote_ledger_arguments(arguments: list[str]) -> list[str]:
     if command_index is None:
         return values
     command = values[command_index]
+    if project is None:
+        if command == "remote" and values[command_index + 1 : command_index + 2] == ["clone"]:
+            return [*values[:command_index], "ledger", *values[command_index:]]
+        return values
+    if command == "remote" and command_index + 1 < len(values):
+        return [
+            *values[:command_index],
+            "ledger",
+            "remote",
+            values[command_index + 1],
+            "--path",
+            project,
+            *values[command_index + 2 :],
+        ]
     return [
         *values[:command_index],
         "ledger",

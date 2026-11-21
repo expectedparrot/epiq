@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 from epiq.cli import main
@@ -94,6 +95,36 @@ def test_project_option_promotes_ledger_commands_to_top_level(
     entity_id = data(capsys)["entity_id"]
     main(["matrix", "--kind", "Company"])
     assert data(capsys)["entities"][0]["entity_id"] == entity_id
+
+
+def test_remote_status_is_available_through_promoted_cli(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "research"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "add", "origin", str(remote)],
+        check=True,
+        capture_output=True,
+    )
+    main(
+        [
+            "--project",
+            str(root),
+            "init",
+            "--name",
+            "Remote",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+
+    main(["--project", str(root), "remote", "status"])
+
+    status = data(capsys)
+    assert status["remote"] == "origin"
+    assert status["branch"] == "main"
 
 
 def test_selected_project_promotes_subsequent_commands(
