@@ -6,9 +6,12 @@ import sqlite3
 from time import monotonic, sleep
 
 from .errors import EpiqError
+from .provenance import SCHEMA as PROVENANCE_SCHEMA
 
-LATEST_SCHEMA_VERSION = 13
+LATEST_SCHEMA_VERSION = 15
 MIGRATION_DESCRIPTIONS = {
+    15: "captured artifacts, claim support, and review provenance",
+    14: "retry receipts and atomic staged documents",
     2: "multi-evidence claims and derivation lineage",
     3: "source publication time and claim temporal basis",
     4: "question challenges and supporting evidence",
@@ -309,4 +312,30 @@ def _upgrade(connection: sqlite3.Connection) -> None:
         UPDATE meta SET value='13'
         WHERE key='schema_version' AND CAST(value AS INTEGER)<13;
         """,
+    )
+
+    _execute_script(connection, """
+CREATE TABLE IF NOT EXISTS write_receipts (
+    namespace TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY(namespace, actor, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS document_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    document_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+    result_json TEXT,
+    reason TEXT,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    reviewed_seq INTEGER REFERENCES events(seq)
+);
+UPDATE meta SET value='14' WHERE key='schema_version' AND CAST(value AS INTEGER)<14;
+    """)
+
+    _execute_script(connection, PROVENANCE_SCHEMA)
+    connection.execute(
+        "UPDATE meta SET value='15' WHERE key='schema_version' AND CAST(value AS INTEGER)<15"
     )

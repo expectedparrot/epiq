@@ -17,11 +17,14 @@ tables.
 - Reversible field retirement: `question.retire` removes an unsuitable column from current
   projections and agent work without deleting its schema, claims, evidence, or history;
   `question.restore` brings it back.
-- Schema-versioned automatic migrations (currently v13), isolated from current-schema reads,
+- Schema-versioned automatic migrations (currently v15), isolated from current-schema reads,
   serialized across processes and committed atomically. Connection contexts close their handles.
 - Snapshot-consistent bulk table projections. Historical reads preserve identity, visibility,
   schema versions, research outcomes, reference labels, challenges and evidence assessments.
 - Bounded background worker queues with cancellation checked before invoking queued research.
+- Project-owned job execution and late callbacks, recovery of every interrupted job, versioned
+  requests for all job types, atomic per-cell progress checkpoints and idempotent retry links.
+  Approved workspace retries reuse their saved plans and already registered child jobs.
 - Browser regression tests, frontend builds and installed-wheel smoke checks in CI.
 - Stable entity identity with normalized duplicate rejection, aliases, merge redirects, and
   reversible entity retirement. Historical claims keep their original subject IDs while current
@@ -48,6 +51,10 @@ tables.
   validate materialized rows against their originating event types and claim-evidence projections.
 - Durable agent jobs and proposals. Completed jobs survive restarts; interrupted jobs become explicit
   failures rather than remaining permanently “running.”
+- Optional versioned source-provider pipeline with Firecrawl, URL, fixture and composite providers,
+  separate EDSL reasoning, bounded concurrency, cancellation, and durable source-attempt audits.
+- Capture hashes and optional immutable full-text artifacts, exact supporting spans, append-only
+  claim reviews, and separate structural/provenance diagnostics in projections and exports.
 - Consistent online SQLite backups and a `doctor` integrity command.
 - Agent orientation and planning surfaces: `schema`, `context`, `gaps`, and `stale`.
 - Deterministic `refresh-plan` generation from gaps, staleness, and contested cells, plus a sourced
@@ -59,11 +66,11 @@ tables.
 
 - Extend the original-schema migration fixture, rollback and concurrent-process tests to include
   archived databases from every released schema version.
-- Persist an explicit job request envelope sufficient to retry interrupted work safely, with retry,
-  cancellation, and bounded retention controls.
+- Add bounded retention and paginated activity browsing for completed jobs.
 - Add canonical URL normalization and stronger evidence idempotency across tracking URLs.
 - Add explicit idempotency keys to every write API and CLI command.
-- Extend implemented project bundles when retained full-text captures are added.
+- Add configurable capture retention limits and artifact browsing. Retained captures already travel
+  with SQLite project bundles.
 - Add structured application logging with secret redaction and request/job correlation IDs.
 - Add configurable API authentication and origin policy before any non-loopback deployment.
 

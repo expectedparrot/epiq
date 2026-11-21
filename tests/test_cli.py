@@ -1051,3 +1051,25 @@ def test_usage_errors_use_the_versioned_envelope(capsys) -> None:
     error = _error(capsys)
     assert error["code"] == "usage_error"
     assert "required" in error["message"]
+
+
+def test_tally_groups_by_question_and_rejects_unknown_group(tmp_path: Path, capsys):
+    store = Store(tmp_path / "grouped.sqlite")
+    store.initialize("Grouped")
+    store.add_question("verdict", "Item", "Bool", {}, "setup")
+    store.add_question("category", "Item", "String", {}, "setup")
+    evidence = store.add_evidence("urn:test", "Test", "2026-09-09", "results", "setup")[1]
+    for name, category, verdict in [("A", "alpha", True), ("B", "beta", False),
+                                    ("C", "alpha", True), ("D", None, False)]:
+        store.add_entity("Item", name, {}, "setup")
+        store.assert_claim(name, "verdict", verdict, "2026-09-09", evidence, "model:a")
+        if category:
+            store.assert_claim(name, "category", category, "2026-09-09", evidence, "setup")
+    args = ["--db", str(store.path), "aggregate", "--kind", "Item", "--question", "verdict",
+            "--op", "tally", "--actor", "model:a", "--group-by"]
+    main([*args, "category"])
+    groups = {item["group"]: item["value"] for item in _data(capsys)["groups"]}
+    assert groups == {"alpha": {"true": 2}, "beta": {"false": 1}, "Unasked": {"false": 1}}
+    with pytest.raises(SystemExit):
+        main([*args, "missing"])
+    assert _error(capsys)["code"] == "question_not_found"

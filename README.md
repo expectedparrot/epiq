@@ -5,7 +5,7 @@ questions, source excerpts, and evidence-backed claims in SQLite. It can then pr
 into ordinary tables, interactive HTML, and Excel without throwing away where each cell came from.
 
 Epiq's core database and CLI do not search the web or call a language model. The optional local web
-application can launch replaceable research agents and submit their reviewed findings through the
+application can launch replaceable research agents and submit evidence-backed findings through the
 same deterministic interface. This keeps research orchestration replaceable and makes storage
 behavior testable.
 
@@ -580,6 +580,18 @@ model runs as the originators of observations.
 The batch input is a stable, semver-covered contract. Its version 1.0 JSON Schema ships as
 `epiq/schemas/batch-write-1.0.schema.json`; incompatible changes require a new schema version.
 
+### Source capture and claim review
+
+The optional source pipeline separates retrieval (Firecrawl, explicit URLs, or a custom provider)
+from EDSL reasoning. Captured excerpts, supporting quotes, and explicit reviews have separate
+provenance in the inspector, matrix lineage, and exports. New research claims remain unreviewed
+until someone records a review. `doctor` reports structural integrity separately from provenance
+gaps; an excerpt match does not establish that a claim is true.
+
+See [Source providers and provenance](docs/source-providers-and-provenance.md) for setup,
+retention controls, provider injection, and the versioned contracts. The default research backend
+remains available when `EPIQ_SOURCE_PROVIDER` is unset.
+
 ### Repeated measurements and actor-aware reads
 
 Model each repeated measurement as an `observation` entity. Its compound identity should contain
@@ -604,7 +616,9 @@ epiq aggregate --kind Observation --question verdict --op tally --group-by-actor
 `claims-long` writes JSONL when the output ends in `.jsonl` and CSV when it ends in `.csv`. Each
 row includes claim, subject, question, value, actor, confidence, temporal fields, status, evidence,
 and creation sequence. `matrix` and `query` also accept `--actor` to restrict their projections to
-claims asserted by one actor.
+claims asserted by one actor. For categorical breakdowns, `aggregate --op tally --group-by
+<question>` groups claim values by the subject's grouping field; `--group-by-actor` groups by
+assertion provenance. These grouping options are mutually exclusive.
 
 ### Python embedding API
 
@@ -618,10 +632,16 @@ db.batch_write(operations, actor="model:judge")
 claims = db.claims(kind="Observation", question="verdict")
 ```
 
-`Database.batch_write`, `Database.upsert_entity`, `Database.define_question`, and
-`Database.claims` are covered by package semantic versioning. Other methods in `epiq.store.Store`
+`Database.batch_write`, `Database.upsert_entity`, `Database.define_question`, `Database.claims`,
+`Database.matrix`, `Database.propose`, `Database.proposals`, `Database.review_proposal`, and
+`Database.import_document`, `Database.review_claim`, `Database.provenance`, and
+`Database.source_bundles` are covered by package semantic versioning. Other methods in `epiq.store.Store`
 remain internal implementation details. Without `create=True`, a missing or non-Epiq path raises a
 typed `EpiqError` instead of creating a file implicitly.
+
+For atomic proposal bundles, retry keys, historical imports, and fixture clocks, see
+[Historical imports and atomic proposal bundles](docs/historical-imports-and-proposals.md).
+Timestamp cutoffs compare UTC instants; date-only cutoffs mean midnight UTC at the start of the day.
 
 Question upserts compare against the latest immutable version; returning to an older definition
 creates a new version so that definition becomes current again. Entity upserts with a matching
@@ -1591,8 +1611,25 @@ decaying claim confidence.
 queries, interpretation guidance, existing values, and source URLs for an external research agent.
 
 Background research jobs and provisional entity/field suggestions are persisted in the project
-database. Completed review queues therefore survive a server restart. A job interrupted by a stop
-is marked failed at startup with an explicit retry message; Epiq never pretends it is still running.
+database. Completed review queues therefore survive a server restart. Startup recovers every queued
+or running job, including jobs older than the recent 200-job activity window. Interrupted jobs become
+failed; pending cancellation requests become cancelled. Recovery does not launch external work.
+
+Each new job stores its project identity and a versioned request, including the job type, instructions,
+counts, scope and requested entities. Workers and late progress callbacks remain bound to their
+originating project. Job admission and project switching share a lock; active work still prevents
+closing or switching projects.
+
+Use `POST /api/research/jobs/{id}/retry` for cell research, row/field suggestions or workspace agents.
+A retry keeps the original request and records `retry_of`, `retry_root` and `attempt`. Repeating the
+same retry request returns the existing replacement job. To retry another failed attempt, use that
+replacement's ID. `GET /api/research/jobs/{id}` can inspect a job outside the recent activity window.
+
+Cell findings, including NotFound outcomes, commit atomically with their progress checkpoint. Retries
+skip committed cells and preserve the original target selection. Approved workspace retries reuse
+the saved plan and existing child jobs; failed children can be retried separately in Activity.
+Legacy cell-research requests are reconstructed when their stored metadata is sufficient. Other
+legacy jobs without a complete request return `job_request_unavailable` instead of guessing inputs.
 
 Corrections that replace a claim can be committed atomically:
 
@@ -1641,7 +1678,8 @@ installed-wheel smoke test on every push and pull request. Build the frontend be
 to include browser assets; core-only builds still work without Node.js or built assets.
 
 The implementation separates SQLite upgrades (`migrations.py`), bulk historical reads
-(`projections.py`), worker scheduling (`jobs.py`), and scoped frontend requests (`useTableData.ts`).
+(`projections.py`), worker scheduling (`jobs.py`), project-bound job lifecycle (`job_manager.py`),
+atomic finding preparation (`research_writeback.py`), and scoped frontend requests (`useTableData.ts`).
 The public Python `Database` facade remains the embedding interface.
 
 The web server defaults to six background workers and at most 1,000 waiting tasks. Configure these

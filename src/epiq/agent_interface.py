@@ -14,6 +14,10 @@ from .store import LATEST_SCHEMA_VERSION, Store
 ENVELOPE_SCHEMA_VERSION = "1.0"
 AGENT_SCHEMA_VERSION = "1.0"
 SCHEMA_NAMES = {
+    "batch-write": "batch-write-1.0.schema.json",
+    "source-request": "source-request-1.schema.json",
+    "source-bundle": "source-bundle-1.schema.json",
+    "research-finding": "research-finding-1.schema.json",
     "action": "action.schema.json",
     "agent-status": "agent-status.schema.json",
     "envelope": "envelope.schema.json",
@@ -430,6 +434,12 @@ def next_actions(
                 reason="Temporal policy marks one or more cells stale.",
             )
         ]
+    if state["integrity"].get("provenance", {}).get("findings"):
+        return [action(
+            "inspect-provenance", "Inspect capture, claim support, and review gaps",
+            [*db_prefix, "doctor"], mutates_state=False,
+            reason="Populated cells still require source or review checks.",
+        )]
     return [
         action(
             "verify-project",

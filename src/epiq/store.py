@@ -12,13 +12,15 @@ import tempfile
 import unicodedata
 import uuid
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from . import change_sets, provenance
+from .change_sets import Receipt
 from .errors import EpiqError
 from .migrations import (
     LATEST_SCHEMA_VERSION,
@@ -29,6 +31,7 @@ from .migrations import (
     schema_version,
 )
 from .projections import Projection
+from .temporal import LATEST, compare, instant, normalize
 
 QUESTION_CHALLENGE_PROBLEMS = {
     "type_mismatch",
@@ -93,7 +96,25 @@ def _evaluate_arithmetic_expression(expression: str, values: list[int | float]) 
 
 
 
-SCHEMA = """
+SCHEMA = provenance.SCHEMA + """
+CREATE TABLE IF NOT EXISTS write_receipts (
+    namespace TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY(namespace, actor, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS document_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    document_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+    result_json TEXT,
+    reason TEXT,
+    created_seq INTEGER NOT NULL REFERENCES events(seq),
+    reviewed_seq INTEGER REFERENCES events(seq)
+);
+
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -419,8 +440,12 @@ def _identity_key(value: str) -> str:
 class Store:
     """A project-local Epiq database."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, clock: Callable[[], str] | None = None) -> None:
         self.path = Path(path)
+        self.clock = clock
+
+    def _timestamp(self) -> str:
+        return instant(normalize(self.clock() if self.clock else _now(), field="recorded_at"))
 
     def initialize(self, name: str) -> None:
         """Create a database and its immutable project identity."""
@@ -435,7 +460,7 @@ class Store:
                     ("project_id", _id("prj")),
                     ("name", name),
                     ("schema_version", str(LATEST_SCHEMA_VERSION)),
-                    ("created_at", _now()),
+                    ("created_at", self._timestamp()),
                 ],
             )
 
@@ -444,6 +469,7 @@ class Store:
         connection = sqlite3.connect(self.path, timeout=10, factory=Connection)
         try:
             connection.row_factory = sqlite3.Row
+            connection.create_collation("epiq_time", compare)
             connection.execute("PRAGMA foreign_keys = ON")
             enable_wal(connection)
             connection.execute("PRAGMA busy_timeout = 10000")
@@ -507,21 +533,73 @@ class Store:
 
     def save_agent_job(self, job: dict[str, Any]) -> None:
         """Persist replaceable execution state; research facts remain event-sourced."""
+        self.save_agent_jobs([job])
+
+    def save_agent_jobs(self, jobs: list[dict[str, Any]]) -> None:
+        """Commit related job records together (for example, a retry and its parent)."""
+        with self.transaction() as connection:
+            for job in jobs:
+                self._save_agent_job_tx(connection, job)
+
+    @staticmethod
+    def _save_agent_job_tx(connection: sqlite3.Connection, job: dict[str, Any]) -> None:
         job_id = str(job.get("job_id", ""))
         created_at = str(job.get("created_at", ""))
         if not job_id or not created_at:
             raise EpiqError("invalid_agent_job", "Agent jobs require job_id and created_at")
-        updated_at = _now()
+        connection.execute(
+            """INSERT INTO agent_jobs(job_id,payload_json,created_at,updated_at)
+               VALUES(?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET
+                 payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+            (job_id, _json(job), created_at, _now()),
+        )
+
+    def agent_job(self, job_id: str) -> dict[str, Any]:
+        """Read a job by ID, including jobs outside the recent activity window."""
         with self.connect() as connection:
-            connection.execute(
-                """INSERT INTO agent_jobs(job_id,payload_json,created_at,updated_at)
-                   VALUES(?,?,?,?)
-                   ON CONFLICT(job_id) DO UPDATE SET
-                     payload_json=excluded.payload_json,
-                     updated_at=excluded.updated_at""",
-                (job_id, _json(job), created_at, updated_at),
-            )
-            connection.commit()
+            row = connection.execute(
+                "SELECT payload_json FROM agent_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
+        return json.loads(row["payload_json"])
+
+    def recover_agent_jobs(self) -> list[dict[str, Any]]:
+        """Close every interrupted job atomically, independent of activity pagination."""
+        recovered = []
+        with self.transaction() as connection:
+            rows = connection.execute(
+                """SELECT payload_json FROM agent_jobs
+                   WHERE json_extract(payload_json,'$.status') IN ('queued','running')"""
+            ).fetchall()
+            for row in rows:
+                job = json.loads(row["payload_json"])
+                job["status"] = "cancelled" if job.get("cancel_requested") else "failed"
+                job["error"] = "Server stopped before this job completed; retry to resume."
+                job["finished_at"] = _now()
+                job.setdefault("messages", []).append(
+                    {"at": _now(), "message": "Marked interrupted during server startup"}
+                )
+                self._save_agent_job_tx(connection, job)
+                recovered.append(job)
+        return recovered
+
+    def commit_research_result(
+        self, job: dict[str, Any], operations: list[dict[str, Any]],
+        not_found: dict[str, str] | None = None,
+    ) -> None:
+        """Commit one finding and its durable progress checkpoint in the same transaction."""
+        with self.transaction() as connection:
+            self._write_batch_tx(connection, operations, "agent:codex")
+            if not_found is not None:
+                search_key = _json([
+                    job.get("retry_root", job["job_id"]),
+                    not_found["subject"], not_found["question"],
+                ])
+                self._record_not_found_tx(
+                    connection, actor="agent:codex", idempotency_key=search_key, **not_found
+                )
+            self._save_agent_job_tx(connection, job)
 
     def agent_jobs(self, limit: int = 200) -> list[dict[str, Any]]:
         """Return recent operational agent jobs, newest first."""
@@ -571,6 +649,24 @@ class Store:
                     "agent_jobs",
                 )
             }
+            temporal_columns = {
+                "events": ("recorded_at",),
+                "claims": ("valid_from", "valid_to", "tx_from", "tx_to"),
+                "claim_validity_ends": ("valid_to",),
+                "claim_proposals": ("valid_from",),
+                "sources": ("retrieved_at", "published_at"),
+            }
+            for table, columns in temporal_columns.items():
+                for row in connection.execute(f"SELECT rowid,{','.join(columns)} FROM {table}"):
+                    for column in columns:
+                        if row[column] is not None:
+                            try:
+                                normalize(row[column], field=column)
+                            except EpiqError:
+                                findings.append({
+                                    "code": "invalid_timestamp",
+                                    "message": f"{table} row {row[0]} has invalid {column}",
+                                })
             bad_payloads = 0
             for row in connection.execute("SELECT seq,payload_json FROM events"):
                 try:
@@ -603,7 +699,7 @@ class Store:
                 "entities": {"entity.create"},
                 "questions": {"question.define"},
                 "evidence": {"evidence.add"},
-                "claims": {"claim.assert", "claim.derive"},
+                "claims": {"claim.assert", "claim.derive", "claim.supersede"},
             }
             for table, expected_types in materializations.items():
                 placeholders = ",".join("?" for _ in expected_types)
@@ -639,10 +735,50 @@ class Store:
             "database": str(self.path.resolve()),
             "project": project,
             "sqlite_integrity": integrity,
+            "scope": "structural_integrity",
+            "provenance": self.provenance_diagnostics(),
             "counts": counts,
             "checked_event_payloads": counts["events"] - bad_payloads,
             "findings": findings,
         }
+
+    def save_source_bundle(self, request: dict[str, Any], bundle: dict[str, Any]) -> str:
+        """Persist retrieval audit without retaining full text unless explicitly requested."""
+        payload = json.loads(_json({"request": request, "bundle": bundle}))
+        artifacts = []
+        for document in payload["bundle"]["documents"]:
+            content = document.pop("markdown", None)
+            if request.get("retain_content") and content is not None:
+                content_hash = provenance.digest(content)
+                artifacts.append((content_hash, content))
+                document["artifact_hash"] = content_hash
+        bundle_id = "bnd_" + provenance.digest(_json(payload))[:24]
+        with self.transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM source_bundles WHERE bundle_id=?", (bundle_id,)
+            ).fetchone():
+                return bundle_id
+            seq, _, _ = self._event(connection, "source.collect", "provider:" + bundle["provider"],
+                                   {"bundle_id": bundle_id, **payload})
+            connection.execute("INSERT INTO source_bundles VALUES(?,?,?,?,?)", (
+                bundle_id, request["research_task_id"], request["entity_context"]["entity_id"],
+                _json(payload), seq,
+            ))
+            connection.executemany("INSERT OR IGNORE INTO source_artifacts VALUES(?,?)", artifacts)
+        return bundle_id
+
+    def source_bundles(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT * FROM source_bundles WHERE (? IS NULL OR job_id=?) "
+                                      "ORDER BY created_seq", (job_id, job_id)).fetchall()
+        return [{"bundle_id": row["bundle_id"], **json.loads(row["payload_json"])} for row in rows]
+
+    def provenance_diagnostics(self) -> dict[str, Any]:
+        return provenance.diagnostics(self)
+
+    def review_claim(self, claim_id: str, decision: str, reason: str, actor: str) -> str:
+        with self.transaction() as connection:
+            return provenance.review_claim(self, connection, claim_id, decision, reason, actor)
 
     def backup(self, destination: str | Path, overwrite: bool = False) -> Path:
         """Create a transactionally consistent standalone SQLite backup."""
@@ -821,7 +957,14 @@ class Store:
     def _event(
         self, connection: sqlite3.Connection, event_type: str, actor: str, payload: dict[str, Any]
     ) -> tuple[int, str, str]:
-        event_id, recorded_at = _id("evt"), _now()
+        event_id = _id("evt")
+        recorded_at = getattr(connection, "transaction_timestamp", None) or self._timestamp()
+        if self.clock is not None:
+            latest = connection.execute(
+                "SELECT recorded_at FROM events ORDER BY recorded_at COLLATE epiq_time DESC LIMIT 1"
+            ).fetchone()
+            if latest and compare(recorded_at, str(latest[0])) < 0:
+                raise EpiqError("invalid_chronology", "The injected clock precedes existing events")
         cursor = connection.execute(
             """INSERT INTO events(event_id,event_type,recorded_at,actor,payload_json)
                VALUES(?,?,?,?,?)""",
@@ -1326,6 +1469,7 @@ class Store:
         source_type: str = "web",
         locator: dict[str, Any] | None = None,
         source_entity: str | None = None,
+        capture: dict[str, Any] | None = None,
     ) -> tuple[str, str]:
         """Atomically add a source and an immutable evidence fragment."""
         with self.transaction() as connection:
@@ -1341,6 +1485,7 @@ class Store:
                 None,
                 locator,
                 source_entity,
+                capture,
             )
 
     def _add_evidence_tx(
@@ -1356,9 +1501,13 @@ class Store:
         submitted_by: str | None = None,
         locator: dict[str, Any] | None = None,
         source_entity: str | None = None,
+        capture: dict[str, Any] | None = None,
     ) -> tuple[str, str]:
         if source_type not in {"web", "personal", "model", "report", "interview", "other"}:
             raise EpiqError("invalid_source_type", f"Unknown evidence source type: {source_type}")
+        retrieved_at = normalize(retrieved_at, field="retrieved_at")
+        if published_at is not None:
+            published_at = normalize(published_at, field="published_at")
         canonical_url = canonicalize_url(url)
         normalized_excerpt = _normalize_excerpt(excerpt)
         normalized_locator = _json(locator or {})
@@ -1367,9 +1516,12 @@ class Store:
             linked_entity_id = str(self._resolve_entity(connection, source_entity)["entity_id"])
         if not normalized_excerpt:
             raise EpiqError("invalid_evidence", "Evidence excerpt cannot be empty")
+        capture_data, artifact = provenance.capture_metadata(capture, normalized_excerpt)
         hash_material = (
             f"{canonical_url}\n{normalized_excerpt}\n{normalized_locator}\n{linked_entity_id or ''}"
         )
+        if capture is not None:
+            hash_material += "\n" + _json(capture_data)
         source_hash = hashlib.sha256(hash_material.encode()).hexdigest()
         evidence_hash = hashlib.sha256(hash_material.encode()).hexdigest()
         existing = connection.execute(
@@ -1392,6 +1544,7 @@ class Store:
                 "published_at": published_at,
                 "excerpt": normalized_excerpt,
                 "content_hash": evidence_hash,
+                "provenance": capture_data,
                 "locator": locator or {},
                 "source_entity_id": linked_entity_id,
                 **(
@@ -1421,6 +1574,9 @@ class Store:
             "INSERT INTO evidence VALUES(?,?,?,?,?)",
             (evidence_id, source_id, normalized_excerpt, evidence_hash, seq),
         )
+        if artifact is not None:
+            connection.execute("INSERT OR IGNORE INTO source_artifacts VALUES(?,?)",
+                               (capture_data["artifact_hash"], artifact))
         return source_id, evidence_id
 
     def assess_evidence(self, evidence_id: str, status: str, reason: str, actor: str) -> str:
@@ -1701,16 +1857,21 @@ class Store:
                         )
                     )
                 source_type = str(finding.get("source_type") or "web")
-                _, evidence_id = self._add_evidence_tx(
-                    connection,
-                    str(finding.get("source_url") or f"urn:epiq:{source_type}"),
-                    str(finding.get("source_title") or "Source"),
-                    str(finding["retrieved_at"]),
-                    str(finding["excerpt"]),
-                    actor,
-                    finding.get("source_published_at"),
-                    source_type,
-                )
+                evidence_ids = list(finding.get("evidence_ids") or [])
+                if evidence_ids:
+                    evidence_id = evidence_ids[0]
+                else:
+                    _, evidence_id = self._add_evidence_tx(
+                        connection,
+                        str(finding.get("source_url") or f"urn:epiq:{source_type}"),
+                        str(finding.get("source_title") or "Source"),
+                        str(finding["retrieved_at"]),
+                        str(finding["excerpt"]),
+                        actor,
+                        finding.get("source_published_at"),
+                        source_type,
+                    )
+                    evidence_ids = [evidence_id]
                 valid_from = str(
                     finding.get("observed_as_of")
                     or finding.get("source_published_at")
@@ -1722,8 +1883,9 @@ class Store:
                     successor,
                     target_id,
                     valid_from,
-                    evidence_id,
+                    evidence_ids,
                     actor,
+                    supports=finding.get("supports", []),
                     confidence=str(finding.get("confidence") or "medium"),
                     temporal_basis=(
                         "observed"
@@ -1742,6 +1904,10 @@ class Store:
                     valid_from,
                     actor,
                 )
+                for reviewed_claim in [claim_id, *populated_claim_ids]:
+                    provenance.review_claim(
+                        self, connection, reviewed_claim, "accepted", reason, actor
+                    )
                 accepted.append(
                     {
                         "suggestion_id": str(finding["suggestion_id"]),
@@ -1940,16 +2106,21 @@ class Store:
                         )
                     )
                 source_type = str(finding.get("source_type") or "web")
-                _, evidence_id = self._add_evidence_tx(
-                    connection,
-                    str(finding.get("source_url") or f"urn:epiq:{source_type}"),
-                    str(finding.get("source_title") or "Source"),
-                    str(finding.get("retrieved_at") or retrieved_at),
-                    str(finding["excerpt"]),
-                    actor,
-                    finding.get("source_published_at"),
-                    source_type,
-                )
+                evidence_ids = list(finding.get("evidence_ids") or [])
+                if evidence_ids:
+                    evidence_id = evidence_ids[0]
+                else:
+                    _, evidence_id = self._add_evidence_tx(
+                        connection,
+                        str(finding.get("source_url") or f"urn:epiq:{source_type}"),
+                        str(finding.get("source_title") or "Source"),
+                        str(finding.get("retrieved_at") or retrieved_at),
+                        str(finding["excerpt"]),
+                        actor,
+                        finding.get("source_published_at"),
+                        source_type,
+                    )
+                    evidence_ids = [evidence_id]
                 valid_from = str(
                     finding.get("observed_as_of")
                     or finding.get("source_published_at")
@@ -1962,8 +2133,9 @@ class Store:
                     str(question["question_id"]),
                     target_id,
                     valid_from,
-                    evidence_id,
+                    evidence_ids,
                     actor,
+                    supports=finding.get("supports", []),
                     confidence=str(finding.get("confidence") or "medium"),
                     temporal_basis=(
                         "observed"
@@ -1982,6 +2154,10 @@ class Store:
                     valid_from,
                     actor,
                 )
+                for reviewed_claim in [claim_id, *populated_claim_ids]:
+                    provenance.review_claim(
+                        self, connection, reviewed_claim, "accepted", reason, actor
+                    )
                 accepted.append(
                     {
                         "suggestion_id": str(finding["suggestion_id"]),
@@ -2059,9 +2235,13 @@ class Store:
     def _write_batch_tx(
         self, connection: sqlite3.Connection, operations: list[dict[str, Any]], actor: str
     ) -> list[dict[str, Any]]:
+        if not isinstance(operations, list) or len(operations) > 2000:
+            raise EpiqError("invalid_batch", "Operations must be an array of at most 2,000 items")
         evidence_refs: dict[str, str] = {}
         results: list[dict[str, Any]] = []
         for index, operation in enumerate(operations):
+            if not isinstance(operation, dict):
+                raise EpiqError("invalid_batch_item", f"Write batch item {index} must be an object")
             try:
                 kind = str(operation["op"])
                 operation_actor = str(operation.get("actor", actor))
@@ -2091,6 +2271,7 @@ class Store:
                             if operation.get("source_entity") is not None
                             else None
                         ),
+                        operation.get("provenance"),
                     )
                     if reference:
                         evidence_refs[reference] = evidence_id
@@ -2109,6 +2290,22 @@ class Store:
                         if key not in evidence_refs:
                             raise EpiqError("batch_ref_not_found", f"Evidence ref not found: {key}")
                         evidence_ids.append(evidence_refs[key])
+                    supports = []
+                    raw_supports = operation.get("supports", [])
+                    if not isinstance(raw_supports, list) or len(raw_supports) > 100:
+                        raise EpiqError("invalid_support", "Expected at most 100 support spans")
+                    for support in raw_supports:
+                        if not isinstance(support, dict):
+                            raise EpiqError("invalid_support", "Support span must be an object")
+                        item = dict(support)
+                        if "evidence_ref" in item:
+                            reference = item.pop("evidence_ref")
+                            if not isinstance(reference, str) or reference not in evidence_refs:
+                                raise EpiqError(
+                                    "batch_ref_not_found", "Support evidence ref not found"
+                                )
+                            item["evidence_id"] = evidence_refs[reference]
+                        supports.append(item)
                     claim_id, _, _ = self._assert_claim_tx(
                         connection,
                         str(operation["subject"]),
@@ -2122,8 +2319,26 @@ class Store:
                         extra_payload=(
                             {"submitted_by": actor} if operation_actor != actor else None
                         ),
+                        supports=supports,
                     )
                     results.append({"op": kind, "claim_id": claim_id})
+                elif kind == "claim.review":
+                    review_id = provenance.review_claim(
+                        self, connection, str(operation["claim_id"]), str(operation["decision"]),
+                        str(operation["reason"]), operation_actor,
+                    )
+                    results.append({"op": kind, "review_id": review_id})
+                elif kind == "claim.retract":
+                    self._close_claim_tx(connection, str(operation["claim_id"]), "retracted",
+                                         str(operation["reason"]), operation_actor)
+                    results.append({"op": kind, "claim_id": str(operation["claim_id"])})
+                elif kind == "research.not_found":
+                    task_id = self._record_not_found_tx(
+                        connection, str(operation["subject"]), str(operation["question"]),
+                        str(operation["query"]), str(operation.get("notes", "")), operation_actor,
+                        operation.get("idempotency_key"),
+                    )
+                    results.append({"op": kind, "task_id": task_id})
                 else:
                     raise EpiqError("unsupported_batch_operation", f"Unknown operation: {kind}")
             except KeyError as error:
@@ -2141,6 +2356,14 @@ class Store:
 
     def apply_document(self, document: dict[str, Any], actor: str) -> dict[str, Any]:
         """Converge declarative schema, entities, evidence, and claims atomically."""
+        with self.transaction() as connection:
+            return self._apply_document_tx(connection, document, actor)
+
+    def _apply_document_tx(
+        self, connection: sqlite3.Connection, document: dict[str, Any], actor: str
+    ) -> dict[str, Any]:
+        if not isinstance(document, dict):
+            raise EpiqError("invalid_apply_document", "Document must be a JSON object")
         allowed = {"project", "entity_kinds", "entities", "questions", "aliases", "operations"}
         unknown = set(document) - allowed
         if unknown:
@@ -2168,110 +2391,151 @@ class Store:
             "aliases": [],
             "operations": [],
         }
-        with self.transaction() as connection:
-            for raw_kind in document.get("entity_kinds", []):
-                kind = str(raw_kind).strip()
-                existing = connection.execute(
-                    "SELECT 1 FROM entity_kinds WHERE kind=?", (kind,)
-                ).fetchone()
-                if existing:
-                    results["entity_kinds"].append({"kind": kind, "status": "unchanged"})
-                    continue
-                seq, _, _ = self._event(connection, "entity_kind.define", actor, {"kind": kind})
-                connection.execute("INSERT INTO entity_kinds VALUES(?,?)", (kind, seq))
-                results["entity_kinds"].append({"kind": kind, "status": "created"})
-            for item in document.get("entities", []):
-                kind = str(item["kind"])
-                identity = dict(item["identity"]) if item.get("identity") is not None else None
-                name = str(item.get("name") or "")
-                if not name and identity:
-                    parts = ", ".join(f"{key}={value}" for key, value in sorted(identity.items()))
-                    name = f"{kind}[{parts}]"
-                if not name:
-                    raise EpiqError("entity_name_required", "Entity requires name or identity")
-                existing = self._find_entity_by_identity(connection, name, kind)
-                if existing:
-                    expected_attributes = dict(item.get("attributes", {}))
-                    if json.loads(str(existing["attributes_json"])) != expected_attributes:
-                        raise EpiqError(
-                            "entity_definition_conflict",
-                            f"Existing entity attributes differ: {kind} {name}",
-                        )
-                    entity_id, status = str(existing["entity_id"]), "unchanged"
-                else:
-                    entity_id = self._add_entity_tx(
-                        connection,
-                        kind,
-                        name,
-                        dict(item.get("attributes", {})),
-                        actor,
-                        str(item.get("role", "entity")),
-                        identity,
+        for raw_kind in document.get("entity_kinds", []):
+            kind = str(raw_kind).strip()
+            existing = connection.execute(
+                "SELECT 1 FROM entity_kinds WHERE kind=?", (kind,)
+            ).fetchone()
+            if existing:
+                results["entity_kinds"].append({"kind": kind, "status": "unchanged"})
+                continue
+            seq, _, _ = self._event(connection, "entity_kind.define", actor, {"kind": kind})
+            connection.execute("INSERT INTO entity_kinds VALUES(?,?)", (kind, seq))
+            results["entity_kinds"].append({"kind": kind, "status": "created"})
+        for item in document.get("entities", []):
+            kind = str(item["kind"])
+            identity = dict(item["identity"]) if item.get("identity") is not None else None
+            name = str(item.get("name") or "")
+            if not name and identity:
+                parts = ", ".join(f"{key}={value}" for key, value in sorted(identity.items()))
+                name = f"{kind}[{parts}]"
+            if not name:
+                raise EpiqError("entity_name_required", "Entity requires name or identity")
+            existing = self._find_entity_by_identity(connection, name, kind)
+            if existing:
+                expected_attributes = dict(item.get("attributes", {}))
+                if json.loads(str(existing["attributes_json"])) != expected_attributes:
+                    raise EpiqError(
+                        "entity_definition_conflict",
+                        f"Existing entity attributes differ: {kind} {name}",
                     )
-                    status = "created"
-                results["entities"].append(
-                    {"entity_id": entity_id, "kind": kind, "name": name, "status": status}
-                )
-            for item in document.get("questions", []):
-                name = str(item["name"])
-                latest = connection.execute(
-                    "SELECT * FROM questions WHERE name=? ORDER BY version DESC LIMIT 1", (name,)
-                ).fetchone()
-                definition = dict(item.get("definition", {}))
-                desired = (
-                    str(item["subject_kind"]),
-                    str(item["value_type"]),
-                    _json(definition),
-                )
-                current = (
-                    (
-                        str(latest["subject_kind"]),
-                        str(latest["value_type"]),
-                        str(latest["definition_json"]),
-                    )
-                    if latest
-                    else None
-                )
-                if current == desired:
-                    question_id, status = str(latest["question_id"]), "unchanged"
-                else:
-                    question_id, _ = self._add_question_tx(
-                        connection, name, desired[0], desired[1], definition, actor
-                    )
-                    status = "created" if latest is None else "versioned"
-                results["questions"].append(
-                    {"question_id": question_id, "name": name, "status": status}
-                )
-            for item in document.get("aliases", []):
-                target = self._resolve_entity(connection, str(item["entity"]))
-                alias = str(item["alias"])
-                existing = self._find_entity_by_identity(connection, alias)
-                if existing:
-                    existing = self._follow_entity_redirect(connection, existing)
-                    if existing["entity_id"] != target["entity_id"]:
-                        raise EpiqError(
-                            "alias_conflict", f"Alias identifies another entity: {alias}"
-                        )
-                    results["aliases"].append({"alias": alias, "status": "unchanged"})
-                    continue
-                alias_id = _id("als")
-                seq, _, _ = self._event(
+                entity_id, status = str(existing["entity_id"]), "unchanged"
+            else:
+                entity_id = self._add_entity_tx(
                     connection,
-                    "entity.alias",
+                    kind,
+                    name,
+                    dict(item.get("attributes", {})),
                     actor,
-                    {"alias_id": alias_id, "entity_id": target["entity_id"], "alias": alias},
+                    str(item.get("role", "entity")),
+                    identity,
                 )
-                connection.execute(
-                    "INSERT INTO entity_aliases VALUES(?,?,?,?,?)",
-                    (alias_id, target["entity_id"], alias, _identity_key(alias), seq),
+                status = "created"
+            results["entities"].append(
+                {"entity_id": entity_id, "kind": kind, "name": name, "status": status}
+            )
+        for item in document.get("questions", []):
+            name = str(item["name"])
+            latest = connection.execute(
+                "SELECT * FROM questions WHERE name=? ORDER BY version DESC LIMIT 1", (name,)
+            ).fetchone()
+            definition = dict(item.get("definition", {}))
+            desired = (
+                str(item["subject_kind"]),
+                str(item["value_type"]),
+                _json(definition),
+            )
+            current = (
+                (
+                    str(latest["subject_kind"]),
+                    str(latest["value_type"]),
+                    str(latest["definition_json"]),
                 )
-                results["aliases"].append(
-                    {"alias_id": alias_id, "alias": alias, "status": "created"}
+                if latest
+                else None
+            )
+            if current == desired:
+                question_id, status = str(latest["question_id"]), "unchanged"
+            else:
+                question_id, _ = self._add_question_tx(
+                    connection, name, desired[0], desired[1], definition, actor
                 )
-            operations = list(document.get("operations", []))
-            if operations:
-                results["operations"] = self._write_batch_tx(connection, operations, actor)
+                status = "created" if latest is None else "versioned"
+            results["questions"].append(
+                {"question_id": question_id, "name": name, "status": status}
+            )
+        for item in document.get("aliases", []):
+            target = self._resolve_entity(connection, str(item["entity"]))
+            alias = str(item["alias"])
+            existing = self._find_entity_by_identity(connection, alias)
+            if existing:
+                existing = self._follow_entity_redirect(connection, existing)
+                if existing["entity_id"] != target["entity_id"]:
+                    raise EpiqError(
+                        "alias_conflict", f"Alias identifies another entity: {alias}"
+                    )
+                results["aliases"].append({"alias": alias, "status": "unchanged"})
+                continue
+            alias_id = _id("als")
+            seq, _, _ = self._event(
+                connection,
+                "entity.alias",
+                actor,
+                {"alias_id": alias_id, "entity_id": target["entity_id"], "alias": alias},
+            )
+            connection.execute(
+                "INSERT INTO entity_aliases VALUES(?,?,?,?,?)",
+                (alias_id, target["entity_id"], alias, _identity_key(alias), seq),
+            )
+            results["aliases"].append(
+                {"alias_id": alias_id, "alias": alias, "status": "created"}
+            )
+        operations = list(document.get("operations", []))
+        if operations:
+            results["operations"] = self._write_batch_tx(connection, operations, actor)
         return {"ok": True, **results}
+
+    def import_document(
+        self, document: dict[str, Any], recorded_at: str, actor: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Append one trusted historical phase atomically, in chronological order."""
+        timestamp = instant(normalize(recorded_at, field="recorded_at"))
+        provenance.validate_document_retention(document)
+        with self.transaction() as connection:
+            receipt = Receipt(connection, "document.import", actor, idempotency_key,
+                              {"document": document, "recorded_at": timestamp})
+            if receipt.result is not None:
+                return receipt.result
+            latest = connection.execute(
+                "SELECT recorded_at FROM events ORDER BY recorded_at COLLATE epiq_time DESC LIMIT 1"
+            ).fetchone()
+            if latest and compare(timestamp, str(latest[0])) < 0:
+                raise EpiqError(
+                    "invalid_chronology", "Import timestamp precedes existing ledger events",
+                    "Import phases in chronological order into a new project.",
+                )
+            connection.transaction_timestamp = timestamp
+            result = self._apply_document_tx(connection, document, actor)
+            self._event(connection, "document.import", actor, {
+                "recorded_at": timestamp, "idempotency_key": receipt.identity[2],
+                "document": document, "result": result,
+            })
+            return receipt.save(result)
+
+    def propose_document(
+        self, document: dict[str, Any], actor: str, idempotency_key: str | None = None
+    ) -> str:
+        """Stage and validate a complete document without exposing any of its facts."""
+        return change_sets.propose(self, document, actor, idempotency_key)
+
+    def document_proposals(self, status: str | None = "pending") -> list[dict[str, Any]]:
+        return change_sets.proposals(self, status)
+
+    def review_document_proposal(
+        self, proposal_id: str, decision: str, reason: str, actor: str
+    ) -> dict[str, Any]:
+        return change_sets.review(self, proposal_id, decision, reason, actor)
 
     def propose_claim(
         self,
@@ -2284,9 +2548,19 @@ class Store:
         confidence: str = "medium",
         temporal_basis: str = "observed",
         rationale: str = "",
+        idempotency_key: str | None = None,
     ) -> str:
         """Stage a fully validated claim outside current projections for later review."""
+        valid_from = normalize(valid_from, field="valid_from")
         with self.transaction() as connection:
+            receipt = Receipt(connection, "claim.propose", actor, idempotency_key, {
+                "subject": subject, "question": question, "value": value,
+                "valid_from": valid_from, "evidence_ids": evidence_ids,
+                "confidence": confidence, "temporal_basis": temporal_basis,
+                "rationale": rationale.strip(),
+            })
+            if receipt.result is not None:
+                return receipt.result
             entity, q, normalized_value, evidence = self._validate_claim_candidate(
                 connection,
                 subject,
@@ -2329,6 +2603,7 @@ class Store:
                     seq,
                 ),
             )
+            receipt.save(proposal_id)
         return proposal_id
 
     def claim_proposals(self, status: str | None = "pending") -> list[dict[str, Any]]:
@@ -2387,7 +2662,8 @@ class Store:
             if missing:
                 raise EpiqError("proposal_not_found", f"Claim proposal not found: {missing[0]}")
             inactive = [
-                identifier for identifier in identifiers if by_id[identifier]["status"] != "pending"
+                identifier for identifier in identifiers
+                if by_id[identifier]["status"] not in {"pending", decision}
             ]
             if inactive:
                 raise EpiqError(
@@ -2395,6 +2671,10 @@ class Store:
                 )
             for proposal_id in identifiers:
                 proposal = by_id[proposal_id]
+                if proposal["status"] == decision:
+                    results.append({"proposal_id": proposal_id, "status": decision,
+                                    "claim_id": proposal["resulting_claim_id"]})
+                    continue
                 claim_id = None
                 if decision == "approved":
                     claim_id, _, _ = self._assert_claim_tx(
@@ -2408,6 +2688,8 @@ class Store:
                         confidence=str(proposal["confidence"]),
                         temporal_basis=str(proposal["temporal_basis"]),
                     )
+                if claim_id:
+                    provenance.review_claim(self, connection, claim_id, "accepted", reason, actor)
                 seq, _, _ = self._event(
                     connection,
                     f"claim.proposal_{decision}",
@@ -2503,7 +2785,11 @@ class Store:
         temporal_basis: str = "observed",
         event_type: str = "claim.assert",
         extra_payload: dict[str, Any] | None = None,
+        supports: list[dict[str, Any]] | None = None,
     ) -> tuple[str, int, bool]:
+        valid_from = normalize(valid_from, field="valid_from")
+        if recorded_at is not None:
+            recorded_at = normalize(recorded_at, field="recorded_at")
         q = self._resolve_question(connection, question)
         entity = self._resolve_entity(connection, subject)
         entity_visibility = connection.execute(
@@ -2566,7 +2852,7 @@ class Store:
         primary_evidence = evidence_ids[0]
         existing = connection.execute(
             """SELECT claim_id,created_seq FROM claims WHERE subject_id=? AND question_id=?
-               AND value_json=? AND valid_from=? AND evidence_id=?""",
+               AND value_json=? AND valid_from COLLATE epiq_time=? AND evidence_id=?""",
             (entity["entity_id"], q["question_id"], value_json, valid_from, primary_evidence),
         ).fetchone()
         if existing:
@@ -2598,7 +2884,9 @@ class Store:
                         for offset, evidence_id in enumerate(additions)
                     ],
                 )
+                provenance.add_supports(self, connection, claim_id, supports or [], actor)
                 return claim_id, seq, False
+            provenance.add_supports(self, connection, claim_id, supports or [], actor)
             return claim_id, int(existing["created_seq"]), False
         claim_id = _id("clm")
         payload = {
@@ -2640,6 +2928,7 @@ class Store:
                 for ordinal, evidence_id in enumerate(evidence_ids)
             ],
         )
+        provenance.add_supports(self, connection, claim_id, supports or [], actor)
         return claim_id, seq, True
 
     def derive_distribution(
@@ -3215,10 +3504,10 @@ class Store:
             if not isinstance(value, str):
                 raise EpiqError("value_type_error", f"Expected ISO DateTime; received {value!r}")
             try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
+                if len(value) <= 10:
                     raise ValueError
-            except ValueError as error:
+                normalize(value, field="DateTime value")
+            except (ValueError, EpiqError) as error:
                 raise EpiqError(
                     "value_type_error", f"Expected timezone-aware ISO DateTime; received {value!r}"
                 ) from error
@@ -3324,13 +3613,14 @@ class Store:
         """Record when a fact stopped being true, independently of when Epiq learned it."""
         if not reason.strip():
             raise EpiqError("reason_required", "A validity-end reason is required")
+        valid_to = normalize(valid_to, field="valid_to")
         with self.transaction() as connection:
             claim = connection.execute(
                 "SELECT * FROM claims WHERE claim_id=?", (claim_id,)
             ).fetchone()
             if claim is None:
                 raise EpiqError("claim_not_found", f"Claim not found: {claim_id}")
-            if valid_to <= str(claim["valid_from"]):
+            if compare(valid_to, str(claim["valid_from"])) <= 0:
                 raise EpiqError(
                     "invalid_validity_interval",
                     f"valid_to must be after valid_from ({claim['valid_from']})",
@@ -3354,23 +3644,30 @@ class Store:
 
     def close_claim(self, claim_id: str, status: str, reason: str, actor: str) -> None:
         """Retract or supersede a claim without deleting it."""
+        with self.transaction() as connection:
+            self._close_claim_tx(connection, claim_id, status, reason, actor)
+
+    def _close_claim_tx(
+        self, connection: sqlite3.Connection, claim_id: str, status: str, reason: str, actor: str
+    ) -> None:
         if status not in {"retracted", "superseded"}:
             raise ValueError(status)
-        with self.transaction() as connection:
-            claim = connection.execute(
-                "SELECT * FROM claims WHERE claim_id=?", (claim_id,)
-            ).fetchone()
-            if not claim:
-                raise EpiqError("claim_not_found", f"Claim not found: {claim_id}")
-            if claim["status"] != "asserted":
-                raise EpiqError("claim_inactive", f"Claim is already {claim['status']}: {claim_id}")
-            seq, _, event_time = self._event(
-                connection, f"claim.{status}", actor, {"claim_id": claim_id, "reason": reason}
-            )
-            connection.execute(
-                "UPDATE claims SET status=?, tx_to=?, closed_seq=? WHERE claim_id=?",
-                (status, event_time, seq, claim_id),
-            )
+        if not reason.strip():
+            raise EpiqError("reason_required", "A retraction or supersession reason is required")
+        claim = connection.execute(
+            "SELECT * FROM claims WHERE claim_id=?", (claim_id,)
+        ).fetchone()
+        if not claim:
+            raise EpiqError("claim_not_found", f"Claim not found: {claim_id}")
+        if claim["status"] != "asserted":
+            raise EpiqError("claim_inactive", f"Claim is already {claim['status']}: {claim_id}")
+        seq, _, event_time = self._event(
+            connection, f"claim.{status}", actor, {"claim_id": claim_id, "reason": reason}
+        )
+        connection.execute(
+            "UPDATE claims SET status=?, tx_to=?, closed_seq=? WHERE claim_id=?",
+            (status, event_time, seq, claim_id),
+        )
 
     def supersede_claim(
         self,
@@ -3628,8 +3925,10 @@ class Store:
         self, season: str, known_at: str | None = None, valid_at: str | None = None
     ) -> dict[str, Any]:
         """Derive a season record and its claim-token lineage."""
-        cutoff = known_at or "9999-12-31T23:59:59Z"
-        valid = valid_at or "9999-12-31"
+        known_at = normalize(known_at, field="known_at") if known_at is not None else None
+        valid_at = normalize(valid_at, field="valid_at") if valid_at is not None else None
+        cutoff = known_at or LATEST
+        valid = valid_at or LATEST
         with self.connect() as connection:
             season_row = self._resolve_entity(connection, season)
             games = connection.execute("SELECT * FROM entities WHERE kind='Game'").fetchall()
@@ -3652,12 +3951,16 @@ class Store:
                     FROM claims c JOIN questions q ON q.question_id=c.question_id
                     JOIN entities e ON e.entity_id=c.subject_id
                     WHERE c.subject_id IN ({placeholders}) AND q.name='game_result'
-                    AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
-                    AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
+                    AND c.tx_from COLLATE epiq_time<=?
+                    AND (c.tx_to IS NULL OR c.tx_to COLLATE epiq_time>?)
+                    AND c.valid_from COLLATE epiq_time<=?
+                    AND (c.valid_to IS NULL OR c.valid_to COLLATE epiq_time>?)
                     AND NOT EXISTS (
                       SELECT 1 FROM claim_validity_ends ve
                       JOIN events vee ON vee.seq=ve.created_seq
-                      WHERE ve.claim_id=c.claim_id AND vee.recorded_at<=? AND ve.valid_to<=?
+                      WHERE ve.claim_id=c.claim_id
+                      AND vee.recorded_at COLLATE epiq_time<=?
+                      AND ve.valid_to COLLATE epiq_time<=?
                     )""",
                 (*game_ids, cutoff, cutoff, valid, valid, cutoff, valid),
             ).fetchall()
@@ -3785,9 +4088,11 @@ class Store:
         actor: str | None = None,
     ) -> dict[str, Any]:
         """Project one consistent snapshot, including historical identities and schema."""
+        known_at = normalize(known_at, field="known_at") if known_at is not None else None
+        valid_at = normalize(valid_at, field="valid_at") if valid_at is not None else None
         with self.connect() as connection:
             connection.execute("BEGIN")
-            return Projection(connection, known_at or "9999-12-31T23:59:59Z").matrix(
+            return Projection(connection, known_at or LATEST).matrix(
                 entity_kind, question_names, known_at, valid_at, actor,
             )
 
@@ -3825,6 +4130,8 @@ class Store:
                     ORDER BY c.created_seq,c.claim_id""",
                 parameters,
             ).fetchall()
+            projection = Projection(connection, LATEST)
+            projection.load_lineage(rows)
         return [
             {
                 "claim_id": str(row["claim_id"]),
@@ -3842,6 +4149,15 @@ class Store:
                 "status": str(row["status"]),
                 "evidence_id": str(row["evidence_id"]),
                 "created_seq": int(row["created_seq"]),
+                "review": projection.reviews.get(row["claim_id"], {"status": "unreviewed"}),
+                "evidence_provenance": [
+                    {"evidence_id": evidence["evidence_id"],
+                     "capture": json.loads(evidence["evidence_payload"]).get("provenance", {
+                         "capture_method": "legacy", "verification_status": "unverified",
+                     }),
+                     "support": projection.supports[row["claim_id"], evidence["evidence_id"]]}
+                    for evidence in projection.evidence[row["claim_id"]]
+                ],
             }
             for row in rows
         ]
@@ -4159,29 +4475,50 @@ class Store:
         }
 
     def record_not_found(
-        self, subject: str, question: str, query: str, notes: str, actor: str
+        self, subject: str, question: str, query: str, notes: str, actor: str,
+        idempotency_key: str | None = None
     ) -> str:
         """Record a completed research act that found no sufficient evidence."""
         with self.transaction() as connection:
-            entity = self._resolve_entity(connection, subject)
-            q = self._resolve_question(connection, question)
-            task_id = _id("tsk")
-            payload = {
-                "task_id": task_id,
-                "subject_id": entity["entity_id"],
-                "question_id": q["question_id"],
-                "query": query,
-                "notes": notes,
-                "outcome": "not_found",
-            }
-            seq, _, _ = self._event(connection, "research.not_found", actor, payload)
-            connection.execute(
-                """INSERT INTO research_tasks
-                   (task_id,subject_id,question_id,status,query,notes,created_seq,closed_seq)
-                   VALUES(?,?,?,'not_found',?,?,?,?)""",
-                (task_id, entity["entity_id"], q["question_id"], query, notes, seq, seq),
+            return self._record_not_found_tx(
+                connection, subject, question, query, notes, actor, idempotency_key
             )
-            return task_id
+
+    def _record_not_found_tx(
+        self, connection: sqlite3.Connection, subject: str, question: str,
+        query: str, notes: str, actor: str, idempotency_key: str | None = None,
+    ) -> str:
+        receipt = Receipt(connection, "research.not_found", actor, idempotency_key, {
+            "subject": subject, "question": question, "query": query, "notes": notes,
+        })
+        if receipt.result is not None:
+            return receipt.result
+        entity = self._resolve_entity(connection, subject)
+        q = self._resolve_question(connection, question)
+        if entity["kind"] != q["subject_kind"]:
+            raise EpiqError(
+                "subject_type_mismatch", "Research question does not apply to this subject"
+            )
+        if not query.strip():
+            raise EpiqError("query_required", "A bounded research query is required")
+        task_id = _id("tsk")
+        payload = {
+            "task_id": task_id,
+            "subject_id": entity["entity_id"],
+            "question_id": q["question_id"],
+            "query": query,
+            "notes": notes,
+            "outcome": "not_found",
+        }
+        seq, _, _ = self._event(connection, "research.not_found", actor, payload)
+        connection.execute(
+            """INSERT INTO research_tasks
+               (task_id,subject_id,question_id,status,query,notes,created_seq,closed_seq)
+               VALUES(?,?,?,'not_found',?,?,?,?)""",
+            (task_id, entity["entity_id"], q["question_id"], query, notes, seq, seq),
+        )
+        return receipt.save(task_id)
+
 
     def record_research_feedback(
         self, task_id: str, reason: str, research_guidance: str, actor: str

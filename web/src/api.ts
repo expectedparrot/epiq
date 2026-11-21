@@ -6,6 +6,15 @@ export interface Lineage {
   value: unknown;
   confidence: "low" | "medium" | "high";
   evidence_id: string;
+  provenance?: {
+    capture_method: "legacy" | "manual" | "discovery" | "fetched";
+    verification_status: "unverified" | "excerpt_matched";
+    content_hash?: string;
+    captured_at?: string;
+    provider?: string;
+  };
+  support?: Array<{ quote: string; start: number; end: number }>;
+  review?: { status: "unreviewed" | "accepted" | "rejected"; actor?: string; reason?: string };
   source: {
     title: string;
     url: string;

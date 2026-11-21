@@ -424,7 +424,7 @@ def test_health_doctor_and_online_backup_endpoints(tmp_path: Path) -> None:
 
     health = client.get("/api/health").json()
     assert health["project"] == "ready"
-    assert health["schema_version"] == "13"
+    assert health["schema_version"] == "15"
     assert client.get("/api/doctor").json()["ok"] is True
 
     backup = client.get("/api/export/project.sqlite")

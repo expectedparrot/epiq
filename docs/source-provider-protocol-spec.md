@@ -1,6 +1,10 @@
 # Source Provider Protocol
 
-**Status:** Proposed
+**Status:** Initial implementation available (optional backend); live integration smoke pending.
+
+See [the implementation guide](source-providers-and-provenance.md) for supported adapters,
+configuration, retention behavior, and current limits. The specification below describes the
+protocol design; asynchronous provider jobs and PDF capture are not implemented.
 
 **Target:** Epiq 0.2
 

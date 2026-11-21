@@ -1,0 +1,74 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "answered",
+        "not_found"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "value_json": {
+      "maxLength": 20000,
+      "title": "Value Json",
+      "type": "string"
+    },
+    "source_refs": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Source Refs",
+      "type": "array"
+    },
+    "support_quotes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Support Quotes",
+      "type": "object"
+    },
+    "confidence": {
+      "default": "medium",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Confidence",
+      "type": "string"
+    },
+    "observed_as_of": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed As Of"
+    },
+    "notes": {
+      "default": "",
+      "maxLength": 5000,
+      "title": "Notes",
+      "type": "string"
+    }
+  },
+  "required": [
+    "entity_id",
+    "status",
+    "value_json",
+    "source_refs"
+  ],
+  "title": "ResearchFinding",
+  "type": "object"
+}

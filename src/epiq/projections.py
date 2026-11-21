@@ -9,6 +9,7 @@ from datetime import date
 from typing import Any
 
 from .errors import EpiqError
+from .temporal import LATEST, instant
 
 
 def _json(value: Any) -> str:
@@ -26,6 +27,8 @@ class Projection:
         self.inputs: dict[str, list[str]] = defaultdict(list)
         self.dependencies: dict[str, list[dict[str, str]]] = defaultdict(list)
         self.assessments: dict[str, sqlite3.Row] = {}
+        self.supports: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        self.reviews: dict[str, dict] = {}
 
     def batch(self, sql: str, ids: list[str], temporal: bool = True) -> list[sqlite3.Row]:
         rows = []
@@ -43,6 +46,24 @@ class Projection:
     def load_lineage(self, claims: list[sqlite3.Row]) -> None:
         ids = [str(claim["claim_id"]) for claim in claims]
         for row in self.batch(
+            """SELECT cs.* FROM claim_support cs JOIN events ev ON ev.seq=cs.created_seq
+               WHERE cs.claim_id IN (__IDS__) AND ev.recorded_at COLLATE epiq_time<=?
+               ORDER BY cs.created_seq""", ids,
+        ):
+            self.supports[row["claim_id"], row["evidence_id"]].append({
+                "support_id": row["support_id"], "quote": row["quote"],
+                "start": row["start_offset"], "end": row["end_offset"],
+            })
+        for row in self.batch(
+            """SELECT r.*,ev.actor,ev.recorded_at FROM claim_reviews r
+               JOIN events ev ON ev.seq=r.created_seq WHERE r.claim_id IN (__IDS__)
+               AND ev.recorded_at COLLATE epiq_time<=? ORDER BY r.created_seq DESC""", ids,
+        ):
+            self.reviews.setdefault(row["claim_id"], {
+                "status": row["decision"], "actor": row["actor"],
+                "reason": row["reason"], "recorded_at": row["recorded_at"],
+            })
+        for row in self.batch(
             """SELECT ce.claim_id,ce.evidence_id,e.excerpt,s.url,s.source_type,s.title,
                       s.published_at,s.retrieved_at,source_event.actor evidence_actor,
                       source_event.payload_json evidence_payload,s.locator_json,s.linked_entity_id
@@ -53,7 +74,7 @@ class Projection:
                JOIN events ev ON ev.seq=ce.created_seq
                JOIN claims owner ON owner.claim_id=ce.claim_id
                WHERE ce.claim_id IN (__IDS__)
-               AND (ce.created_seq=owner.created_seq OR ev.recorded_at<=?)
+               AND (ce.created_seq=owner.created_seq OR ev.recorded_at COLLATE epiq_time<=?)
                ORDER BY ce.ordinal""",
             ids,
         ):
@@ -69,7 +90,7 @@ class Projection:
                JOIN events ev ON ev.seq=ci.created_seq
                JOIN claims owner ON owner.claim_id=ci.claim_id
                WHERE ci.claim_id IN (__IDS__)
-               AND (ci.created_seq=owner.created_seq OR ev.recorded_at<=?)
+               AND (ci.created_seq=owner.created_seq OR ev.recorded_at COLLATE epiq_time<=?)
                ORDER BY ci.ordinal""",
             ids,
         ):
@@ -79,7 +100,7 @@ class Projection:
                JOIN events ev ON ev.seq=d.created_seq
                JOIN claims owner ON owner.claim_id=d.claim_id
                WHERE d.claim_id IN (__IDS__)
-               AND (d.created_seq=owner.created_seq OR ev.recorded_at<=?)
+               AND (d.created_seq=owner.created_seq OR ev.recorded_at COLLATE epiq_time<=?)
                ORDER BY d.role,d.ordinal""",
             ids,
         ):
@@ -94,7 +115,7 @@ class Projection:
         )
         for row in self.batch(
             """SELECT a.* FROM evidence_assessments a JOIN events ev ON ev.seq=a.created_seq
-               WHERE a.evidence_id IN (__IDS__) AND ev.recorded_at<=?
+               WHERE a.evidence_id IN (__IDS__) AND ev.recorded_at COLLATE epiq_time<=?
                ORDER BY a.created_seq DESC""",
             evidence_ids,
         ):
@@ -113,7 +134,8 @@ class Projection:
         question_ids = {}
         for question in connection.execute(
             """SELECT q.* FROM questions q JOIN events ev ON ev.seq=q.created_seq
-               WHERE q.subject_kind=? AND ev.recorded_at<=? ORDER BY q.created_seq""",
+               WHERE q.subject_kind=? AND ev.recorded_at COLLATE epiq_time<=?
+               ORDER BY q.created_seq""",
             (entity_kind, cutoff),
         ):
             questions_by_name[str(question["name"])] = question
@@ -123,7 +145,7 @@ class Projection:
         for event in connection.execute(
             """SELECT event_type,payload_json FROM events WHERE event_type IN
                ('entity.retire','entity.restore','question.retire','question.restore',
-                'question.evolve') AND recorded_at<=? ORDER BY seq""",
+                'question.evolve') AND recorded_at COLLATE epiq_time<=? ORDER BY seq""",
             (cutoff,),
         ):
             payload = json.loads(event["payload_json"])
@@ -151,7 +173,8 @@ class Projection:
             str(row["entity_id"]): row
             for row in connection.execute(
                 f"""SELECT e.* FROM entities e JOIN events ev ON ev.seq=e.created_seq
-                WHERE e.kind IN ({placeholders}) AND ev.recorded_at<=? ORDER BY e.name""",
+                WHERE e.kind IN ({placeholders}) AND ev.recorded_at COLLATE epiq_time<=?
+                ORDER BY e.name""",
                 (*kinds, cutoff),
             )
         }
@@ -160,7 +183,7 @@ class Projection:
             for row in connection.execute(
                 f"""SELECT r.* FROM entity_redirects r JOIN events ev ON ev.seq=r.created_seq
                 JOIN entities e ON e.entity_id=r.from_entity_id
-                WHERE e.kind IN ({placeholders}) AND ev.recorded_at<=?""",
+                WHERE e.kind IN ({placeholders}) AND ev.recorded_at COLLATE epiq_time<=?""",
                 (*kinds, cutoff),
             )
         }
@@ -192,11 +215,11 @@ class Projection:
         for row in connection.execute(
             """SELECT a.* FROM entity_aliases a JOIN events ev ON ev.seq=a.created_seq
                JOIN entities e ON e.entity_id=a.entity_id
-               WHERE e.kind=? AND ev.recorded_at<=? ORDER BY a.created_seq""",
+               WHERE e.kind=? AND ev.recorded_at COLLATE epiq_time<=? ORDER BY a.created_seq""",
             (entity_kind, cutoff),
         ):
             aliases[survivors[str(row["entity_id"])]].append(str(row["alias"]))
-        valid = valid_at or "9999-12-31"
+        valid = valid_at or LATEST
         claims_by_cell: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
         claims = []
         for claim in connection.execute(
@@ -204,12 +227,16 @@ class Projection:
                FROM claims c JOIN questions q ON q.question_id=c.question_id
                JOIN events ev ON ev.seq=c.created_seq
                WHERE q.subject_kind=? AND (? IS NULL OR ev.actor=?)
-               AND c.tx_from<=? AND (c.tx_to IS NULL OR c.tx_to>?)
-               AND c.valid_from<=? AND (c.valid_to IS NULL OR c.valid_to>?)
+               AND c.tx_from COLLATE epiq_time<=?
+               AND (c.tx_to IS NULL OR c.tx_to COLLATE epiq_time>?)
+               AND c.valid_from COLLATE epiq_time<=?
+               AND (c.valid_to IS NULL OR c.valid_to COLLATE epiq_time>?)
                AND NOT EXISTS (
                  SELECT 1 FROM claim_validity_ends ve JOIN events vee ON vee.seq=ve.created_seq
-                 WHERE ve.claim_id=c.claim_id AND vee.recorded_at<=? AND ve.valid_to<=?
-               ) ORDER BY c.valid_from DESC,c.created_seq DESC""",
+                 WHERE ve.claim_id=c.claim_id
+                 AND vee.recorded_at COLLATE epiq_time<=?
+                 AND ve.valid_to COLLATE epiq_time<=?
+               ) ORDER BY c.valid_from COLLATE epiq_time DESC,c.created_seq DESC""",
             (entity_kind, actor, actor, cutoff, cutoff, valid, valid, cutoff, valid),
         ):
             target = survivors.get(str(claim["subject_id"]))
@@ -221,7 +248,8 @@ class Projection:
             """SELECT t.*,q.name question_name FROM research_tasks t
                JOIN questions q ON q.question_id=t.question_id
                JOIN events ev ON ev.seq=t.created_seq
-               WHERE q.subject_kind=? AND ev.recorded_at<=? ORDER BY t.created_seq DESC""",
+               WHERE q.subject_kind=? AND ev.recorded_at COLLATE epiq_time<=?
+               ORDER BY t.created_seq DESC""",
             (entity_kind, cutoff),
         ):
             target = survivors.get(str(row["subject_id"]))
@@ -232,8 +260,9 @@ class Projection:
                JOIN questions q ON q.question_id=qc.question_id
                JOIN events ev ON ev.seq=qc.created_seq
                LEFT JOIN events closed ON closed.seq=qc.closed_seq
-               WHERE q.subject_kind=? AND ev.recorded_at<=?
-               AND (qc.closed_seq IS NULL OR closed.recorded_at>?) ORDER BY qc.created_seq""",
+               WHERE q.subject_kind=? AND ev.recorded_at COLLATE epiq_time<=?
+               AND (qc.closed_seq IS NULL OR closed.recorded_at COLLATE epiq_time>?)
+               ORDER BY qc.created_seq""",
             (entity_kind, cutoff, cutoff),
         ):
             challenges[str(row["name"])].append(
@@ -345,6 +374,12 @@ class Projection:
                     "actor": str(claim["claim_actor"]),
                     "submitted_by": claim_payload.get("submitted_by"),
                     "evidence_id": evidence_row["evidence_id"],
+                    "support": self.supports[claim_id, str(evidence_row["evidence_id"])],
+                    "review": self.reviews.get(claim_id, {"status": "unreviewed"}),
+                    "provenance": json.loads(evidence_row["evidence_payload"]).get(
+                        "provenance",
+                        {"capture_method": "legacy", "verification_status": "unverified"}
+                    ),
                     "source": {
                         "title": evidence_row["title"],
                         "url": evidence_row["url"],
@@ -376,7 +411,9 @@ class Projection:
                 lineage.append(item)
         volatility = definition.get("volatility", "stable")
         freshness_days = definition.get("freshness_days")
-        newest_as_of = max((str(claim["valid_from"]) for claim in claims), default=None)
+        newest_as_of = max(
+            (str(claim["valid_from"]) for claim in claims), key=instant, default=None
+        )
         freshness = "not_applicable" if volatility == "stable" else "unknown"
         age_days = None
         basis = str(claims[0]["temporal_basis"]) if claims else "unknown"
@@ -388,7 +425,8 @@ class Projection:
         ):
             try:
                 age_days = (
-                    (reference_date or date.today()) - date.fromisoformat(newest_as_of[:10])
+                    (reference_date or date.today())
+                    - date.fromisoformat(instant(newest_as_of)[:10])
                 ).days
                 freshness = "fresh" if age_days <= freshness_days else "stale"
             except ValueError:
@@ -399,6 +437,12 @@ class Projection:
             "values": values,
             "confidence": claims[0]["confidence"] if len(claims) == 1 else None,
             "lineage": lineage,
+            "assurance": {
+                "captured": all(item["provenance"]["verification_status"] == "excerpt_matched"
+                                for item in lineage),
+                "supported": all(bool(item["support"]) for item in lineage),
+                "reviewed": all(item["review"]["status"] == "accepted" for item in lineage),
+            },
             "temporal": {
                 "volatility": volatility,
                 "freshness_days": freshness_days,

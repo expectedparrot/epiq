@@ -2691,6 +2691,10 @@ export default function App() {
               rejectProvisionalRelationships(suggestions, "cell")
             }
             onChanged={refresh}
+            onReviewed={async () => {
+              await loadMatrix(false);
+              await loadReviewItems();
+            }}
           />
         )}
         {entitySelection && (
@@ -5436,8 +5440,7 @@ function ActivityPanel({
                 Cancel
               </button>
             )}
-            {(job.status === "failed" || job.status === "cancelled") &&
-              job.mode !== "workspace_agent" && (
+            {(job.status === "failed" || job.status === "cancelled") && (
               <button
                 className="job-action"
                 onClick={() => void onRetry(job.job_id)}
@@ -6804,6 +6807,7 @@ function CellDrawer({
   onAcceptAllProvisional,
   onRejectAllProvisional,
   onChanged,
+  onReviewed,
 }: {
   selection: Selection;
   provisionalRelationships: ProvisionalRelationship[];
@@ -6827,9 +6831,25 @@ function CellDrawer({
     suggestions: ProvisionalRelationship[],
   ) => Promise<void>;
   onChanged: () => Promise<void>;
+  onReviewed: () => Promise<void>;
 }) {
   const { cell, entityName, question } = selection;
   const [busy, setBusy] = useState("");
+  const [reviewError, setReviewError] = useState("");
+  const reviewClaim = async (claimId: string) => {
+    const reason = window.prompt("What did you verify against the source?");
+    if (!reason?.trim()) return;
+    setBusy(claimId);
+    setReviewError("");
+    try {
+      await post(`/api/claims/${claimId}/review`, { decision: "accepted", reason });
+      await onReviewed();
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+    }
+  };
   const retract = async (claimId: string) => {
     const reason = window.prompt("Why are you retracting this claim?");
     if (!reason) return;
@@ -7072,6 +7092,19 @@ function CellDrawer({
                 <span className="evidence-number">{index + 1}</span>
                 <div>
                   <blockquote>{item.excerpt}</blockquote>
+                  <small className="source-assurance">
+                    {item.provenance?.capture_method ?? "legacy"} source · {" "}
+                    {item.provenance?.verification_status === "excerpt_matched" ? "excerpt matched" : "capture unverified"}
+                    {" · "}{item.support?.length ? "support span recorded" : "no support span"}
+                    {" · "}{item.review?.status === "accepted" ? `reviewed by ${item.review.actor}` : item.review?.status === "rejected" ? "review rejected" : "unreviewed"}
+                  </small>
+                  {item.provenance?.content_hash && (
+                    <details className="capture-details">
+                      <summary>Capture details</summary>
+                      <small>{item.provenance.provider} · {item.provenance.captured_at}</small>
+                      <code>{item.provenance.content_hash}</code>
+                    </details>
+                  )}
                   {item.source.url.startsWith("http") ? (
                     <a href={item.source.url} target="_blank" rel="noreferrer">
                       ↗ {item.source.title}
@@ -7089,6 +7122,12 @@ function CellDrawer({
               </div>
             ))}
             <div className="claim-actions">
+              {claim.review?.status !== "accepted" && (
+                <button disabled={busy === claim.claim_id} onClick={() => void reviewClaim(claim.claim_id)}>
+                  Mark reviewed
+                </button>
+              )}
+              {reviewError && <span role="alert">{reviewError}</span>}
               <button onClick={() => onChallenge(claim.claim_id)}>
                 Challenge answer
               </button>

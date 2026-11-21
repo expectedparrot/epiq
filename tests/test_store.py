@@ -563,7 +563,7 @@ def test_existing_database_migrates_primary_evidence_to_schema_two(store: Store)
 
     cell = store.matrix("Company")["rows"][0]["cells"]["summary"]
     assert cell["lineage"][0]["evidence_id"] == evidence
-    assert store.overview()["project"]["schema_version"] == "13"
+    assert store.overview()["project"]["schema_version"] == "15"
 
 
 def test_compound_entity_identity_is_idempotent(store: Store) -> None:
@@ -709,11 +709,13 @@ def test_explicit_migration_plan_backup_and_apply(store: Store, tmp_path: Path) 
             "version": 13,
             "description": "typed derivation dependencies and stale-derived-claim detection",
         },
+        {"version": 14, "description": "retry receipts and atomic staged documents"},
+        {"version": 15, "description": "captured artifacts, claim support, and review provenance"},
     ]
     backup = tmp_path / "before-v10.sqlite"
     result = store.migrate(backup)
     assert result["before"]["current_version"] == 9
-    assert result["after"]["current_version"] == 13
+    assert result["after"]["current_version"] == 15
     assert result["after"]["pending"] == []
     with sqlite3.connect(backup) as connection:
         assert (

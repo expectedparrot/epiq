@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from starlette.background import BackgroundTask
 
 from .agent_interface import (
@@ -36,7 +36,8 @@ from .dsl import describe, parse
 from .edsl_export import write_edsl
 from .errors import EpiqError
 from .html import write_html
-from .jobs import JobQueue, QueueFull
+from .job_manager import JobManager
+from .jobs import JobQueue
 from .operations import agent_operation_catalog
 from .research import (
     EntitySuggestionRunner,
@@ -48,6 +49,7 @@ from .research import (
     ResearchRunner,
     WorkspaceAgentRunner,
 )
+from .research_writeback import captured_operations, prepare_finding
 from .store import LATEST_SCHEMA_VERSION, Store
 from .xlsx import write_xlsx
 
@@ -204,6 +206,12 @@ class ClaimProposalCreate(ClaimCreate):
 class ClaimProposalReview(BaseModel):
     proposal_ids: list[str] = Field(min_length=1)
     decision: Literal["approved", "rejected"]
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+
+
+class ClaimReviewCreate(BaseModel):
+    decision: Literal["accepted", "rejected"] = "accepted"
     reason: str = Field(min_length=1)
     actor: str = "human:web"
 
@@ -392,6 +400,8 @@ def create_app(
     field_suggestion_runner: FieldSuggestionRunner | None = None,
     workspace_agent_runner: WorkspaceAgentRunner | None = None,
     projects_directory: str | Path | None = None,
+    source_provider=None,
+    source_reasoner=None,
 ) -> FastAPI:
     """Create an application bound to one local Epiq database."""
     database_path = Path(database or os.environ.get("EPIQ_DB", ".epiq/epiq.sqlite"))
@@ -409,11 +419,18 @@ def create_app(
     app.state.projects_path = projects_path
     app.state.frontend = frontend_path
     app.state.research_runner = research_runner or OpenAIResearchRunner()
+    app.state.source_runner = None
+    provider_name = os.environ.get("EPIQ_SOURCE_PROVIDER")
+    if source_provider is not None or provider_name:
+        from .source_providers import registry
+        from .source_research import SourceResearchRunner
+        app.state.source_runner = SourceResearchRunner(
+            source_provider or registry.create(provider_name), source_reasoner,
+            concurrency=int(os.environ.get("EPIQ_SOURCE_CONCURRENCY", "3")),
+        )
     app.state.suggestion_runner = suggestion_runner or OpenAIEntitySuggestionRunner()
     app.state.field_suggestion_runner = field_suggestion_runner or OpenAIFieldSuggestionRunner()
     app.state.workspace_agent_runner = workspace_agent_runner or OpenAIWorkspaceAgentRunner()
-    app.state.research_jobs = {}
-    app.state.research_lock = threading.Lock()
     concurrency = int(os.environ.get("EPIQ_RESEARCH_CONCURRENCY", "6"))
     app.state.job_queue = JobQueue(
         concurrency, int(os.environ.get("EPIQ_RESEARCH_QUEUE_CAPACITY", "1000"))
@@ -426,53 +443,16 @@ def create_app(
         allow_headers=["*"],
     )
 
+    manager = JobManager(app.state.job_queue)
+    app.state.job_manager = manager
+    app.state.research_lock = manager.lock
+
     def load_persisted_jobs() -> None:
-        jobs: dict[str, dict[str, Any]] = {}
-        if app.state.database is not None and app.state.database.exists():
-            for job in Store(app.state.database).agent_jobs():
-                if job.get("status") in {"queued", "running"}:
-                    job["status"] = "failed"
-                    job["error"] = "Server stopped before this job completed; launch it again."
-                    job["finished_at"] = datetime.now(UTC).isoformat()
-                    job.setdefault("messages", []).append(
-                        {
-                            "at": datetime.now(UTC).isoformat(),
-                            "message": "Marked interrupted during server startup",
-                        }
-                    )
-                    Store(app.state.database).save_agent_job(job)
-                jobs[str(job["job_id"])] = job
-        app.state.research_jobs = jobs
+        manager.activate(Store(app.state.database) if app.state.database is not None else None)
 
-    def persist_job(job_id: str) -> None:
-        if app.state.database is not None:
-            Store(app.state.database).save_agent_job(app.state.research_jobs[job_id])
-
-    def finish_if_cancelled(job_id: str) -> bool:
-        with app.state.research_lock:
-            job = app.state.research_jobs[job_id]
-            if not job.get("cancel_requested"):
-                return False
-            job["status"] = "cancelled"
-            job["finished_at"] = datetime.now(UTC).isoformat()
-            persist_job(job_id)
-            return True
-
-    def submit_job(target, job_id: str, body: BaseModel) -> None:
-        def execute() -> None:
-            if not finish_if_cancelled(job_id):
-                target(job_id, body)
-
-        try:
-            app.state.job_queue.submit(execute)
-        except QueueFull as error:
-            with app.state.research_lock:
-                job = app.state.research_jobs[job_id]
-                job["status"] = "failed"
-                job["error"] = str(error)
-                job["finished_at"] = datetime.now(UTC).isoformat()
-                persist_job(job_id)
-            raise EpiqError("research_queue_full", str(error)) from error
+    persist_job = manager.persist
+    finish_if_cancelled = manager.finish_if_cancelled
+    submit_job = manager.submit
 
     load_persisted_jobs()
 
@@ -485,13 +465,13 @@ def create_app(
         return response
 
     def store(require_existing: bool = True) -> Store:
-        if app.state.database is None:
+        if not manager.has_project:
             raise EpiqError(
                 "no_active_project",
                 "No project is currently open",
                 "Create a new project or open an existing project.",
             )
-        result = Store(app.state.database)
+        result = manager.project.store
         if require_existing and not result.path.exists():
             raise EpiqError(
                 "project_not_found",
@@ -501,10 +481,8 @@ def create_app(
         return result
 
     def active_jobs() -> bool:
-        with app.state.research_lock:
-            return any(
-                job["status"] in {"queued", "running"} for job in app.state.research_jobs.values()
-            )
+        with manager.lock:
+            return manager.active_jobs()
 
     def available_projects() -> list[dict[str, Any]]:
         candidates = {app.state.initial_database}
@@ -611,9 +589,12 @@ def create_app(
         return available_projects()
 
     @app.post("/api/projects", status_code=201)
+    @manager.bound
     def create_project(body: ProjectCreate) -> dict[str, Any]:
         if active_jobs():
-            raise EpiqError("research_active", "Wait for active research before switching projects")
+            raise EpiqError(
+                "research_active", "Wait for active research before switching projects"
+            )
         slug = re.sub(r"[^a-z0-9]+", "-", body.name.lower()).strip("-") or "project"
         app.state.projects_path.mkdir(parents=True, exist_ok=True)
         path = app.state.projects_path / f"{slug}.sqlite"
@@ -633,7 +614,9 @@ def create_app(
     ) -> dict[str, Any]:
         """Import an uploaded Epiq SQLite database into managed project storage."""
         if active_jobs():
-            raise EpiqError("research_active", "Wait for active research before switching projects")
+            raise EpiqError(
+                "research_active", "Wait for active research before switching projects"
+            )
         source_name = Path(filename).name
         if Path(source_name).suffix.lower() not in {".sqlite", ".sqlite3", ".db"}:
             raise EpiqError(
@@ -727,27 +710,35 @@ def create_app(
                 if "connection" in locals():
                     connection.close()
 
-            slug = re.sub(r"[^a-z0-9]+", "-", metadata["name"].lower()).strip("-")
-            slug = slug or re.sub(r"[^a-z0-9]+", "-", Path(source_name).stem.lower()).strip("-")
-            path = app.state.projects_path / f"{slug or 'imported-project'}.sqlite"
-            suffix = 2
-            while path.exists():
-                path = app.state.projects_path / f"{slug or 'imported-project'}-{suffix}.sqlite"
-                suffix += 1
-            os.replace(temporary_path, path)
-            app.state.database = path.resolve()
-            # Opening the managed copy applies any supported forward-only schema migrations.
-            Store(app.state.database).overview()
-            with app.state.research_lock:
-                load_persisted_jobs()
-            return next(item for item in available_projects() if item["active"])
+            with manager.lock:
+                if active_jobs():
+                    raise EpiqError(
+                        "research_active", "Wait for active research before switching projects"
+                    )
+                slug = re.sub(r"[^a-z0-9]+", "-", metadata["name"].lower()).strip("-")
+                slug = slug or re.sub(r"[^a-z0-9]+", "-", Path(source_name).stem.lower()).strip("-")
+                path = app.state.projects_path / f"{slug or 'imported-project'}.sqlite"
+                suffix = 2
+                while path.exists():
+                    path = app.state.projects_path / f"{slug or 'imported-project'}-{suffix}.sqlite"
+                    suffix += 1
+                os.replace(temporary_path, path)
+                app.state.database = path.resolve()
+                # Opening the managed copy applies any supported forward-only schema migrations.
+                Store(app.state.database).overview()
+                with app.state.research_lock:
+                    load_persisted_jobs()
+                return next(item for item in available_projects() if item["active"])
         finally:
             temporary_path.unlink(missing_ok=True)
 
     @app.post("/api/projects/open")
+    @manager.bound
     def open_project(body: ProjectOpen) -> dict[str, Any]:
         if active_jobs():
-            raise EpiqError("research_active", "Wait for active research before switching projects")
+            raise EpiqError(
+                "research_active", "Wait for active research before switching projects"
+            )
         project = next(
             (item for item in available_projects() if item["project_id"] == body.project_id),
             None,
@@ -760,6 +751,7 @@ def create_app(
         return project
 
     @app.post("/api/projects/close")
+    @manager.bound
     def close_project() -> dict[str, bool]:
         if active_jobs():
             raise EpiqError(
@@ -767,13 +759,15 @@ def create_app(
             )
         app.state.database = None
         with app.state.research_lock:
-            app.state.research_jobs = {}
+            load_persisted_jobs()
         return {"closed": True}
 
     @app.post("/api/project", status_code=201)
+    @manager.bound
     def initialize(body: ProjectCreate) -> dict[str, Any]:
         project = store(require_existing=False)
         project.initialize(body.name)
+        load_persisted_jobs()
         return project.overview()
 
     @app.get("/api/project")
@@ -1580,6 +1574,18 @@ def create_app(
         )
         return {"count": len(results), "results": results}
 
+    @app.post("/api/claims/{claim_id}/review")
+    @manager.bound
+    def review_claim(claim_id: str, body: ClaimReviewCreate) -> dict[str, str]:
+        review_id = store().review_claim(claim_id, body.decision, body.reason, body.actor)
+        return {"review_id": review_id, "claim_id": claim_id, "status": body.decision}
+
+    @app.get("/api/research/jobs/{job_id}/sources")
+    @manager.bound
+    def research_sources(job_id: str) -> list[dict[str, Any]]:
+        manager.get(job_id)
+        return store().source_bundles(job_id)
+
     @app.post("/api/claims/{claim_id}/retract")
     def retract(claim_id: str, body: RetractionCreate) -> dict[str, str]:
         store().close_claim(claim_id, "retracted", body.reason, body.actor)
@@ -1685,7 +1691,8 @@ def create_app(
         ]
 
     def execute_research(job_id: str, body: ResearchCreate) -> None:
-        jobs: dict[str, dict[str, Any]] = app.state.research_jobs
+        jobs: dict[str, dict[str, Any]] = manager.jobs
+        persist_job = manager.persister()
         with app.state.research_lock:
             if jobs[job_id].get("cancel_requested"):
                 jobs[job_id]["status"] = "cancelled"
@@ -1727,8 +1734,14 @@ def create_app(
                 raise EpiqError("question_not_found", f"Question not found: {body.question}")
             targets = []
             requested_ids = set(body.entity_ids or [])
+            completed_ids = set(jobs[job_id].get("completed_entity_ids", []))
+            frozen_ids = set(jobs[job_id].get("target_entity_ids", []))
             for row in projection["rows"]:
                 if requested_ids and row["entity_id"] not in requested_ids:
+                    continue
+                if row["entity_id"] in completed_ids:
+                    continue
+                if jobs[job_id].get("targets_prepared") and row["entity_id"] not in frozen_ids:
                     continue
                 cell = row["cells"][question["name"]]
                 if body.mode == "fill_missing" and cell["state"] == "Unasked":
@@ -1780,6 +1793,10 @@ def create_app(
                             "existing_evidence_ids": list(
                                 dict.fromkeys(str(item["evidence_id"]) for item in cell["lineage"])
                             ),
+                            "existing_source_hashes": list({
+                                item["provenance"]["content_hash"] for item in cell["lineage"]
+                                if item.get("provenance", {}).get("content_hash")
+                            }),
                             "existing_source_urls": list(
                                 dict.fromkeys(
                                     str(item["source"]["url"]) for item in cell["lineage"]
@@ -1788,8 +1805,11 @@ def create_app(
                         }
                     )
             with app.state.research_lock:
-                jobs[job_id]["total"] = len(targets)
-                jobs[job_id]["target_entity_ids"] = [item["entity_id"] for item in targets]
+                jobs[job_id]["total"] = len(targets) + len(completed_ids)
+                jobs[job_id]["completed"] = len(completed_ids)
+                if not jobs[job_id].get("targets_prepared"):
+                    jobs[job_id]["target_entity_ids"] = [item["entity_id"] for item in targets]
+                    jobs[job_id]["targets_prepared"] = True
                 persist_job(job_id)
             research_question = {
                 **question,
@@ -1805,9 +1825,41 @@ def create_app(
                 if cancelled():
                     finish_cancelled()
                     return
-                findings = app.state.research_runner(
-                    body.entity_kind, research_question, targets, progress
-                )
+                def record_bundle(request, bundle):
+                    with app.state.research_lock:
+                        if cancelled() or jobs[job_id]["status"] != "running":
+                            return
+                        bundle_id = project.save_source_bundle(
+                            request.model_dump(mode="json"), bundle.model_dump(mode="json")
+                        )
+                        jobs[job_id].setdefault("source_bundles", []).append(bundle_id)
+                        jobs[job_id]["source_provider"] = bundle.provider
+                        jobs[job_id]["source_schema_version"] = bundle.schema_version
+                        usage = jobs[job_id].setdefault("source_usage", {})
+                        for key, value in bundle.usage.items():
+                            if isinstance(value, int | float):
+                                usage[key] = usage.get(key, 0) + value
+                            else:
+                                usage[key] = value
+                        failures = sum(bool(item.error_code) for item in bundle.attempts)
+                        jobs[job_id]["messages"].append({
+                            "at": datetime.now(UTC).isoformat(),
+                            "message": (
+                                f"{bundle.provider}: captured {len(bundle.documents)} sources; "
+                                f"{failures} retrieval attempts failed; usage {bundle.usage}"
+                            ),
+                        })
+                        persist_job(job_id)
+
+                if targets and app.state.source_runner is not None:
+                    findings = app.state.source_runner.iter_findings(
+                        body.entity_kind, research_question, targets, progress,
+                        cancelled=cancelled, on_bundle=record_bundle, job_id=job_id,
+                    )
+                else:
+                    findings = app.state.research_runner(
+                        body.entity_kind, research_question, targets, progress
+                    ) if targets else []
             if cancelled():
                 finish_cancelled()
                 return
@@ -1832,6 +1884,19 @@ def create_app(
                     entity_id = str(finding["entity_id"])
                     if entity_id not in target_ids or finding["status"] != "answered":
                         continue
+                    captured_ids, captured_supports = [], []
+                    if finding.get("_captured_sources"):
+                        evidence_operations, _, spans = captured_operations(finding)
+                        with app.state.research_lock:
+                            if cancelled():
+                                finish_cancelled()
+                                return
+                            added = project.write_batch(evidence_operations, "agent:research")
+                        captured_ids = [item["evidence_id"] for item in added]
+                        captured_supports = [
+                            {"evidence_id": evidence_id, "quote": span["quote"]}
+                            for evidence_id, span in zip(captured_ids, spans, strict=True)
+                        ]
                     values = finding["value"]
                     names = values if isinstance(values, list) else [values]
                     if question["definition"].get("cardinality", "one") == "one" and len(names) > 1:
@@ -1862,6 +1927,8 @@ def create_app(
                                 ),
                                 "action": "link" if existing else "create_and_link",
                                 "proposed_fields": proposed_fields,
+                                "evidence_ids": captured_ids,
+                                "supports": captured_supports,
                                 "source_type": str(finding.get("source_type") or "web"),
                                 "source_url": finding.get("source_url"),
                                 "source_title": str(finding.get("source_title") or "Source"),
@@ -1907,118 +1974,23 @@ def create_app(
                     finish_cancelled()
                     return
                 entity_id = str(finding["entity_id"])
-                if entity_id not in target_ids:
+                if entity_id not in target_ids or entity_id in completed_ids:
                     continue
-                result_message = f"Finished research for {targets_by_id[entity_id]['name']}"
-                if finding["status"] == "not_found" and body.mode in {
-                    "fill_missing",
-                    "retry_not_found",
-                }:
-                    project.record_not_found(
-                        entity_id,
-                        question["question_id"],
-                        f"Agent research for {question['name']}",
-                        str(finding.get("notes") or "No sufficient evidence found."),
-                        "agent:codex",
-                    )
-                    with app.state.research_lock:
-                        jobs[job_id]["no_result"] += 1
-                        jobs[job_id]["written"] += 1
-                    result_message = (
-                        f"No sufficient evidence found for {targets_by_id[entity_id]['name']}"
-                    )
-                elif finding["status"] == "not_found" and body.mode == "add_evidence":
-                    with app.state.research_lock:
-                        jobs[job_id]["no_result"] += 1
-                    result_message = (
-                        "No additional independent source found for "
-                        f"{targets_by_id[entity_id]['name']}"
-                    )
-                    if finding.get("notes"):
-                        result_message += f": {str(finding['notes']).strip()[:500]}"
-                elif finding["status"] == "answered":
-                    value = finding["value"]
-                    cardinality = question["definition"].get("cardinality", "one")
-                    values = value if cardinality == "many" and isinstance(value, list) else [value]
-                    if not values:
-                        with app.state.research_lock:
-                            jobs[job_id]["no_result"] += 1
-                            jobs[job_id]["completed"] += 1
-                            persist_job(job_id)
-                        progress(
-                            f"No supported values found for {targets_by_id[entity_id]['name']}"
-                        )
-                        continue
-                    for candidate in values:
-                        Store._check_value_type(value_type, candidate)
-                    source_type = str(finding.get("source_type") or "web")
-                    source_url = finding.get("source_url") or f"urn:epiq:{source_type}"
-                    if body.mode == "add_evidence":
-                        target = targets_by_id[entity_id]
-                        normalized_url = str(source_url).rstrip("/").casefold()
-                        existing_urls = {
-                            str(url).rstrip("/").casefold()
-                            for url in target["existing_source_urls"]
-                        }
-                        if normalized_url in existing_urls:
-                            with app.state.research_lock:
-                                jobs[job_id]["completed"] += 1
-                                jobs[job_id]["rejected"] += 1
-                                persist_job(job_id)
-                            progress(
-                                f"Rejected duplicate source for {target['name']}: {source_url}"
-                            )
-                            continue
-                    _, evidence_id = project.add_evidence(
-                        str(source_url),
-                        str(finding["source_title"]),
-                        datetime.now(UTC).date().isoformat(),
-                        str(finding["excerpt"]),
-                        "agent:codex",
-                        finding.get("source_published_at"),
-                        source_type,
-                    )
-                    evidence: str | list[str] = evidence_id
-                    if body.mode == "add_evidence":
-                        target = targets_by_id[entity_id]
-                        if value == target["existing_value"]:
-                            evidence = [*target["existing_evidence_ids"], evidence_id]
-                        else:
-                            result_message = (
-                                f"Found a conflicting value for {target['name']}: "
-                                f"existing {target['existing_value']!r}, new source {value!r}"
-                            )
-                    valid_from = str(
-                        (
-                            target.get("existing_valid_from")
-                            if body.mode == "add_evidence" and value == target["existing_value"]
-                            else finding.get("observed_as_of") or finding.get("source_published_at")
-                        )
-                        or datetime.now(UTC).date().isoformat()
-                    )
-                    for candidate in values:
-                        project.assert_claim(
-                            entity_id,
-                            question["question_id"],
-                            candidate,
-                            valid_from,
-                            evidence,
-                            "agent:codex",
-                            confidence=str(finding["confidence"]),
-                            temporal_basis=(
-                                "observed"
-                                if finding.get("observed_as_of")
-                                else "source"
-                                if finding.get("source_published_at")
-                                else "unknown"
-                            ),
-                        )
-                    with app.state.research_lock:
-                        jobs[job_id]["written"] += 1
+                operations, not_found, counts, message = prepare_finding(
+                    finding, targets_by_id[entity_id], question, body.mode,
+                )
                 with app.state.research_lock:
-                    jobs[job_id]["completed"] += 1
-                    persist_job(job_id)
-                progress(result_message)
+                    if finish_if_cancelled(job_id):
+                        return
+                    next_job = {**jobs[job_id],
+                                "completed_entity_ids": sorted(completed_ids | {entity_id}),
+                                "completed": len(completed_ids) + 1}
+                    for key, count in counts.items():
+                        next_job[key] = int(next_job.get(key, 0)) + count
+                    project.commit_research_result(next_job, operations, not_found)
+                    jobs[job_id].update(next_job)
+                    completed_ids.add(entity_id)
+                progress(message)
             with app.state.research_lock:
                 jobs[job_id]["status"] = "completed"
                 jobs[job_id]["outcome"] = "changed" if jobs[job_id]["written"] else "no_change"
@@ -2026,12 +1998,15 @@ def create_app(
                 persist_job(job_id)
         except Exception as error:
             with app.state.research_lock:
-                jobs[job_id]["status"] = "failed"
+                jobs[job_id]["status"] = "cancelled" if cancelled() else "failed"
                 jobs[job_id]["error"] = str(error)
+                if isinstance(error, EpiqError):
+                    jobs[job_id]["error_detail"] = error.as_dict()
                 jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
                 persist_job(job_id)
 
     @app.post("/api/research/jobs", status_code=202)
+    @manager.bound
     def launch_research(body: ResearchCreate) -> dict[str, Any]:
         projection = store().matrix(body.entity_kind)
         if not any(item["question_id"] == body.question for item in projection["questions"]):
@@ -2041,11 +2016,13 @@ def create_app(
             existing = next(
                 (
                     job
-                    for job in app.state.research_jobs.values()
+                    for job in manager.jobs.values()
                     if job.get("status") in {"queued", "running"}
+                    and manager.independent_launch
                     and job.get("entity_kind") == body.entity_kind
                     and job.get("question_id") == body.question
                     and job.get("mode") == body.mode
+                    and job.get("instructions", "") == body.instructions
                     and sorted(set(job.get("requested_entity_ids") or [])) == requested_ids
                 ),
                 None,
@@ -2080,12 +2057,14 @@ def create_app(
                 ],
                 "deduplicated": False,
             }
-            app.state.research_jobs[job_id] = job
-            persist_job(job_id)
+            registered = manager.register(job, body.model_dump())
+            if registered is not job:
+                return {**registered, "deduplicated": True}
         submit_job(execute_research, job_id, body)
         return job
 
     @app.post("/api/research/column", status_code=202)
+    @manager.bound
     def launch_column_research(body: ResearchCreate) -> dict[str, Any]:
         """Fan a column request into cell jobs so results can arrive independently."""
         projection = store().matrix(body.entity_kind)
@@ -2118,7 +2097,8 @@ def create_app(
         return {"question_id": body.question, "cells": len(jobs), "jobs": jobs}
 
     def execute_workspace_agent(job_id: str, body: WorkspaceAgentCreate) -> None:
-        jobs: dict[str, dict[str, Any]] = app.state.research_jobs
+        jobs: dict[str, dict[str, Any]] = manager.jobs
+        persist_job = manager.persister()
 
         def progress(message: str) -> None:
             with app.state.research_lock:
@@ -2157,6 +2137,8 @@ def create_app(
             plan = jobs[job_id].get("workspace_plan")
             if plan is None:
                 plan = app.state.workspace_agent_runner(body.message, context, progress)
+                if finish_if_cancelled(job_id):
+                    return
                 proposed_kinds = list(
                     dict.fromkeys(
                         [
@@ -2236,6 +2218,10 @@ def create_app(
                     jobs[job_id]["finished_at"] = datetime.now(UTC).isoformat()
                     persist_job(job_id)
                 return
+            if jobs[job_id].get("approval_status") != "approved":
+                raise EpiqError(
+                    "workspace_plan_not_approved", "The workspace plan requires approval"
+                )
             progress("Applying the approved workspace plan")
             entity_kinds = list(dict.fromkeys(str(item).strip() for item in plan["entity_kinds"]))
             entities = list(plan["entities"])
@@ -2462,6 +2448,7 @@ def create_app(
                 persist_job(job_id)
 
     @app.post("/api/workspace-agent/jobs", status_code=202)
+    @manager.bound
     def launch_workspace_agent(body: WorkspaceAgentCreate) -> dict[str, Any]:
         store().overview()
         job_id = f"job_{uuid.uuid4().hex[:16]}"
@@ -2487,15 +2474,17 @@ def create_app(
             ],
         }
         with app.state.research_lock:
-            app.state.research_jobs[job_id] = job
-            persist_job(job_id)
+            registered = manager.register(job, body.model_dump())
+            if registered is not job:
+                return {**registered, "deduplicated": True}
         submit_job(execute_workspace_agent, job_id, body)
         return job
 
     @app.post("/api/workspace-agent/jobs/{job_id}/approve", status_code=202)
+    @manager.bound
     def approve_workspace_agent(job_id: str) -> dict[str, Any]:
         with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
+            job = manager.get(job_id)
             if job is None or job.get("job_type") != "workspace_agent":
                 raise EpiqError("workspace_job_not_found", f"Workspace job not found: {job_id}")
             if job.get("approval_status") != "pending" or not job.get("workspace_plan"):
@@ -2516,9 +2505,10 @@ def create_app(
         return job
 
     @app.post("/api/workspace-agent/jobs/{job_id}/reject")
+    @manager.bound
     def reject_workspace_agent(job_id: str) -> dict[str, Any]:
         with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
+            job = manager.get(job_id)
             if job is None or job.get("job_type") != "workspace_agent":
                 raise EpiqError("workspace_job_not_found", f"Workspace job not found: {job_id}")
             if job.get("approval_status") != "pending":
@@ -2537,12 +2527,22 @@ def create_app(
     @app.get("/api/research/jobs")
     def research_jobs() -> list[dict[str, Any]]:
         with app.state.research_lock:
-            return list(reversed(list(app.state.research_jobs.values())))
+            if manager.active is None:
+                return []
+            return sorted(manager.jobs.values(), key=lambda job: (
+                job["created_at"], job["job_id"]
+            ), reverse=True)
+
+    @app.get("/api/research/jobs/{job_id}")
+    @manager.bound
+    def research_job(job_id: str) -> dict[str, Any]:
+        return manager.get(job_id)
 
     @app.post("/api/research/jobs/{job_id}/cancel")
+    @manager.bound
     def cancel_research(job_id: str) -> dict[str, Any]:
         with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
+            job = manager.get(job_id)
             if job is None:
                 raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
             if job["status"] not in {"queued", "running"}:
@@ -2558,6 +2558,7 @@ def create_app(
             return job
 
     @app.post("/api/research/cancel")
+    @manager.bound
     def cancel_research_scope(body: ResearchCancelScope) -> dict[str, Any]:
         if body.scope in {"cell", "row"} and not body.entity_id:
             raise EpiqError(
@@ -2569,7 +2570,7 @@ def create_app(
             )
         cancelled = []
         with app.state.research_lock:
-            for job_id, job in app.state.research_jobs.items():
+            for job_id, job in manager.jobs.items():
                 if job.get("status") not in {"queued", "running"}:
                     continue
                 if job.get("job_type", "research") != "research":
@@ -2597,46 +2598,36 @@ def create_app(
         return {"scope": body.scope, "count": len(cancelled), "jobs": cancelled}
 
     @app.post("/api/research/jobs/{job_id}/retry", status_code=202)
+    @manager.bound
     def retry_research(job_id: str) -> dict[str, Any]:
-        with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
-            if job is None:
-                raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
-            if job["status"] not in {"failed", "cancelled"}:
-                raise EpiqError(
-                    "research_job_not_retryable",
-                    "Only failed or cancelled research jobs can be retried; "
-                    f"this job is {job['status']}",
-                )
-            request = ResearchCreate(
-                entity_kind=str(job["entity_kind"]),
-                question=str(job["question_id"]),
-                mode=str(job["mode"]),
-                instructions=str(job.get("instructions") or ""),
-                entity_ids=job.get("requested_entity_ids"),
-                scope=str(job.get("scope") or "column"),
+        job = manager.get(job_id)
+        if job.get("retry_job_id"):
+            return {**manager.get(job["retry_job_id"]), "deduplicated": True}
+        if job["status"] not in {"failed", "cancelled"}:
+            raise EpiqError(
+                "research_job_not_retryable", "Only failed or cancelled jobs can be retried"
             )
-        replacement = launch_research(request)
-        replacement_id = str(replacement["job_id"])
-        with app.state.research_lock:
-            for parent_id, parent in app.state.research_jobs.items():
-                child_ids = parent.get("child_job_ids")
-                if not isinstance(child_ids, list) or job_id not in child_ids:
-                    continue
-                parent["child_job_ids"] = [
-                    replacement_id if child_id == job_id else child_id
-                    for child_id in child_ids
-                ]
-                parent.setdefault("messages", []).append(
-                    {
-                        "at": datetime.now(UTC).isoformat(),
-                        "message": (
-                            f"Replaced failed child job {job_id} with retry {replacement_id}"
-                        ),
-                    }
-                )
-                persist_job(parent_id)
-        return replacement
+        request = job.get("request")
+        if not isinstance(request, dict) or request.get("version") != 1:
+            raise EpiqError("job_request_unavailable", "This job has no supported retry request")
+        handlers = {
+            "research": (ResearchCreate, launch_research),
+            "entity_suggestions": (SuggestEntitiesCreate, launch_suggestions),
+            "field_suggestions": (SuggestFieldsCreate, launch_field_suggestions),
+            "workspace_agent": (WorkspaceAgentCreate, launch_workspace_agent),
+        }
+        kind = request.get("job_type")
+        if kind not in handlers or kind != job.get("job_type", "research"):
+            raise EpiqError("job_request_unavailable", "This job has no supported retry request")
+        model, launch = handlers[kind]
+        try:
+            body = model.model_validate(request.get("payload"))
+        except ValidationError as error:
+            raise EpiqError(
+                "job_request_unavailable", "The saved job request is invalid"
+            ) from error
+        with manager.retrying(job):
+            return launch(body)
 
     def scoped_relationship_suggestions(
         body: RelationshipReviewScope,
@@ -2650,7 +2641,7 @@ def create_app(
             raise EpiqError("invalid_review_scope", "Column review requires question_id")
         selected: list[tuple[str, dict[str, Any]]] = []
         with app.state.research_lock:
-            for job_id, job in app.state.research_jobs.items():
+            for job_id, job in manager.jobs.items():
                 if body.entity_kind and job.get("entity_kind") != body.entity_kind:
                     continue
                 for item in job.get("relationship_suggestions", []):
@@ -2675,7 +2666,7 @@ def create_app(
         touched_jobs = {job_id for job_id, _ in selected}
         with app.state.research_lock:
             for job_id in touched_jobs:
-                job = app.state.research_jobs[job_id]
+                job = manager.jobs[job_id]
                 for suggestion in job.get("relationship_suggestions", []):
                     accepted = accepted_by_id.get(str(suggestion["suggestion_id"]))
                     if accepted:
@@ -2690,7 +2681,7 @@ def create_app(
         touched_jobs = {job_id for job_id, _ in selected}
         with app.state.research_lock:
             for job_id in touched_jobs:
-                job = app.state.research_jobs[job_id]
+                job = manager.jobs[job_id]
                 for suggestion in job.get("relationship_suggestions", []):
                     if str(suggestion["suggestion_id"]) in rejected_ids:
                         suggestion["status"] = "dismissed"
@@ -2713,6 +2704,7 @@ def create_app(
         }
 
     @app.post("/api/research/relationships/accept", status_code=201)
+    @manager.bound
     def accept_scoped_relationship_review(body: RelationshipReviewScope) -> dict[str, Any]:
         selected = scoped_relationship_suggestions(body)
         findings = [
@@ -2737,11 +2729,12 @@ def create_app(
         return {**result, "review_id": body.review_id, "scope": body.scope}
 
     @app.post("/api/research/jobs/{job_id}/relationships/accept", status_code=201)
+    @manager.bound
     def accept_relationship_suggestions(
         job_id: str, body: AcceptRelationshipSuggestionsCreate
     ) -> dict[str, Any]:
         with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
+            job = manager.get(job_id)
             if job is None:
                 raise EpiqError("research_job_not_found", f"Research job not found: {job_id}")
             selected = [
@@ -2769,13 +2762,14 @@ def create_app(
         return result
 
     @app.post("/api/research/schema-adaptations/{question_id}/accept", status_code=201)
+    @manager.bound
     def accept_schema_adaptation(
         question_id: str, body: SchemaAdaptationAcceptCreate
     ) -> dict[str, Any]:
         with app.state.research_lock:
             matching = [
                 (job_id, job)
-                for job_id, job in app.state.research_jobs.items()
+                for job_id, job in manager.jobs.items()
                 if (job.get("schema_adaptation") or {}).get("question_id") == question_id
                 and (job.get("schema_adaptation") or {}).get("status") in {"pending", "applying"}
             ]
@@ -2821,6 +2815,7 @@ def create_app(
         return {**result, "jobs": job_ids}
 
     @app.post("/api/research/rows", status_code=202)
+    @manager.bound
     def launch_row_research(body: RowResearchCreate) -> dict[str, Any]:
         projection = store().matrix(body.entity_kind)
         row = next(
@@ -2850,6 +2845,7 @@ def create_app(
         return {"entity_id": body.entity_id, "questions": len(questions), "jobs": jobs}
 
     @app.post("/api/research/table", status_code=202)
+    @manager.bound
     def launch_table_research(body: TableResearchCreate) -> dict[str, Any]:
         projection = store().matrix(body.entity_kind)
         questions = [
@@ -2874,7 +2870,8 @@ def create_app(
         return {"questions": len(questions), "jobs": jobs}
 
     def execute_suggestions(job_id: str, body: SuggestEntitiesCreate) -> None:
-        jobs: dict[str, dict[str, Any]] = app.state.research_jobs
+        jobs: dict[str, dict[str, Any]] = manager.jobs
+        persist_job = manager.persister()
 
         def progress(message: str) -> None:
             with app.state.research_lock:
@@ -2933,6 +2930,7 @@ def create_app(
                 persist_job(job_id)
 
     @app.post("/api/entity-suggestions/jobs", status_code=202)
+    @manager.bound
     def launch_suggestions(body: SuggestEntitiesCreate) -> dict[str, Any]:
         # matrix also validates that the entity kind exists in this project.
         store().matrix(body.entity_kind)
@@ -2954,15 +2952,17 @@ def create_app(
             "messages": [{"at": datetime.now(UTC).isoformat(), "message": "Suggestion job queued"}],
         }
         with app.state.research_lock:
-            app.state.research_jobs[job_id] = job
-            persist_job(job_id)
+            registered = manager.register(job, body.model_dump())
+            if registered is not job:
+                return {**registered, "deduplicated": True}
         submit_job(execute_suggestions, job_id, body)
         return job
 
     @app.post("/api/entity-suggestions/{job_id}/accept", status_code=201)
+    @manager.bound
     def accept_suggestion(job_id: str, body: AcceptSuggestionCreate) -> dict[str, Any]:
         with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
+            job = manager.get(job_id)
             if job is None or job.get("job_type") != "entity_suggestions":
                 raise EpiqError("suggestion_job_not_found", f"Suggestion job not found: {job_id}")
             suggestion = next(
@@ -2996,9 +2996,10 @@ def create_app(
             return dict(suggestion)
 
     @app.post("/api/entity-suggestions/{job_id}/{suggestion_id}/dismiss")
+    @manager.bound
     def dismiss_suggestion(job_id: str, suggestion_id: str) -> dict[str, Any]:
         with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
+            job = manager.get(job_id)
             if job is None or job.get("job_type") != "entity_suggestions":
                 raise EpiqError("suggestion_job_not_found", f"Suggestion job not found: {job_id}")
             suggestion = next(
@@ -3012,7 +3013,8 @@ def create_app(
             return dict(suggestion)
 
     def execute_field_suggestions(job_id: str, body: SuggestFieldsCreate) -> None:
-        jobs: dict[str, dict[str, Any]] = app.state.research_jobs
+        jobs: dict[str, dict[str, Any]] = manager.jobs
+        persist_job = manager.persister()
 
         def progress(message: str) -> None:
             with app.state.research_lock:
@@ -3093,6 +3095,7 @@ def create_app(
                 persist_job(job_id)
 
     @app.post("/api/field-suggestions/jobs", status_code=202)
+    @manager.bound
     def launch_field_suggestions(body: SuggestFieldsCreate) -> dict[str, Any]:
         store().matrix(body.entity_kind)
         job_id = f"job_{uuid.uuid4().hex[:16]}"
@@ -3115,15 +3118,17 @@ def create_app(
             ],
         }
         with app.state.research_lock:
-            app.state.research_jobs[job_id] = job
-            persist_job(job_id)
+            registered = manager.register(job, body.model_dump())
+            if registered is not job:
+                return {**registered, "deduplicated": True}
         submit_job(execute_field_suggestions, job_id, body)
         return job
 
     @app.post("/api/field-suggestions/{job_id}/accept", status_code=201)
+    @manager.bound
     def accept_field_suggestions(job_id: str, body: AcceptFieldSuggestionsCreate) -> dict[str, Any]:
         with app.state.research_lock:
-            job = app.state.research_jobs.get(job_id)
+            job = manager.get(job_id)
             if job is None or job.get("job_type") != "field_suggestions":
                 raise EpiqError("suggestion_job_not_found", f"Suggestion job not found: {job_id}")
             by_id = {item["suggestion_id"]: item for item in job["field_suggestions"]}

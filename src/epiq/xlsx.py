@@ -83,6 +83,8 @@ def projection_rows(
             "Provenance token",
             "Derivation",
             "Input claim IDs",
+            "Capture method", "Capture verification", "Captured content SHA256",
+            "Supporting spans", "Review status", "Reviewer",
         ]
     ]
     unknowns = [[matrix["entity_kind"], "Question", "State", "Search query", "Notes"]]
@@ -113,6 +115,12 @@ def projection_rows(
                         lineage.get("token"),
                         lineage.get("derivation", {}).get("operation"),
                         lineage.get("derivation", {}).get("input_claim_ids"),
+                        lineage.get("provenance", {}).get("capture_method", "legacy"),
+                        lineage.get("provenance", {}).get("verification_status", "unverified"),
+                        lineage.get("provenance", {}).get("content_hash"),
+                        lineage.get("support", []),
+                        lineage.get("review", {}).get("status", "unreviewed"),
+                        lineage.get("review", {}).get("actor"),
                     ]
                 )
             if cell["state"] != "Answered":

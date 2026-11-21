@@ -173,7 +173,9 @@ def _write_claims_long(rows: list[dict[str, Any]], output: str) -> Path:
         writer.writeheader()
         for row in rows:
             rendered = dict(row)
-            rendered["value"] = json.dumps(row["value"], sort_keys=True)
+            for key, value in row.items():
+                if key == "value" or isinstance(value, dict | list):
+                    rendered[key] = json.dumps(value, sort_keys=True)
             writer.writerow(rendered)
     return path
 
@@ -661,7 +663,9 @@ def parser() -> argparse.ArgumentParser:
     agent_commands = agent_parser.add_subparsers(dest="agent_command", required=True)
     agent_commands.add_parser("status", help="Return project state, blockers, and next actions")
     agent_schema = agent_commands.add_parser("schema", help="Return one bundled JSON Schema")
-    agent_schema.add_argument("name", help="Schema name: envelope, action, or agent-status")
+    agent_schema.add_argument(
+        "name", help="Bundled schema name; see epiq guide for available schemas"
+    )
 
     docs_parser = commands.add_parser("docs", help="Read documentation bundled with Epiq")
     docs_commands = docs_parser.add_subparsers(dest="docs_command", required=True)
@@ -1707,11 +1711,27 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         if args.group_by and args.group_by_actor:
             raise EpiqError("invalid_aggregate", "Choose --group-by or --group-by-actor, not both")
         if args.group_by_actor or args.op == "tally":
+            projection = store.matrix(args.kind)
+            names = {item["name"] for item in projection["questions"]}
+            for name in (args.question, args.group_by):
+                if name and name not in names:
+                    raise EpiqError("question_not_found", f"Question not found: {name}")
+            keys_by_subject = {}
+            if args.group_by:
+                for row in projection["rows"]:
+                    cell = row["cells"][args.group_by]
+                    values = cell.get("display_values") or cell.get("values") or []
+                    keys_by_subject[row["entity_id"]] = (
+                        list(dict.fromkeys(_display(value) for value in values)) or ["Unasked"]
+                    )
             claims = store.list_claims(args.kind, args.question, args.claim_actor)
             grouped_claims: dict[str, list[Any]] = {}
             for claim in claims:
-                key = claim["actor"] if args.group_by_actor else "all"
-                grouped_claims.setdefault(str(key), []).append(claim["value"])
+                keys = [claim["actor"]] if args.group_by_actor else ["all"]
+                if args.group_by:
+                    keys = keys_by_subject.get(claim["subject_id"], [])
+                for key in keys:
+                    grouped_claims.setdefault(str(key), []).append(claim["value"])
             groups = []
             for key, values in sorted(grouped_claims.items()):
                 if args.op == "tally":

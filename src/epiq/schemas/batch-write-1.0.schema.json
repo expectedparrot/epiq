@@ -8,45 +8,310 @@
   "maxItems": 2000,
   "items": {
     "oneOf": [
-      {"$ref": "#/$defs/evidenceAdd"},
-      {"$ref": "#/$defs/claimAssert"}
+      {
+        "$ref": "#/$defs/evidenceAdd"
+      },
+      {
+        "$ref": "#/$defs/claimAssert"
+      },
+      {
+        "$ref": "#/$defs/claimRetract"
+      },
+      {
+        "$ref": "#/$defs/researchNotFound"
+      },
+      {
+        "$ref": "#/$defs/claimReview"
+      }
     ]
   },
   "$defs": {
     "evidenceAdd": {
       "type": "object",
-      "required": ["op", "url", "title", "retrieved_at", "excerpt"],
+      "required": [
+        "op",
+        "url",
+        "title",
+        "retrieved_at",
+        "excerpt"
+      ],
       "properties": {
-        "op": {"const": "evidence.add"},
-        "ref": {"type": "string"},
-        "url": {"type": "string"},
-        "source_type": {"enum": ["web", "personal", "model", "report", "interview", "other"]},
-        "title": {"type": "string", "minLength": 1},
-        "retrieved_at": {"type": "string", "minLength": 1},
-        "published_at": {"type": ["string", "null"]},
-        "excerpt": {"type": "string", "minLength": 1},
-        "actor": {"type": "string"},
-        "locator": {"type": "object"},
-        "source_entity": {"type": "string"}
+        "op": {
+          "const": "evidence.add"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "web",
+            "personal",
+            "model",
+            "report",
+            "interview",
+            "other"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retrieved_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "published_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "excerpt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "string"
+        },
+        "locator": {
+          "type": "object"
+        },
+        "source_entity": {
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/capture"
+        }
       },
       "additionalProperties": false
     },
     "claimAssert": {
       "type": "object",
-      "required": ["op", "subject", "question", "value", "valid_from"],
+      "required": [
+        "op",
+        "subject",
+        "question",
+        "value",
+        "valid_from"
+      ],
       "properties": {
-        "op": {"const": "claim.assert"},
-        "subject": {"type": "string", "minLength": 1},
-        "question": {"type": "string", "minLength": 1},
+        "op": {
+          "const": "claim.assert"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
         "value": {},
-        "valid_from": {"type": "string", "minLength": 1},
-        "evidence_ids": {"type": "array", "items": {"type": "string"}},
-        "evidence_refs": {"type": "array", "items": {"type": "string"}},
-        "actor": {"type": "string"},
-        "confidence": {"enum": ["low", "medium", "high"]},
-        "temporal_basis": {"enum": ["observed", "source", "unknown"]}
+        "valid_from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "actor": {
+          "type": "string"
+        },
+        "confidence": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "temporal_basis": {
+          "enum": [
+            "observed",
+            "source",
+            "unknown"
+          ]
+        },
+        "supports": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/support"
+          }
+        }
       },
       "additionalProperties": false
+    },
+    "claimRetract": {
+      "type": "object",
+      "required": [
+        "op",
+        "claim_id",
+        "reason"
+      ],
+      "properties": {
+        "op": {
+          "const": "claim.retract"
+        },
+        "claim_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "researchNotFound": {
+      "type": "object",
+      "required": [
+        "op",
+        "subject",
+        "question",
+        "query"
+      ],
+      "properties": {
+        "op": {
+          "const": "research.not_found"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capture_method": {
+          "enum": [
+            "discovery",
+            "fetched",
+            "manual"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "captured_at": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "retain_content": {
+          "type": "boolean"
+        }
+      }
+    },
+    "support": {
+      "type": "object",
+      "required": [
+        "quote"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "evidence_id"
+          ]
+        },
+        {
+          "required": [
+            "evidence_ref"
+          ]
+        }
+      ],
+      "properties": {
+        "evidence_id": {
+          "type": "string"
+        },
+        "evidence_ref": {
+          "type": "string"
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "claimReview": {
+      "type": "object",
+      "required": [
+        "op",
+        "claim_id",
+        "decision",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "const": "claim.review"
+        },
+        "claim_id": {
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "accepted",
+            "rejected"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "string"
+        }
+      }
     }
   }
 }

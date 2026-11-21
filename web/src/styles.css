@@ -3606,3 +3606,7 @@ button:hover {
 .claim-actions .retract {
   color: #a25447;
 }
+
+.source-assurance { display: block; margin: 8px 0; color: var(--muted, #6b7280); }
+.capture-details { margin: 8px 0; font-size: 12px; }
+.capture-details code { display: block; overflow-wrap: anywhere; margin-top: 4px; }

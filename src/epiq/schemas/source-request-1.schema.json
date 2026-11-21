@@ -1,0 +1,142 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "request_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "research_task_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Research Task Id",
+      "type": "string"
+    },
+    "query": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+    },
+    "instructions": {
+      "default": "",
+      "maxLength": 20000,
+      "title": "Instructions",
+      "type": "string"
+    },
+    "entity_context": {
+      "additionalProperties": true,
+      "title": "Entity Context",
+      "type": "object"
+    },
+    "question_context": {
+      "additionalProperties": true,
+      "title": "Question Context",
+      "type": "object"
+    },
+    "max_sources": {
+      "default": 5,
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Max Sources",
+      "type": "integer"
+    },
+    "urls": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Urls",
+      "type": "array"
+    },
+    "include_domains": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Include Domains",
+      "type": "array"
+    },
+    "exclude_domains": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Exclude Domains",
+      "type": "array"
+    },
+    "exclude_urls": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 2000,
+      "title": "Exclude Urls",
+      "type": "array"
+    },
+    "exclude_hashes": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 2000,
+      "title": "Exclude Hashes",
+      "type": "array"
+    },
+    "published_after": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Published After"
+    },
+    "published_before": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Published Before"
+    },
+    "capture": {
+      "default": "markdown",
+      "enum": [
+        "metadata",
+        "excerpt",
+        "markdown"
+      ],
+      "title": "Capture",
+      "type": "string"
+    },
+    "retain_content": {
+      "default": false,
+      "title": "Retain Content",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "request_id",
+    "research_task_id",
+    "query",
+    "entity_context",
+    "question_context"
+  ],
+  "title": "SourceRequest",
+  "type": "object"
+}

@@ -92,3 +92,59 @@ test("activity cancellation updates the job and stops offering Cancel", async ({
   await expect(activity.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
   await expect(activity.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
 });
+
+test("failed workspace jobs can be retried from Activity", async ({ page }) => {
+  await mockWorkspace(page);
+  const job = {
+    job_id: "workspace_failed", job_type: "workspace_agent", entity_kind: "Workspace",
+    question_id: "", mode: "workspace_agent", status: "failed", total: 0, completed: 0,
+    target_entity_ids: [], messages: [], created_at: "2026-01-01T00:00:00Z",
+    error: "Interrupted workspace execution",
+  };
+  const jobs = [job];
+  await page.route("**/api/research/jobs", (route) => route.fulfill({ json: jobs }));
+  await page.route("**/api/research/jobs/workspace_failed/retry", async (route) => {
+    const replacement = { ...job, job_id: "workspace_retry", status: "queued", error: "" };
+    jobs.push(replacement);
+    await route.fulfill({ json: replacement });
+  });
+  await page.getByRole("button", { name: /Activity/ }).click();
+  const activity = page.locator(".activity-panel");
+  await activity.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(activity.locator(".job-status.queued")).toHaveText("queued");
+  await expect(activity.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+});
+
+test("claim review records a reason and refreshes its provenance badge", async ({ page }) => {
+  await mockWorkspace(page);
+  let reviewed = false;
+  await page.route("**/api/matrix/Alpha", async (route) => {
+    const matrix = table("Alpha");
+    const lineage = {
+      claim_id: "claim_score", evidence_id: "evidence_score", value: 7,
+      token: "score_token", confidence: "high", excerpt: "The score is 7.",
+      source: { url: "https://example.test", title: "Scores", retrieved_at: "2026-09-09" },
+      provenance: { capture_method: "fetched", verification_status: "excerpt_matched" },
+      support: [{ quote: "The score is 7.", start_offset: 0, end_offset: 15 }],
+      review: reviewed ? { status: "accepted", actor: "human:web" } : { status: "unreviewed" },
+    };
+    const body = { ...matrix, rows: matrix.rows.map((row, index) => index ? row : {
+      ...row, cells: { score: { state: "Answered", value: 7, values: [7], lineage: [lineage] } },
+    }) };
+    await route.fulfill({ json: body });
+  });
+  await page.route("**/api/claims/claim_score/review", async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ decision: "accepted", reason: "Checked score report" });
+    reviewed = true;
+    await route.fulfill({ json: { status: "accepted" } });
+  });
+  await page.reload();
+  await page.locator("td[tabindex]").first().click();
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  await expect(page.locator(".source-assurance")).toContainText("excerpt matched");
+  await expect(page.locator(".source-assurance")).toContainText("unreviewed");
+  page.once("dialog", (dialog) => dialog.accept("Checked score report"));
+  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await expect(page.locator(".source-assurance")).toContainText("reviewed by human:web");
+  await expect(page.getByRole("button", { name: "Mark reviewed", exact: true })).toHaveCount(0);
+});
