@@ -373,11 +373,34 @@ def create_ledger_app(
         try:
             current = database()
             progress("Designing a bounded, additive workspace plan")
-            plan = app.state.workspace_agent_runner(message, workspace_context(current), progress)
+            context = workspace_context(current)
+            plan = app.state.workspace_agent_runner(message, context, progress)
+            entities = list(plan["entities"])[:15]
+            proposed = {
+                (str(item["kind"]), str(item["name"]).casefold()) for item in entities
+            }
+            existing = {
+                (str(table["kind"]), str(name).casefold())
+                for table in context["tables"]
+                for name in table["rows"]
+            }
+            new_kinds = {
+                str(kind) for kind in plan["entity_kinds"] if str(kind) not in current.kinds()
+            }
+            # A bounded plan must remain executable after bounding. Preserve rows referenced by
+            # research on a newly proposed table even when they fall beyond the display-oriented
+            # seed-row limit.
+            for request in plan["research"]:
+                kind = str(request["kind"])
+                for name in request.get("entity_names", []):
+                    key = (kind, str(name).casefold())
+                    if key not in proposed and key not in existing and kind in new_kinds:
+                        entities.append({"kind": kind, "name": str(name)})
+                        proposed.add(key)
             plan = {
                 **plan,
                 "entity_kinds": list(dict.fromkeys(str(x) for x in plan["entity_kinds"]))[:6],
-                "entities": list(plan["entities"])[:15],
+                "entities": entities,
                 "questions": list(plan["questions"])[:24],
                 "research": list(plan["research"])[:24],
             }
@@ -1191,7 +1214,12 @@ def create_ledger_app(
                 raise EpiqError(
                     "workspace_plan_unavailable", "This workspace plan is not awaiting approval"
                 )
-        apply_workspace_plan(job_id)
+            job["approval_status"] = "applying"
+        try:
+            apply_workspace_plan(job_id)
+        except Exception:
+            update_job(job_id, approval_status="pending")
+            raise
         with app.state.research_lock:
             return app.state.research_jobs[job_id]
 

@@ -390,6 +390,57 @@ def test_workspace_agent_receives_cell_coverage(tmp_path: Path) -> None:
     }
 
 
+def test_workspace_plan_preserves_research_rows_beyond_seed_limit(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    names = [f"Citation {index}" for index in range(16)]
+
+    def citation_plan(_goal, _context, progress=None):
+        return {
+            "summary": "Create and research citation rows.",
+            "entity_kinds": ["Citation"],
+            "entities": [{"kind": "Citation", "name": name} for name in names],
+            "questions": [
+                {
+                    "kind": "Citation",
+                    "name": "source_url",
+                    "label": "Source URL",
+                    "value_type": "URL",
+                    "cardinality": "one",
+                    "volatility": "dynamic",
+                    "freshness_days": 90,
+                    "research_guidance": "Find the canonical source URL.",
+                }
+            ],
+            "research": [
+                {
+                    "kind": "Citation",
+                    "question": "source_url",
+                    "entity_names": names,
+                    "instructions": "Research every citation.",
+                }
+            ],
+        }
+
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=citation_plan))
+    client.post("/api/project", json={"name": "Citations"})
+    job_id = client.post(
+        "/api/workspace-agent/jobs", json={"message": "Get citations"}
+    ).json()["job_id"]
+    for _ in range(100):
+        job = next(
+            item for item in client.get("/api/research/jobs").json() if item["job_id"] == job_id
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert [item["name"] for item in job["workspace_plan"]["entities"]] == names
+    entity_commands = [
+        item["argv"] for item in job["command_transcript"] if item["argv"][3:4] == ["entity"]
+    ]
+    assert entity_commands[-1][-1] == "Citation 15"
+
+
 def test_control_center_executes_schema_through_cli_and_keeps_exact_envelope(
     tmp_path: Path,
 ) -> None:
