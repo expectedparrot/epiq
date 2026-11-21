@@ -65,6 +65,53 @@ def test_ledger_cli_command_name_includes_nested_action(tmp_path: Path, capsys) 
     assert payload["command"] == "epiq ledger init"
 
 
+def test_project_option_promotes_ledger_commands_to_top_level(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "--project",
+            str(root),
+            "init",
+            "--name",
+            "Research",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    assert data(capsys)["project"]["name"] == "Research"
+    main(["--project", str(root), "kind", "Company"])
+    assert data(capsys)["kind"] == "Company"
+
+    monkeypatch.setenv("EPIQ_PROJECT", str(root))
+    main(["entity", "Company", "Acme"])
+    entity_id = data(capsys)["entity_id"]
+    main(["matrix", "--kind", "Company"])
+    assert data(capsys)["entities"][0]["entity_id"] == entity_id
+
+
+def test_selected_project_promotes_subsequent_commands(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "research"
+    main(["use-project", str(root)])
+    assert data(capsys)["initialized"] is False
+    main(
+        [
+            "init",
+            "--name",
+            "Selected",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    assert data(capsys)["project"]["name"] == "Selected"
+    main(["status"])
+    assert data(capsys)["project_id"].startswith("prj_")
+
+
 def test_ledger_cli_transacts_logs_retries_and_reports_conflicts(tmp_path: Path, capsys) -> None:
     root = tmp_path / "research"
     main(

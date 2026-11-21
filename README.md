@@ -19,18 +19,29 @@ storage architecture.
 Create and validate a project directory:
 
 ```bash
-epiq ledger init --path research --name "Market research"
-epiq ledger validate --path research
-epiq ledger build --path research --verify
-epiq ledger doctor --path research
+epiq --project research init --name "Market research"
+epiq --project research validate
+epiq --project research build --verify
+epiq --project research doctor
 ```
 
-Agents append typed operation batches with `epiq ledger transact`. Independent branches normally
+Select it once for the current workspace to omit `--project` thereafter:
+
+```bash
+epiq use-project research
+epiq status
+```
+
+`EPIQ_PROJECT` provides the same selection for scripts and CI. The explicit `epiq ledger ...`
+namespace remains a compatibility alias during the cutover. Commands using `--db` continue to
+address the quarantined SQLite implementation and are not part of the target architecture.
+
+Agents append typed operation batches with `epiq transact`. Independent branches normally
 add different transaction files, so Git merges them as a set union. After merging, run:
 
 ```bash
-epiq ledger merge-check --path research
-epiq ledger conflicts --path research
+epiq --project research merge-check
+epiq --project research conflicts
 ```
 
 `merge-check` distinguishes structural integrity from domain disagreement. A project containing
@@ -40,16 +51,16 @@ domain conflicts. See [the architecture specification](docs/git-ledger-architect
 An ordinary evidence-backed workflow does not require raw transaction JSON:
 
 ```bash
-epiq ledger kind --path research Company
-epiq ledger entity --path research Company Acme --idempotency-key entity-acme
-epiq ledger question --path research employees --for Company --type Int \
+epiq --project research kind Company
+epiq --project research entity Company Acme --idempotency-key entity-acme
+epiq --project research question employees --for Company --type Int \
   --idempotency-key question-employees
-epiq ledger record --path research \
+epiq --project research record \
   --subject-id ent_... --question-id q_... --value 12 \
   --valid-from 2026-11-21 --source-title "Acme profile" --source-type web \
   --url https://example.test/acme --retrieved-at 2026-11-21 \
   --excerpt "Acme has 12 employees." --idempotency-key record-employees
-epiq ledger matrix --path research --kind Company
+epiq --project research matrix --kind Company
 ```
 
 The record command commits evidence capture and claim assertion in one immutable transaction.
@@ -58,13 +69,13 @@ Supplying an idempotency key makes safe retries reuse the same transaction and o
 Retain full captures or generated reports by content digest:
 
 ```bash
-epiq ledger artifact-add --path research --input capture.html --retention git
-epiq ledger artifact-verify --path research
-epiq ledger bundle-record --path research --job-id job_123 \
+epiq --project research artifact-add --input capture.html --retention git
+epiq --project research artifact-verify
+epiq --project research bundle-record --job-id job_123 \
   --request request.json --bundle source-bundle.json
-epiq ledger report-record --path research --type summary --input report.md \
+epiq --project research report-record --type summary --input report.md \
   --input-transaction-id txn_... --parameters '{"format":"markdown"}'
-epiq ledger reports --path research
+epiq --project research reports
 ```
 
 `git` and `git-lfs` retention write atomic files under `artifacts/sha256/`; `external` records the
@@ -75,13 +86,13 @@ Ledger projections export directly to deterministic JSON, JSONL, and CSV, or to 
 packages when the `edsl` extra is installed:
 
 ```bash
-epiq ledger export --path research --format matrix-csv --kind Company \
+epiq --project research export --format matrix-csv --kind Company \
   --output companies.csv
-epiq ledger export --path research --format claims-jsonl --kind Company \
+epiq --project research export --format claims-jsonl --kind Company \
   --output company-claims.jsonl
-epiq ledger export --path research --format scenario-list --kind Company \
+epiq --project research export --format scenario-list --kind Company \
   --output companies.scenario-list.ep
-epiq ledger export --path research --format agent-list --kind Company \
+epiq --project research export --format agent-list --kind Company \
   --output companies.agent-list.ep --record-manifest
 ```
 

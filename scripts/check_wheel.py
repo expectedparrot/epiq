@@ -50,6 +50,53 @@ def main():
             check=True,
         )
         assert json.loads(result.stdout)["status"] == "ok"
+        project = Path(temporary) / "ledger-project"
+        initialized = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "epiq",
+                "--project",
+                str(project),
+                "init",
+                "--name",
+                "Installed ledger",
+                "--recorded-at",
+                "2026-01-01T00:00:00Z",
+            ],
+            cwd=temporary,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(initialized.stdout)["status"] == "ok"
+        ledger = epiq.open_ledger(project)
+        ledger.define_kind("Item")
+        entity = ledger.create_entity("Item", "Example")["entity_id"]
+        question = ledger.define_question("score", "Item", "Int")["question_id"]
+        ledger.record(
+            entity,
+            question,
+            5,
+            valid_from="2026-01-01",
+            source_title="Scores",
+            source_type="report",
+            url="urn:epiq:report",
+            retrieved_at="2026-01-01",
+            excerpt="The score is 5.",
+        )
+        status = subprocess.run(
+            [sys.executable, "-m", "epiq", "--project", str(project), "doctor"],
+            cwd=temporary,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(status.stdout)["data"]["healthy"] is True
+        (project / ".epiq" / "projection.sqlite").unlink()
+        assert epiq.open_ledger(project).matrix("Item")["cells"][entity][question][0][
+            "value"
+        ] == 5
     if args.web:
         assert files("epiq").joinpath("_frontend/index.html").is_file()
     print("Installed wheel smoke checks passed")

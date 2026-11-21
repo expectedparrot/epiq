@@ -47,6 +47,53 @@ from .xlsx import write_xlsx
 CONFIG_PATH = Path(".epiq/config.json")
 DEFAULT_DB = Path(".epiq/epiq.sqlite")
 
+_PROMOTED_LEDGER_COMMANDS = frozenset(
+    {
+        "init",
+        "validate",
+        "build",
+        "status",
+        "log",
+        "conflicts",
+        "merge-check",
+        "doctor",
+        "transact",
+        "kind",
+        "entity",
+        "question",
+        "record",
+        "matrix",
+        "claims",
+        "retire-entity",
+        "restore-entity",
+        "retire-question",
+        "restore-question",
+        "assess-evidence",
+        "review-claim",
+        "retract-claim",
+        "end-validity",
+        "challenge-question",
+        "question-challenges",
+        "resolve-challenge",
+        "not-found",
+        "alias-entity",
+        "merge-entities",
+        "evolve-question",
+        "derive",
+        "derivations",
+        "propose",
+        "proposals",
+        "review-proposal",
+        "artifact-add",
+        "artifact-verify",
+        "bundle-record",
+        "bundles",
+        "report-record",
+        "reports",
+        "export",
+    }
+)
+
 
 class AgentArgumentParser(argparse.ArgumentParser):
     """Turn usage failures into the same machine-readable error contract."""
@@ -656,6 +703,10 @@ def parser() -> argparse.ArgumentParser:
     """Build the CLI parser."""
     root = AgentArgumentParser(prog="epiq", description="Evidence-backed agent research database")
     root.add_argument("--db", help="SQLite project path; overrides EPIQ_DB and workspace config")
+    root.add_argument(
+        "--project",
+        help="Git-ledger project directory; promotes ledger commands to the top level",
+    )
     root.add_argument("--actor", default="human:cli", help="Actor recorded for write commands")
     root.add_argument("--quiet", action="store_true", help="Suppress successful command output")
     root.add_argument("--select", help="Emit only a dotted output path, such as entity_id")
@@ -935,6 +986,9 @@ def parser() -> argparse.ArgumentParser:
 
     use = commands.add_parser("use", help="Select the database for this workspace")
     use.add_argument("database")
+
+    use_project = commands.add_parser("use-project", help="Select a Git-ledger project directory")
+    use_project.add_argument("project")
 
     commands.add_parser("db", help="Show the currently selected database")
 
@@ -1880,6 +1934,16 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "config": str(CONFIG_PATH),
             "exists": database.exists(),
         }
+    if args.command == "use-project":
+        project = Path(args.project).expanduser().resolve()
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps({"project": str(project)}, indent=2) + "\n")
+        return {
+            "ok": True,
+            "project": str(project),
+            "config": str(CONFIG_PATH),
+            "initialized": (project / "epiq.toml").exists(),
+        }
     database, database_source = _database(args.db)
     if args.command == "capabilities":
         result = _capabilities(args.capability_command)
@@ -2686,9 +2750,50 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     raise AssertionError(args.command)
 
 
+def _promote_ledger_arguments(arguments: list[str]) -> list[str]:
+    """Route top-level commands to ledger mode when a project directory is selected."""
+    values = list(arguments)
+    project: str | None = None
+    if "--project" in values:
+        index = values.index("--project")
+        if index + 1 >= len(values):
+            return values
+        project = values[index + 1]
+        del values[index : index + 2]
+    elif "--db" not in values:
+        project = os.environ.get("EPIQ_PROJECT") or _configured_ledger_project()
+    if project is None or "ledger" in values:
+        return values
+    command_index = next(
+        (index for index, value in enumerate(values) if value in _PROMOTED_LEDGER_COMMANDS),
+        None,
+    )
+    if command_index is None:
+        return values
+    command = values[command_index]
+    return [
+        *values[:command_index],
+        "ledger",
+        command,
+        "--path",
+        project,
+        *values[command_index + 1 :],
+    ]
+
+
+def _configured_ledger_project() -> str | None:
+    if not CONFIG_PATH.exists():
+        return None
+    try:
+        value = json.loads(CONFIG_PATH.read_text()).get("project")
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run Epiq and emit exactly one versioned JSON envelope by default."""
-    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    raw_argv = _promote_ledger_arguments(list(argv) if argv is not None else sys.argv[1:])
     full_argv = ["epiq", *raw_argv]
     command = "epiq"
     try:

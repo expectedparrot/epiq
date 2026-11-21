@@ -104,6 +104,11 @@ _BINDINGS = [
 
 _LOCAL_ONLY = [
     (
+        "use-project",
+        "administrative",
+        "Ledger project selection is local workspace configuration.",
+    ),
+    (
         "ledger",
         "administrative",
         "Git ledger creation and projection operate on a local repository checkout.",
