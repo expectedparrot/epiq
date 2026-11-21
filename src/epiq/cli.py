@@ -834,6 +834,34 @@ def parser() -> argparse.ArgumentParser:
     )
     ledger_evolve.add_argument("--reason", required=True)
     ledger_evolve.add_argument("--keep-predecessor", action="store_true")
+    ledger_derive = ledger_mutation("derive", "Atomically assert a derived claim and lineage")
+    ledger_derive.add_argument("--subject-id", required=True)
+    ledger_derive.add_argument("--question-id", required=True)
+    ledger_derive.add_argument("--value", required=True)
+    ledger_derive.add_argument("--valid-from", required=True)
+    ledger_derive.add_argument("--evidence-id", action="append", required=True)
+    ledger_derive.add_argument("--operation", required=True)
+    ledger_derive.add_argument("--input-claim-id", action="append", required=True)
+    ledger_derive.add_argument("--parameter-claim-id", action="append", default=[])
+    ledger_derive.add_argument("--path-claim-id", action="append", default=[])
+    ledger_derive.add_argument("--parameters")
+    ledger_derive.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
+    ledger_derivations = ledger_commands.add_parser(
+        "derivations", help="List exact projected derivation lineage"
+    )
+    ledger_derivations.add_argument("--path", default=".")
+    ledger_propose = ledger_mutation("propose", "Record an immutable proposal document")
+    ledger_propose.add_argument("--input", required=True)
+    ledger_propose.add_argument("--type", dest="proposal_type", default="operations")
+    ledger_proposals = ledger_commands.add_parser("proposals", help="List proposals and reviews")
+    ledger_proposals.add_argument("--path", default=".")
+    ledger_review_proposal = ledger_mutation("review-proposal", "Review an exact proposal")
+    ledger_review_proposal.add_argument("proposal_id")
+    ledger_review_proposal.add_argument(
+        "--decision", choices=["accepted", "rejected"], required=True
+    )
+    ledger_review_proposal.add_argument("--reason", required=True)
+    ledger_review_proposal.add_argument("--accepted-operation-id", action="append", default=[])
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1389,6 +1417,11 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "alias-entity",
             "merge-entities",
             "evolve-question",
+            "derive",
+            "derivations",
+            "propose",
+            "proposals",
+            "review-proposal",
         }:
             database = LedgerDatabase(root)
             if args.ledger_command == "kind":
@@ -1557,6 +1590,50 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     args.relationship,
                     args.reason,
                     retire_predecessor=not args.keep_predecessor,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "derive":
+                return database.derive_claim(
+                    args.subject_id,
+                    args.question_id,
+                    _value(args.value),
+                    valid_from=args.valid_from,
+                    evidence_ids=args.evidence_id,
+                    operation=args.operation,
+                    input_claim_ids=args.input_claim_id,
+                    parameter_claim_ids=args.parameter_claim_id,
+                    path_claim_ids=args.path_claim_id,
+                    parameters=_attributes(args.parameters),
+                    confidence=args.confidence,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "derivations":
+                derivations = database.derivations()
+                return {"count": len(derivations), "derivations": derivations}
+            if args.ledger_command == "propose":
+                document = _json_file(args.input)
+                if not isinstance(document, dict):
+                    raise EpiqError("invalid_proposal", "Proposal input must be a JSON object")
+                return database.create_proposal(
+                    document,
+                    proposal_type=args.proposal_type,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "proposals":
+                proposals = database.proposals()
+                return {"count": len(proposals), "proposals": proposals}
+            if args.ledger_command == "review-proposal":
+                return database.review_proposal(
+                    args.proposal_id,
+                    args.decision,
+                    args.reason,
+                    accepted_operation_ids=args.accepted_operation_id,
                     actor=args.actor,
                     recorded_at=args.recorded_at,
                     idempotency_key=args.idempotency_key,

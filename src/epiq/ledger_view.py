@@ -313,6 +313,65 @@ class LedgerView:
             rows = connection.execute(query, parameters).fetchall()
         return [dict(row) for row in rows]
 
+    def derivations(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT derivation_id,claim_id,operation,parameters_json,transaction_id
+                   FROM projected_derivations ORDER BY derivation_id"""
+            ).fetchall()
+            inputs: dict[str, dict[str, list[str]]] = {}
+            for row in connection.execute(
+                """SELECT derivation_id,input_claim_id,role FROM projected_derivation_inputs
+                   ORDER BY derivation_id,role,ordinal"""
+            ):
+                inputs.setdefault(str(row["derivation_id"]), {}).setdefault(
+                    str(row["role"]), []
+                ).append(str(row["input_claim_id"]))
+        return [
+            {
+                "derivation_id": row["derivation_id"],
+                "claim_id": row["claim_id"],
+                "operation": row["operation"],
+                "parameters": _decode(row["parameters_json"]),
+                "inputs": inputs.get(str(row["derivation_id"]), {}),
+                "transaction_id": row["transaction_id"],
+            }
+            for row in rows
+        ]
+
+    def proposals(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT proposal_id,proposal_type,document_json,request_digest,transaction_id
+                   FROM projected_proposals ORDER BY proposal_id"""
+            ).fetchall()
+            reviews: dict[str, list[dict[str, Any]]] = {}
+            for row in connection.execute(
+                """SELECT review_id,proposal_id,decision,reason,accepted_operation_ids_json,
+                          transaction_id
+                   FROM projected_proposal_reviews ORDER BY proposal_id,review_id"""
+            ):
+                reviews.setdefault(str(row["proposal_id"]), []).append(
+                    {
+                        "review_id": row["review_id"],
+                        "decision": row["decision"],
+                        "reason": row["reason"],
+                        "accepted_operation_ids": _decode(row["accepted_operation_ids_json"]),
+                        "transaction_id": row["transaction_id"],
+                    }
+                )
+        return [
+            {
+                "proposal_id": row["proposal_id"],
+                "proposal_type": row["proposal_type"],
+                "document": _decode(row["document_json"]),
+                "request_digest": row["request_digest"],
+                "transaction_id": row["transaction_id"],
+                "reviews": reviews.get(str(row["proposal_id"]), []),
+            }
+            for row in rows
+        ]
+
     @staticmethod
     def _supports(
         connection: sqlite3.Connection, claim_ids: list[str]

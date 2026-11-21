@@ -460,3 +460,133 @@ def test_ledger_cli_merges_entities_and_evolves_questions_atomically(
         "question.evolve",
         "question.retire",
     ]
+
+
+def test_ledger_cli_records_derivations_and_proposal_reviews(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "ledger",
+            "init",
+            "--path",
+            str(root),
+            "--name",
+            "Research",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+    main(["ledger", "kind", "--path", str(root), "Item"])
+    data(capsys)
+    main(["ledger", "entity", "--path", str(root), "Item", "One"])
+    entity_id = data(capsys)["entity_id"]
+    question_ids = []
+    for name in ("input_value", "derived_value"):
+        main(
+            [
+                "ledger",
+                "question",
+                "--path",
+                str(root),
+                name,
+                "--for",
+                "Item",
+                "--type",
+                "Int",
+            ]
+        )
+        question_ids.append(data(capsys)["question_id"])
+    main(
+        [
+            "ledger",
+            "record",
+            "--path",
+            str(root),
+            "--subject-id",
+            entity_id,
+            "--question-id",
+            question_ids[0],
+            "--value",
+            "2",
+            "--valid-from",
+            "2026-11-21",
+            "--source-title",
+            "Source",
+            "--source-type",
+            "web",
+            "--url",
+            "https://example.test",
+            "--retrieved-at",
+            "2026-11-21",
+            "--excerpt",
+            "Value is two.",
+        ]
+    )
+    recorded = data(capsys)
+    derive_args = [
+        "ledger",
+        "derive",
+        "--path",
+        str(root),
+        "--subject-id",
+        entity_id,
+        "--question-id",
+        question_ids[1],
+        "--value",
+        "4",
+        "--valid-from",
+        "2026-11-21",
+        "--evidence-id",
+        recorded["evidence_id"],
+        "--operation",
+        "double",
+        "--input-claim-id",
+        recorded["claim_id"],
+        "--parameters",
+        '{"factor":2}',
+        "--idempotency-key",
+        "derive-double",
+    ]
+    main(derive_args)
+    derived = data(capsys)
+    main(derive_args)
+    assert data(capsys)["created"] is False
+    main(["ledger", "derivations", "--path", str(root)])
+    lineage = data(capsys)["derivations"][0]
+    assert lineage["claim_id"] == derived["claim_id"]
+    assert lineage["inputs"] == {"operand": [recorded["claim_id"]]}
+
+    proposal_path = tmp_path / "proposal.json"
+    proposal_path.write_text('{"operations":[{"type":"entity.alias"}]}')
+    main(
+        [
+            "ledger",
+            "propose",
+            "--path",
+            str(root),
+            "--input",
+            str(proposal_path),
+            "--idempotency-key",
+            "proposal-one",
+        ]
+    )
+    proposal_id = data(capsys)["proposal_id"]
+    main(
+        [
+            "ledger",
+            "review-proposal",
+            "--path",
+            str(root),
+            proposal_id,
+            "--decision",
+            "accepted",
+            "--reason",
+            "Looks good",
+        ]
+    )
+    data(capsys)
+    main(["ledger", "proposals", "--path", str(root)])
+    proposal = data(capsys)["proposals"][0]
+    assert proposal["document"] == {"operations": [{"type": "entity.alias"}]}
+    assert proposal["reviews"][0]["decision"] == "accepted"

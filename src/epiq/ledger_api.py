@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .ledger import OPERATION_VERSION, LedgerRepository, Operation, new_domain_id
+from .ledger import OPERATION_VERSION, LedgerRepository, Operation, canonical_bytes, new_domain_id
 from .ledger_view import LedgerView
 from .ledger_writer import LedgerWriter
 
@@ -661,6 +661,128 @@ class LedgerDatabase:
         )
         return {"outcome_id": identifier, "state": "NotFound", **result}
 
+    def derive_claim(
+        self,
+        subject_id: str,
+        question_id: str,
+        value: Any,
+        *,
+        valid_from: str,
+        evidence_ids: list[str],
+        operation: str,
+        input_claim_ids: list[str],
+        parameter_claim_ids: list[str] | None = None,
+        path_claim_ids: list[str] | None = None,
+        parameters: dict[str, Any] | None = None,
+        claim_id: str | None = None,
+        derivation_id: str | None = None,
+        confidence: str = "medium",
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        claim = self._domain_id("clm", claim_id, actor, idempotency_key, "derived-claim")
+        derivation = self._domain_id(
+            "drv", derivation_id, actor, idempotency_key, "derivation"
+        )
+        result = self.transact(
+            [
+                {
+                    "type": "claim.assert",
+                    "payload": {
+                        "claim_id": claim,
+                        "subject_id": subject_id,
+                        "question_id": question_id,
+                        "value": value,
+                        "valid_from": valid_from,
+                        "evidence_ids": evidence_ids,
+                        "confidence": confidence,
+                        "temporal_basis": "observed",
+                    },
+                },
+                {
+                    "type": "derivation.declare",
+                    "payload": {
+                        "derivation_id": derivation,
+                        "claim_id": claim,
+                        "operation": operation,
+                        "input_claim_ids": input_claim_ids,
+                        "parameter_claim_ids": parameter_claim_ids or [],
+                        "path_claim_ids": path_claim_ids or [],
+                        "parameters": parameters or {},
+                    },
+                },
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"claim_id": claim, "derivation_id": derivation, **result}
+
+    def create_proposal(
+        self,
+        document: dict[str, Any],
+        *,
+        proposal_type: str = "operations",
+        proposal_id: str | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id("prp", proposal_id, actor, idempotency_key, "proposal")
+        request_digest = "sha256:" + hashlib.sha256(canonical_bytes(document)).hexdigest()
+        result = self.transact(
+            [
+                {
+                    "type": "proposal.create",
+                    "payload": {
+                        "proposal_id": identifier,
+                        "proposal_type": proposal_type,
+                        "document": document,
+                        "request_digest": request_digest,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"proposal_id": identifier, "request_digest": request_digest, **result}
+
+    def review_proposal(
+        self,
+        proposal_id: str,
+        decision: str,
+        reason: str,
+        *,
+        accepted_operation_ids: list[str] | None = None,
+        review_id: str | None = None,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id(
+            "rev", review_id, actor, idempotency_key, "proposal-review"
+        )
+        result = self.transact(
+            [
+                {
+                    "type": "proposal.review",
+                    "payload": {
+                        "review_id": identifier,
+                        "proposal_id": proposal_id,
+                        "decision": decision,
+                        "reason": reason,
+                        "accepted_operation_ids": accepted_operation_ids or [],
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"review_id": identifier, "decision": decision, **result}
+
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.entities(kind=kind)
 
@@ -702,6 +824,12 @@ class LedgerDatabase:
 
     def research_outcomes(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.research_outcomes(kind=kind)
+
+    def derivations(self) -> list[dict[str, Any]]:
+        return self.view.derivations()
+
+    def proposals(self) -> list[dict[str, Any]]:
+        return self.view.proposals()
 
     def status(self) -> dict[str, Any]:
         return self.writer.projector.build()
