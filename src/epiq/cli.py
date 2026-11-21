@@ -33,8 +33,9 @@ from .edsl_export import write_edsl
 from .errors import EpiqError
 from .html import write_html
 from .importers import import_cham_corpus
-from .ledger import LedgerRepository
+from .ledger import LedgerRepository, Operation
 from .ledger_projection import LedgerProjector
+from .ledger_writer import LedgerWriter
 from .operations import operation_catalog
 from .store import QUESTION_CHALLENGE_PROBLEMS, Store
 from .xlsx import write_xlsx
@@ -672,12 +673,19 @@ def parser() -> argparse.ArgumentParser:
     ledger_init.add_argument("--project-id")
     ledger_init.add_argument("--replica-id")
     ledger_init.add_argument("--recorded-at")
-    for name in ("validate", "build", "status"):
+    for name in ("validate", "build", "status", "log", "conflicts"):
         command = ledger_commands.add_parser(name, help=f"{name.title()} a Git-native ledger")
         command.add_argument("--path", default=".")
         if name == "build":
             command.add_argument("--force", action="store_true")
             command.add_argument("--verify", action="store_true")
+    ledger_transact = ledger_commands.add_parser(
+        "transact", help="Validate and atomically append typed operations"
+    )
+    ledger_transact.add_argument("--path", default=".")
+    ledger_transact.add_argument("--input", required=True)
+    ledger_transact.add_argument("--recorded-at", required=True)
+    ledger_transact.add_argument("--idempotency-key")
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1216,6 +1224,85 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         projector = LedgerProjector(repository)
         if args.ledger_command == "status":
             return {"root": str(root), **projector.status()}
+        if args.ledger_command == "log":
+            return {
+                "root": str(root),
+                "count": len(repository.transactions()),
+                "transactions": [
+                    {
+                        "transaction_id": item.transaction_id,
+                        "actor": item.actor,
+                        "recorded_at": item.recorded_at,
+                        "parents": list(item.parents),
+                        "idempotency_key": item.idempotency_key,
+                        "digest": item.digest,
+                        "operations": [operation.type for operation in item.operations],
+                    }
+                    for item in repository.ordered()
+                ],
+            }
+        if args.ledger_command == "conflicts":
+            projector.build()
+            with sqlite3.connect(projector.path) as connection:
+                conflicts = [
+                    {
+                        "conflict_id": str(row[0]),
+                        "conflict_type": str(row[1]),
+                        "object_ids": json.loads(str(row[2])),
+                        "detail": json.loads(str(row[3])),
+                    }
+                    for row in connection.execute(
+                        """SELECT conflict_id,conflict_type,object_ids_json,detail_json
+                           FROM projected_conflicts ORDER BY conflict_type,conflict_id"""
+                    )
+                ]
+            return {"root": str(root), "count": len(conflicts), "conflicts": conflicts}
+        if args.ledger_command == "transact":
+            document = _json_file(args.input)
+            if not isinstance(document, dict) or set(document) != {"operations"}:
+                raise EpiqError(
+                    "invalid_transaction_input",
+                    "Transaction input must contain exactly one operations array",
+                )
+            if not isinstance(document["operations"], list) or not document["operations"]:
+                raise EpiqError("invalid_transaction_input", "operations must be a non-empty array")
+            operations = []
+            for index, item in enumerate(document["operations"]):
+                if not isinstance(item, dict):
+                    raise EpiqError(
+                        "invalid_transaction_input", f"Operation {index} must be an object"
+                    )
+                allowed = {"operation_id", "type", "payload", "requires", "metadata"}
+                unknown = set(item) - allowed
+                if unknown or not {"type", "payload"} <= set(item):
+                    raise EpiqError(
+                        "invalid_transaction_input",
+                        f"Operation {index} has invalid keys: {sorted(unknown)}",
+                    )
+                operations.append(
+                    Operation.create(
+                        str(item["type"]),
+                        dict(item["payload"]),
+                        operation_id=(
+                            str(item["operation_id"]) if item.get("operation_id") else None
+                        ),
+                        requires=tuple(str(value) for value in item.get("requires", [])),
+                        metadata=dict(item.get("metadata", {})),
+                    )
+                )
+            result = LedgerWriter(repository).commit(
+                operations,
+                actor=args.actor,
+                recorded_at=args.recorded_at,
+                idempotency_key=args.idempotency_key,
+            )
+            return {
+                "ok": True,
+                "root": str(root),
+                "created": result["created"],
+                "transaction": result["transaction"].as_dict(),
+                "projection": result["projection"],
+            }
         result = projector.build(force=args.force)
         if args.verify:
             result = projector.verify()

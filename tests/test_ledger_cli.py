@@ -63,3 +63,83 @@ def test_ledger_cli_command_name_includes_nested_action(tmp_path: Path, capsys) 
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["command"] == "epiq ledger init"
+
+
+def test_ledger_cli_transacts_logs_retries_and_reports_conflicts(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "ledger",
+            "init",
+            "--path",
+            str(root),
+            "--name",
+            "Research",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+    transaction = tmp_path / "transaction.json"
+    transaction.write_text(
+        json.dumps(
+            {
+                "operations": [
+                    {"type": "entity_kind.define", "payload": {"kind": "Item"}},
+                    {
+                        "type": "entity.create",
+                        "payload": {
+                            "entity_id": "ent_a",
+                            "kind": "Item",
+                            "name": "Same",
+                        },
+                    },
+                    {
+                        "type": "entity.create",
+                        "payload": {
+                            "entity_id": "ent_b",
+                            "kind": "Item",
+                            "name": "Same",
+                        },
+                    },
+                ]
+            }
+        )
+    )
+    arguments = [
+        "--actor",
+        "agent:test",
+        "ledger",
+        "transact",
+        "--path",
+        str(root),
+        "--input",
+        str(transaction),
+        "--recorded-at",
+        "2026-11-21T12:01:00Z",
+        "--idempotency-key",
+        "entities",
+    ]
+    main(arguments)
+    created = data(capsys)
+    assert created["created"] is True
+    transaction_id = created["transaction"]["transaction_id"]
+
+    main(arguments)
+    retried = data(capsys)
+    assert retried["created"] is False
+    assert retried["transaction"]["transaction_id"] == transaction_id
+
+    main(["ledger", "log", "--path", str(root)])
+    log = data(capsys)
+    assert log["count"] == 2
+    assert log["transactions"][-1]["operations"] == [
+        "entity_kind.define",
+        "entity.create",
+        "entity.create",
+    ]
+
+    main(["ledger", "conflicts", "--path", str(root)])
+    conflicts = data(capsys)
+    assert conflicts["count"] == 1
+    assert conflicts["conflicts"][0]["conflict_type"] == "entity_identity"
