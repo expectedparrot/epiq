@@ -1335,16 +1335,30 @@ def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[st
                     for value in values
                     for identifier in (value if isinstance(value, list) else [value])
                 ]
+                target_kind = str(question["value_type"])[4:-1]
                 cell["references"] = [
-                    {
-                        "entity_id": identifier,
-                        "kind": entities.get(identifier, {}).get(
-                            "kind", str(question["value_type"])[4:-1]
-                        ),
-                        "name": entities.get(identifier, {}).get("name", identifier),
-                    }
-                    for identifier in identifiers
+                    _web_reference(identifier, entities, target_kind) for identifier in identifiers
                 ]
             cells[question["name"]] = cell
         rows.append({**entity, "cells": cells})
     return {"entity_kind": projection["kind"], "questions": questions, "rows": rows}
+
+
+def _web_reference(
+    identifier: Any, entities: dict[str, dict[str, Any]], target_kind: str
+) -> dict[str, str]:
+    """Present resolved IDs and unresolved structured relationship findings safely."""
+    if isinstance(identifier, dict):
+        entity_id = identifier.get("entity_id")
+        entity = entities.get(entity_id, {}) if isinstance(entity_id, str) else {}
+        return {
+            "entity_id": entity_id or "",
+            "kind": str(entity.get("kind") or target_kind),
+            "name": str(entity.get("name") or identifier.get("name") or "Unresolved relationship"),
+        }
+    entity = entities.get(identifier, {})
+    return {
+        "entity_id": str(identifier),
+        "kind": str(entity.get("kind") or target_kind),
+        "name": str(entity.get("name", identifier)),
+    }

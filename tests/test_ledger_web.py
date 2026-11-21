@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from epiq.ledger_api import LedgerDatabase
-from epiq.ledger_web import create_ledger_app
+from epiq.ledger_web import _web_reference, create_ledger_app
 
 
 def workspace_plan(_goal, _context, progress=None):
@@ -423,6 +423,11 @@ def test_web_matrix_resolves_references_and_preserves_derivations(tmp_path: Path
     assert row["cells"]["founder"]["references"] == [
         {"entity_id": founder, "kind": "Person", "name": "Ada"}
     ]
+    assert _web_reference({"name": "Grace Hopper", "title": "Technical advisor"}, {}, "Person") == {
+        "entity_id": "",
+        "kind": "Person",
+        "name": "Grace Hopper",
+    }
     derivation = row["cells"]["employees_doubled"]["lineage"][0]["derivation"]
     assert derivation["operation"] == "linear"
     assert derivation["dependencies"] == [{"claim_id": input_claim, "role": "operand"}]

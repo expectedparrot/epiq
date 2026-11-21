@@ -1585,13 +1585,6 @@ export default function App() {
               </small>
             </button>
           ))}
-          <button
-            className="table-link add-table-link"
-            onClick={() => setDialog("entityKind")}
-          >
-            <span className="table-icon">＋</span>
-            Add table
-          </button>
           <div className="sidebar-foot">
             <span className="pulse" />
             Git ledger connected
@@ -1607,7 +1600,6 @@ export default function App() {
                 >
                   ✦ Control Center
                 </button>
-                <button onClick={() => setDialog("entityKind")}>＋ Add table</button>
               </div>
             </div>
           ) : (
@@ -1623,56 +1615,9 @@ export default function App() {
                 rows · {matrix?.questions.length ?? 0} research fields
               </p>
             </div>
-            <div className="actions">
-              <button onClick={() => setDialog("question")}>
-                ＋ Add field
-              </button>
-              <button className="primary" onClick={() => setDialog("entity")}>
-                ＋ Add {kind.toLowerCase()}
-              </button>
-              <details className="export-menu table-action-menu">
-                <summary>Table actions ⌄</summary>
-                <div>
-                  <b>Research</b>
-                  <button onClick={() => setDialog("suggestEntities")}>
-                    <span>✦ Find rows with AI</span>
-                    <small>Describe entities for an agent to propose</small>
-                  </button>
-                  <button onClick={() => setDialog("suggestFields")}>
-                    <span>✦ Suggest fields</span>
-                    <small>Propose complementary research questions</small>
-                  </button>
-                  <button onClick={() => void launchTableResearch()}>
-                    <span>✦ Research whole table</span>
-                    <small>Fill every unanswered research cell</small>
-                  </button>
-                  <b>Rows</b>
-                  <button onClick={() => setDialog("findDuplicates")}>
-                    <span>Find and merge duplicates</span>
-                    <small>Scan names and answers, then review every proposed merge</small>
-                  </button>
-                  {activeResearchJobs.length > 0 && (
-                    <button
-                      className="destructive-menu-action"
-                      onClick={() => void cancelResearchScope("table")}
-                    >
-                      <span>Stop table research</span>
-                      <small>
-                        Cancel {activeResearchJobs.length} active job
-                        {activeResearchJobs.length === 1 ? "" : "s"}
-                      </small>
-                    </button>
-                  )}
-                  <b>View</b>
-                  <button onClick={toggleRows}>
-                    <span>
-                      {wrapText ? "Use fixed-height rows" : "Wrap long text"}
-                    </span>
-                    <small>Change this table's saved display density</small>
-                  </button>
-                </div>
-              </details>
-            </div>
+            <button className="ghost" onClick={() => setRightPane("agent")}>
+              ✦ Request a change
+            </button>
           </div>
           <div
             className="sheet-format-toolbar"
@@ -1964,92 +1909,8 @@ export default function App() {
                     style={{ width: columnWidths[question.name] ?? 180 }}
                   />
                 ))}
-                <col style={{ width: 50 }} />
               </colgroup>
               <thead>
-                <tr className="column-action-row">
-                  <th className="table-research-corner">
-                    <button
-                      className="agent-button compact-agent-action"
-                      data-count={
-                        tableProvisionalRelationships.length
-                          ? tableProvisionalRelationships.length
-                          : undefined
-                      }
-                      title="Research every unanswered cell in the table"
-                      aria-label="Research every unanswered cell in the table"
-                      onClick={() => void launchTableResearch()}
-                    >
-                      ✦
-                    </button>
-                  </th>
-                  <th className="entity-action-head">
-                    <button
-                      className="suggest-entities-button"
-                      title={`Find more ${kind.toLowerCase()} rows`}
-                      onClick={() => setDialog("suggestEntities")}
-                    >
-                      ✦ Find rows
-                    </button>
-                  </th>
-                  {displayedQuestions.map((question) => {
-                    const job = activeJobs.get(question.question_id);
-                    return (
-                      <th
-                        key={`research-${question.question_id}`}
-                        className="field-action-cell"
-                      >
-                        {Boolean(question.definition.formula) ? (
-                          <button
-                            className="formula-button formula-fill-button compact-agent-action"
-                            aria-label="Fill formula down"
-                            title="Click to fill every row, or drag down the column"
-                            draggable
-                            onDragStart={(event) => {
-                              event.dataTransfer.effectAllowed = "copy";
-                              setFormulaDragQuestion(question);
-                            }}
-                            onDragEnd={() => setFormulaDragQuestion(null)}
-                            onClick={() => void materializeFormula(question)}
-                          >
-                            ƒ
-                          </button>
-                        ) : (
-                          <button
-                            className={
-                              job
-                                ? "agent-button running compact-agent-action"
-                                : "agent-button compact-agent-action"
-                            }
-                            data-count={
-                              tableProvisionalRelationships.filter(
-                                (suggestion) =>
-                                  suggestion.question_id ===
-                                  question.question_id,
-                              ).length || undefined
-                            }
-                            title={
-                              job
-                                ? `Research is active; click to schedule any remaining cells (${job.completed}/${job.total || "…"})`
-                                : "Research this column"
-                            }
-                            aria-label={
-                              job
-                                ? "Research active; schedule remaining cells in this column"
-                                : "Research this column"
-                            }
-                            onClick={() =>
-                              openResearch(question, "fill_missing")
-                            }
-                          >
-                            ✦
-                          </button>
-                        )}
-                      </th>
-                    );
-                  })}
-                  <th className="add-column-action" />
-                </tr>
                 <tr className="field-header-row">
                   <th className="row-action-heading">#</th>
                   <th className="name-column entity-column-head">
@@ -2067,13 +1928,6 @@ export default function App() {
                       </button>
                       <small>Entity · row identity</small>
                     </div>
-                    <button
-                      className="suggest-entities-button"
-                      title={`Find more ${kind.toLowerCase()} rows`}
-                      onClick={() => setDialog("suggestEntities")}
-                    >
-                      ✦ Find rows
-                    </button>
                     <span
                       className="column-resizer"
                       onMouseDown={(event) => resizeColumn("__entity__", event)}
@@ -2158,22 +2012,6 @@ export default function App() {
                               </button>
                               <button
                                 onClick={() => {
-                                  setEditQuestion(question);
-                                  setDialog("editQuestion");
-                                }}
-                              >
-                                Edit field
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setResearchQuestion(question);
-                                  setDialog("policy");
-                                }}
-                              >
-                                Time policy
-                              </button>
-                              <button
-                                onClick={() => {
                                   setSchemaChallengeQuestion(question);
                                   setDialog("schemaChallenge");
                                 }}
@@ -2223,15 +2061,6 @@ export default function App() {
                               <button onClick={() => hideColumn(question.name)}>
                                 Hide field
                               </button>
-                              <button
-                                className="destructive-menu-action"
-                                onClick={() => {
-                                  setRetireQuestion(question);
-                                  setDialog("retireQuestion");
-                                }}
-                              >
-                                Retire field
-                              </button>
                             </div>
                           </details>
                         </div>
@@ -2244,9 +2073,6 @@ export default function App() {
                       </th>
                     );
                   })}
-                  <th className="add-column">
-                    <button onClick={() => setDialog("question")}>＋</button>
-                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -2264,39 +2090,7 @@ export default function App() {
                     >
                       <td className="row-action-cell">
                         <small className="row-index">{index + 1}</small>
-                        {isResearching ? (
-                          <button
-                            className="row-research-cancel"
-                            title={`Stop research for ${row.name}`}
-                            aria-label={`Stop research for ${row.name}`}
-                            onClick={() =>
-                              void cancelResearchScope("row", row.entity_id)
-                            }
-                          >
-                            <span className="row-spinner" />
-                          </button>
-                        ) : (
-                          <button
-                            className="row-agent-button"
-                            data-count={rowProvisionalCount || undefined}
-                            title={`Research unanswered fields for ${row.name}`}
-                            aria-label={`Research unanswered fields for ${row.name}`}
-                            onClick={() => {
-                              setRowResearchTarget({
-                                entityId: row.entity_id,
-                                entityName: row.name,
-                                missing: displayedQuestions.filter(
-                                  (question) =>
-                                    row.cells[question.name].state ===
-                                    "Unasked",
-                                ).length,
-                              });
-                              setDialog("rowResearch");
-                            }}
-                          >
-                            ✦
-                          </button>
-                        )}
+                        {isResearching && <span className="row-spinner" />}
                       </td>
                       <td
                         className="entity-name"
@@ -2507,35 +2301,24 @@ export default function App() {
                           </td>
                         );
                       })}
-                      <td className="add-column" />
                     </tr>
                   );
                 })}
-                {(matrix?.rows.length ?? 0) > 0 && (
-                  <tr className="add-row">
-                    <td />
-                    <td colSpan={(matrix?.questions.length ?? 0) + 2}>
-                      <button onClick={() => setDialog("entity")}>
-                        ＋ Add row
-                      </button>
-                    </td>
-                  </tr>
-                )}
                 {matrix?.rows.length === 0 && (
                   <tr className="empty-table-row">
-                    <td colSpan={(matrix?.questions.length ?? 0) + 3}>
+                    <td colSpan={(matrix?.questions.length ?? 0) + 2}>
                       <div className="empty-table-state">
                         <div className="empty-table-icon">▦</div>
                         <h2>Your research table is empty</h2>
                         <p>
-                          Add a row, then define fields you want agents or
-                          people to research.
+                          Use the Control Center to describe the rows and fields
+                          this table should contain.
                         </p>
                         <button
                           className="primary"
-                          onClick={() => setDialog("entity")}
+                          onClick={() => setRightPane("agent")}
                         >
-                          Add first {kind.toLowerCase()}
+                          Open Control Center
                         </button>
                       </div>
                     </td>
@@ -2544,7 +2327,7 @@ export default function App() {
                 {(matrix?.rows.length ?? 0) > 0 &&
                   displayedRows.length === 0 && (
                     <tr className="empty-table-row filtered-table-row">
-                      <td colSpan={(matrix?.questions.length ?? 0) + 3}>
+                      <td colSpan={(matrix?.questions.length ?? 0) + 2}>
                         <div className="empty-table-state">
                           <div className="empty-table-icon">⌕</div>
                           <h2>No rows match this view</h2>
@@ -7303,30 +7086,14 @@ function CellDrawer({
             ✦ Get more evidence
           </button>
         ) : cell.state === "NotFound" ? (
-          <>
-            <button className="ghost" onClick={onChallengeResearch}>
-              Challenge NotFound
-            </button>
-            <button className="primary" onClick={onChallengeResearch}>
-              ✦ Correct and retry
-            </button>
-          </>
+          <button className="primary" onClick={onChallengeResearch}>
+            Challenge and retry
+          </button>
         ) : (
-          <>
-            <button className="ghost" onClick={onNotFound}>
-              Mark NotFound
-            </button>
-            <button className="primary" onClick={onResearch}>
-              ✦ Research this cell
-            </button>
-          </>
+          <button className="primary" onClick={onResearch}>
+            Ask Control Center to research
+          </button>
         )}
-        <button
-          className={cell.state === "Answered" ? "primary" : "ghost"}
-          onClick={onAdd}
-        >
-          ＋ Add evidence-backed answer
-        </button>
       </div>
     </aside>
   );
