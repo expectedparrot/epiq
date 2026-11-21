@@ -3721,3 +3721,85 @@ button:hover {
 .center-row-fields small { color:var(--muted);font:9px/1.4 var(--mono) }
 .center-row-fields img { border-radius:7px;height:96px;object-fit:cover;width:96px }
 @media (max-width:900px) { .workspace-pane { bottom:0;flex-basis:auto;min-width:0;position:fixed;right:0;top:64px;width:min(480px,100vw);z-index:12 } }
+
+/* Coopr editor visual language */
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  color: #1d2433;
+  background: #f4f5f7;
+  --ink: #1d2433;
+  --green: #3b5bdb;
+  --line: #e3e6ec;
+  --paper: #ffffff;
+  --muted: #6b7385;
+}
+body { background:#f4f5f7 }
+header {
+  background:rgba(255,255,255,.94);
+  backdrop-filter:blur(8px);
+  height:58px;
+  gap:14px;
+  padding:0 18px;
+}
+.workspace { height:calc(100vh - 58px) }
+.mark { color:#3b5bdb;font-size:22px }
+.brand small { font-size:11px }
+.sidebar { background:#f4f5f7;padding:18px 12px;width:220px }
+.table-link,.new-table { border-radius:8px;padding:8px 10px }
+.table-link.active { background:#fff;color:#3b5bdb;box-shadow:0 1px 2px rgba(16,24,40,.04) }
+main { background:#f7f8fa }
+.toolbar { background:#fff;min-height:74px;padding:0 22px }
+.toolbar h1 { font-family:inherit;font-size:21px;font-weight:650 }
+button {
+  border-color:#d7dae1;
+  border-radius:8px;
+  font-size:12px;
+  padding:7px 12px;
+}
+button:hover { border-color:#b9c0ce }
+button.primary,.primary { background:#3b5bdb;border-color:#3b5bdb;color:#fff }
+button.primary:hover,.primary:hover { background:#324fc1;border-color:#324fc1 }
+button.ghost,.ghost { border-style:solid;color:#6b7385 }
+input,select,textarea { border-color:#d7dae1!important;border-radius:8px!important }
+input:focus,select:focus,textarea:focus { border-color:#91a7ff!important;box-shadow:0 0 0 3px rgba(59,91,219,.10)!important;outline:0 }
+.grid-wrap,.table-shell { background:#fff }
+table { background:#fff }
+thead th { background:#f7f8fa;color:#4d5668 }
+tbody td { border-color:#e8eaf0 }
+tbody tr:hover td { background:#f8f9fb }
+.workspace-pane {
+  background:#fff;
+  border-left-color:#e3e6ec;
+  box-shadow:-8px 0 24px rgba(16,24,40,.05);
+  flex-basis:min(500px,40vw);
+}
+.workspace-pane-tabs { background:#f7f8fa;border-bottom-color:#e3e6ec;padding:6px 8px }
+.workspace-pane-tabs button { border-radius:7px;color:#6b7385 }
+.workspace-pane-tabs button.active { background:#edf2ff;color:#3b5bdb }
+.drawer-head { border-bottom-color:#e3e6ec }
+.eyebrow,.sidebar-label { color:#7b8392;font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.09em }
+.agent-message.assistant-message,
+.workspace-plan-preview,
+.review-card,
+.status-card,
+.claim-card,
+.row-detail-field {
+  background:#fff;
+  border-color:#e3e6ec;
+  border-radius:12px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04);
+}
+.agent-message.user-message { background:#3b5bdb;color:#fff;border-radius:12px 12px 3px 12px }
+.agent-composer { background:#fff;border-top-color:#e3e6ec }
+.agent-composer textarea { background:#fff;border:1px solid #d7dae1 }
+.agent-command-transcript summary { color:#3b5bdb }
+.agent-command-transcript pre { background:#1d2433;color:#f4f5f7 }
+.agent-plan-summary span,.job-status,.pill { border-radius:999px }
+.modal-backdrop { background:rgba(20,24,35,.45) }
+.modal {
+  border-radius:14px;
+  box-shadow:0 20px 60px rgba(0,0,0,.22);
+}
+.app-toast { border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.16) }
+.blank-workspace { background:#f4f5f7 }
+code { font-family:ui-monospace,"SF Mono",Menlo,monospace }
