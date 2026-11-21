@@ -691,3 +691,49 @@ def test_ledger_cli_retains_artifacts_bundles_and_reports(tmp_path: Path, capsys
         "status": "pass",
         "count": 1,
     }
+
+
+def test_ledger_cli_exports_and_records_manifest(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "ledger",
+            "init",
+            "--path",
+            str(root),
+            "--name",
+            "Exports",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+    main(["ledger", "kind", "--path", str(root), "Company"])
+    data(capsys)
+    main(["ledger", "entity", "--path", str(root), "Company", "Acme"])
+    data(capsys)
+    output = tmp_path / "companies.csv"
+    main(
+        [
+            "ledger",
+            "export",
+            "--path",
+            str(root),
+            "--format",
+            "matrix-csv",
+            "--kind",
+            "Company",
+            "--output",
+            str(output),
+            "--record-manifest",
+            "--idempotency-key",
+            "export-companies",
+        ]
+    )
+    exported = data(capsys)
+    assert output.read_text().startswith("epiq_entity_id,entity_name")
+    assert exported["report"]["artifact"]["digest"].startswith("sha256:")
+    main(["ledger", "reports", "--path", str(root)])
+    report = data(capsys)["reports"][0]
+    assert report["report_type"] == "export:matrix-csv"
+    assert report["parameters"]["kind"] == "Company"

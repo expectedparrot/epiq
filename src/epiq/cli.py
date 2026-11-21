@@ -37,6 +37,7 @@ from .importers import import_cham_corpus
 from .ledger import LedgerRepository, Operation
 from .ledger_api import LedgerDatabase
 from .ledger_diagnostics import diagnose as diagnose_ledger
+from .ledger_exports import export_ledger
 from .ledger_projection import LedgerProjector
 from .ledger_writer import LedgerWriter
 from .operations import operation_catalog
@@ -892,6 +893,26 @@ def parser() -> argparse.ArgumentParser:
     )
     ledger_reports = ledger_commands.add_parser("reports", help="List durable report records")
     ledger_reports.add_argument("--path", default=".")
+    ledger_export = ledger_mutation("export", "Export ledger-backed data or native EDSL objects")
+    ledger_export.add_argument(
+        "--format",
+        choices=[
+            "matrix-json",
+            "matrix-csv",
+            "claims-jsonl",
+            "claims-csv",
+            "scenario-list",
+            "agent-list",
+        ],
+        required=True,
+    )
+    ledger_export.add_argument("--kind")
+    ledger_export.add_argument("--output", required=True)
+    ledger_export.add_argument("--include-closed", action="store_true")
+    ledger_export.add_argument("--record-manifest", action="store_true")
+    ledger_export.add_argument(
+        "--retention", choices=["git", "git-lfs", "external"], default="git"
+    )
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1471,6 +1492,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "bundles",
             "report-record",
             "reports",
+            "export",
         }:
             database = LedgerDatabase(root)
             if args.ledger_command == "kind":
@@ -1719,6 +1741,33 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             if args.ledger_command == "reports":
                 reports = database.reports()
                 return {"count": len(reports), "reports": reports}
+            if args.ledger_command == "export":
+                output = export_ledger(
+                    database,
+                    args.output,
+                    args.format,
+                    kind=args.kind,
+                    include_closed=args.include_closed,
+                )
+                response: dict[str, Any] = {
+                    "format": args.format,
+                    "output": str(output),
+                    "size": output.stat().st_size,
+                }
+                if args.record_manifest:
+                    response["report"] = database.record_report(
+                        f"export:{args.format}",
+                        output.read_bytes(),
+                        parameters={"format": args.format, "kind": args.kind},
+                        input_transaction_ids=[
+                            item.transaction_id for item in database.repository.ordered()
+                        ],
+                        retention=args.retention,
+                        actor=args.actor,
+                        recorded_at=args.recorded_at,
+                        idempotency_key=args.idempotency_key,
+                    )
+                return response
             return database.record_not_found(
                 args.subject_id,
                 args.question_id,
