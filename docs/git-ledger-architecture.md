@@ -188,15 +188,16 @@ acknowledged durable write must never exist only in SQLite.
 ## Git collaboration
 
 Agents work on branches or worktrees and add uniquely named transaction files. Merging branches is
-set union at the file layer. `epiq merge-check` validates the combined causal graph and reports both
+set union at the file layer. `epiq ledger merge-check` validates the combined causal graph and
+reports both
 integrity errors and newly visible domain conflicts.
 
 The expected offline CI sequence is:
 
 ```bash
-epiq validate
-epiq build --verify
-epiq doctor
+epiq ledger validate
+epiq ledger build --verify
+epiq ledger doctor
 pytest
 ```
 

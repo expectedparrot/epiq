@@ -1,15 +1,41 @@
 # E[🦜]
 
-Epiq is a local-first epistemic database for agent-driven research. It stores entities, typed
-questions, source excerpts, and evidence-backed claims in SQLite. It can then project that history
-into ordinary tables, interactive HTML, and Excel without throwing away where each cell came from.
+Epiq is a local-first epistemic database for agent-driven research. Its authoritative datastore is
+a Git-versioned collection of canonical, immutable JSON transactions containing entities, typed
+questions, source excerpts, and evidence-backed claims. SQLite is a disposable projection for
+queries and interfaces; deleting it does not delete research state.
 
 Epiq's core database and CLI do not search the web or call a language model. The optional local web
 application can launch replaceable research agents and submit evidence-backed findings through the
 same deterministic interface. This keeps research orchestration replaceable and makes storage
 behavior testable.
 
-This README builds a database from scratch before introducing the packaged examples.
+The Git-native architecture is under active implementation on `feature/git-ledger`. The older
+SQLite-only commands documented later remain available during that work but are not the target
+storage architecture.
+
+## Git-native projects
+
+Create and validate a project directory:
+
+```bash
+epiq ledger init --path research --name "Market research"
+epiq ledger validate --path research
+epiq ledger build --path research --verify
+epiq ledger doctor --path research
+```
+
+Agents append typed operation batches with `epiq ledger transact`. Independent branches normally
+add different transaction files, so Git merges them as a set union. After merging, run:
+
+```bash
+epiq ledger merge-check --path research
+epiq ledger conflicts --path research
+```
+
+`merge-check` distinguishes structural integrity from domain disagreement. A project containing
+concurrent claims or visibility decisions can be structurally mergeable while reporting explicit
+domain conflicts. See [the architecture specification](docs/git-ledger-architecture.md).
 
 ## Design paper and executable example
 

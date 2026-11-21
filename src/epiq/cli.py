@@ -34,6 +34,7 @@ from .errors import EpiqError
 from .html import write_html
 from .importers import import_cham_corpus
 from .ledger import LedgerRepository, Operation
+from .ledger_diagnostics import diagnose as diagnose_ledger
 from .ledger_projection import LedgerProjector
 from .ledger_writer import LedgerWriter
 from .operations import operation_catalog
@@ -673,7 +674,15 @@ def parser() -> argparse.ArgumentParser:
     ledger_init.add_argument("--project-id")
     ledger_init.add_argument("--replica-id")
     ledger_init.add_argument("--recorded-at")
-    for name in ("validate", "build", "status", "log", "conflicts"):
+    for name in (
+        "validate",
+        "build",
+        "status",
+        "log",
+        "conflicts",
+        "merge-check",
+        "doctor",
+    ):
         command = ledger_commands.add_parser(name, help=f"{name.title()} a Git-native ledger")
         command.add_argument("--path", default=".")
         if name == "build":
@@ -1219,6 +1228,11 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "projection": projection,
             }
         repository = LedgerRepository(root)
+        if args.ledger_command in {"merge-check", "doctor"}:
+            result = diagnose_ledger(root, rebuild=args.ledger_command == "merge-check")
+            if args.ledger_command == "merge-check":
+                result["mergeable"] = result["healthy"]
+            return result
         if args.ledger_command == "validate":
             return {"ok": True, "root": str(root), **repository.validate()}
         projector = LedgerProjector(repository)

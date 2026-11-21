@@ -143,3 +143,19 @@ def test_ledger_cli_transacts_logs_retries_and_reports_conflicts(tmp_path: Path,
     conflicts = data(capsys)
     assert conflicts["count"] == 1
     assert conflicts["conflicts"][0]["conflict_type"] == "entity_identity"
+
+    main(["ledger", "doctor", "--path", str(root)])
+    doctor = data(capsys)
+    assert doctor["healthy"] is True
+    assert doctor["clean"] is False
+    assert doctor["checks"][-1] == {
+        "name": "domain_conflicts",
+        "status": "warn",
+        "count": 1,
+    }
+
+    main(["ledger", "merge-check", "--path", str(root)])
+    merge = data(capsys)
+    assert merge["mergeable"] is True
+    assert merge["clean"] is False
+    assert merge["build_mode"] == "rebuild"
