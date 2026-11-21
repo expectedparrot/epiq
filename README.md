@@ -14,6 +14,46 @@ The Git-native architecture is under active implementation on `feature/git-ledge
 SQLite-only commands documented later remain available during that work but are not the target
 storage architecture.
 
+## Coding agent quickstart — click to copy
+
+Copy the prompt below into Codex, Claude Code, or another terminal-capable coding agent:
+
+```text
+Use Epiq's CLI to build or maintain an evidence-backed research project. Epiq's authoritative
+datastore is a Git-versioned directory of immutable JSON transactions; `.epiq/projection.sqlite`
+is disposable. Never edit transaction files or SQLite directly, and never commit `.epiq/`.
+
+First, make sure `uv` is installed. Install Epiq as an isolated CLI with:
+  uv tool install git+https://github.com/expectedparrot/epiq.git
+If working in an Epiq source checkout, run `uv sync --extra test` and use `uv run epiq` instead.
+
+Before acting, inspect Epiq's built-in JSON guidance:
+  epiq version
+  epiq capabilities
+  epiq guide
+  epiq guide workflow
+  epiq guide evidence
+  epiq guide git
+  epiq guide recovery
+
+Commands return a versioned JSON envelope. Read results from `data`, failures from `errors`, and
+review any `next_steps`. Use `epiq capabilities --command COMMAND` for exact argument contracts;
+do not guess flags or IDs.
+
+For an existing project, use `epiq remote clone URL --path DIRECTORY` or enter its checkout. For a
+new project, use `epiq --project DIRECTORY init --name NAME`. Select it with `--project DIRECTORY`,
+`EPIQ_PROJECT`, or `epiq use-project DIRECTORY`. Use IDs returned by Epiq, identify automated writes
+with `--actor agent:NAME`, and provide stable `--idempotency-key` values.
+
+Record factual claims with real, bounded evidence and explicit retrieval and validity dates. Prefer
+the atomic `record` command. Use `not-found` for an unsuccessful search, never as evidence that the
+answer is negative. Never invent evidence or expose credentials.
+
+After material writes, run `epiq doctor`. After fetching and explicitly integrating Git changes,
+run `epiq merge-check` and inspect `epiq conflicts`. Publish Epiq-owned changes with
+`epiq remote publish --message MESSAGE`; use `--pr --base main` when review is appropriate.
+```
+
 ## Git-native projects
 
 Create and validate a project directory:
@@ -281,46 +321,6 @@ and emits that value directly for shell chaining; `--format ids` and `--format t
 explicit compact-output modes.
 For readability, JSON fragments shown throughout the tutorial represent the envelope's `data`
 member unless the complete envelope is being discussed.
-
-## Coding-agent instructions — copy and paste
-
-Paste this into Codex, Claude Code, or another terminal-capable coding agent:
-
-```text
-Use the Epiq CLI as the interface to Epiq. The authoritative datastore is the project's immutable
-Git ledger. Never edit transaction files or `.epiq/projection.sqlite` directly.
-
-Check that `uv --version` works; if it does not, install `uv` from
-https://docs.astral.sh/uv/getting-started/installation/. Then install the current GitHub version of
-Epiq as an isolated CLI:
-  uv tool install git+https://github.com/expectedparrot/epiq.git
-
-This makes the `epiq` command available without activating a virtual environment. If Epiq is
-already installed this way, update it with `uv tool upgrade epiq`. If you are developing inside an
-Epiq source checkout instead, run `uv sync` once and replace `epiq` below with `uv run epiq`.
-
-Orient yourself with:
-  epiq version
-  epiq capabilities
-  epiq guide
-  epiq guide workflow
-  epiq guide evidence
-  epiq guide git
-
-Commands return a JSON envelope. Read results from `data`, failures from `errors`, and inspect the
-safety metadata in `next_steps` before executing one. To learn exact syntax, run
-`epiq capabilities --command COMMAND`; do not guess flags or input shapes.
-
-Clone or initialize a project directory and select it with `epiq use-project DIRECTORY`,
-`EPIQ_PROJECT`, or `--project DIRECTORY`. Record factual values with real evidence, retrieval dates,
-and bounded excerpts—prefer the atomic `record` command. Use IDs returned by Epiq, stable
-idempotency keys, and an actor such as `agent:codex`. Use `not-found` for an inconclusive search,
-never as a negative answer.
-
-After material changes, run `epiq doctor`. After integrating Git changes, run `epiq merge-check`
-and inspect `epiq conflicts`. Never invent evidence, expose secrets, rewrite acknowledged
-transactions, or commit `.epiq/`.
-```
 
 ## Legacy SQLite tutorial and reference
 
