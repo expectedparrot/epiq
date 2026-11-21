@@ -111,6 +111,18 @@ def test_uninitialized_ledger_web_uses_frontend_compatible_error(tmp_path: Path)
     assert response.json()["error"]["code"] == "project_not_found"
 
 
+def test_frontend_shell_is_not_cached_across_local_rebuilds(tmp_path: Path) -> None:
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    (frontend / "index.html").write_text("<html>current</html>")
+    client = TestClient(create_ledger_app(tmp_path / "missing", frontend=frontend))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_ledger_web_can_close_and_reopen_configured_project(tmp_path: Path) -> None:
     root = tmp_path / "project"
     client = TestClient(create_ledger_app(root))

@@ -1170,7 +1170,8 @@ def create_ledger_app(
                 candidate = (frontend_path / "index.html").resolve()
             if not candidate.is_relative_to(frontend_path) or not candidate.is_file():
                 raise HTTPException(status_code=404, detail="Not found")
-            return FileResponse(candidate)
+            headers = {"Cache-Control": "no-store"} if candidate.name == "index.html" else None
+            return FileResponse(candidate, headers=headers)
 
     return app
 
