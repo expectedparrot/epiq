@@ -153,6 +153,83 @@ class LedgerDatabase:
         )
         return {"question_id": identifier, **result}
 
+    def capture_evidence(
+        self,
+        *,
+        source_title: str,
+        source_type: str,
+        url: str,
+        retrieved_at: str,
+        excerpt: str,
+        source_id: str | None = None,
+        evidence_id: str | None = None,
+        published_at: str | None = None,
+        locator: dict[str, Any] | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        source = self._domain_id("src", source_id, actor, idempotency_key, "source")
+        evidence = self._domain_id("evd", evidence_id, actor, idempotency_key, "evidence")
+        payload: dict[str, Any] = {
+            "evidence_id": evidence,
+            "source_id": source,
+            "url": url,
+            "source_type": source_type,
+            "title": source_title,
+            "retrieved_at": retrieved_at,
+            "excerpt": excerpt,
+            "content_hash": hashlib.sha256(excerpt.encode()).hexdigest(),
+            "locator": locator or {},
+        }
+        if published_at is not None:
+            payload["published_at"] = published_at
+        result = self.transact(
+            [{"type": "evidence.capture", "payload": payload}],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"source_id": source, "evidence_id": evidence, **result}
+
+    def assert_claim(
+        self,
+        subject_id: str,
+        question_id: str,
+        value: Any,
+        *,
+        valid_from: str,
+        evidence_ids: list[str],
+        claim_id: str | None = None,
+        confidence: str = "high",
+        temporal_basis: str = "observed",
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        claim = self._domain_id("clm", claim_id, actor, idempotency_key, "claim")
+        result = self.transact(
+            [
+                {
+                    "type": "claim.assert",
+                    "payload": {
+                        "claim_id": claim,
+                        "subject_id": subject_id,
+                        "question_id": question_id,
+                        "value": value,
+                        "valid_from": valid_from,
+                        "evidence_ids": evidence_ids,
+                        "confidence": confidence,
+                        "temporal_basis": temporal_basis,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"claim_id": claim, **result}
+
     def record(
         self,
         subject_id: str,
@@ -222,6 +299,12 @@ class LedgerDatabase:
 
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.entities(kind=kind)
+
+    def project(self) -> dict[str, Any]:
+        return self.view.project()
+
+    def kinds(self) -> list[str]:
+        return self.view.kinds()
 
     def questions(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.questions(kind=kind)

@@ -55,6 +55,11 @@ epiq ledger matrix --path research --kind Company
 The record command commits evidence capture and claim assertion in one immutable transaction.
 Supplying an idempotency key makes safe retries reuse the same transaction and object IDs.
 
+`epiq-web` now opens the ledger project directory selected by `EPIQ_PROJECT` (default:
+`.epiq/project`). Its core project, entity, question, evidence, claim, matrix, conflict, and doctor
+endpoints use `LedgerDatabase` exclusively. The older `create_app` factory remains temporarily for
+workflows that have not yet been ported; it is no longer the executable's default application.
+
 ## Design paper and executable example
 
 Read [Epiq: An Epistemic Database for Agent-Driven Research](docs/epiq-short-paper.pdf)

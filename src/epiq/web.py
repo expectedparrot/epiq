@@ -3181,8 +3181,10 @@ def create_app(
 
 
 def main() -> None:
-    """Run the local web application."""
+    """Run the ledger-authoritative local web application."""
     import uvicorn
+
+    from .ledger_web import create_ledger_app
 
     environment = Path(".env")
     if environment.exists():
@@ -3191,7 +3193,7 @@ def main() -> None:
                 key, value = line.split("=", 1)
                 os.environ.setdefault(key.strip(), value.strip())
     uvicorn.run(
-        create_app(),
+        create_ledger_app(),
         host="127.0.0.1",
         port=int(os.environ.get("EPIQ_PORT", "8000")),
         access_log=False,

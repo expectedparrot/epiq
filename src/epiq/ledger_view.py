@@ -28,6 +28,20 @@ class LedgerView:
         connection.row_factory = sqlite3.Row
         return connection
 
+    def project(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT project_id,name,format_version FROM projected_project"
+            ).fetchone()
+        return dict(row)
+
+    def kinds(self) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT kind FROM projected_entity_kinds ORDER BY kind"
+            ).fetchall()
+        return [str(row["kind"]) for row in rows]
+
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         query = """
             SELECT e.entity_id,e.kind,e.name,e.attributes_json,e.role,e.identity_json,
