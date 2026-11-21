@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -140,7 +142,18 @@ def create_ledger_app(
     research_runner: ResearchRunner | None = None,
 ) -> FastAPI:
     """Create the ledger-only local web API."""
-    root = Path(project or os.environ.get("EPIQ_PROJECT", ".epiq/project")).resolve()
+    configured_root = Path(
+        project or os.environ.get("EPIQ_PROJECT", ".epiq/project")
+    ).resolve()
+    projects_directory = Path(
+        os.environ.get("EPIQ_PROJECTS_DIR", str(configured_root.parent))
+    ).resolve()
+    active_project_marker = projects_directory / ".epiq-active-project"
+    root = configured_root
+    if active_project_marker.is_file():
+        remembered = Path(active_project_marker.read_text().strip()).resolve()
+        if remembered.is_relative_to(projects_directory) and (remembered / "epiq.toml").is_file():
+            root = remembered
     checkout_frontend = Path(__file__).parents[2] / "web" / "dist"
     packaged_frontend = Path(__file__).parent / "_frontend"
     frontend_path = Path(
@@ -148,8 +161,11 @@ def create_ledger_app(
     ).resolve()
     app = FastAPI(title="Epiq", version="0.1.0")
     app.state.project = root
+    app.state.projects_directory = projects_directory
+    app.state.active_project_marker = active_project_marker
     app.state.project_open = root.exists()
     app.state.workspace_agent_runner = workspace_agent_runner or PiWorkspaceAgentRunner(root)
+    app.state.workspace_agent_runner_is_default = workspace_agent_runner is None
     app.state.research_runner = research_runner or OpenAIResearchRunner()
     app.state.cli_execution = research_runner is None
     app.state.research_jobs: dict[str, dict[str, Any]] = {}
@@ -180,6 +196,51 @@ def create_ledger_app(
             )
         return LedgerDatabase(root)
 
+    def project_directories() -> list[Path]:
+        candidates = {root}
+        directory = app.state.projects_directory
+        if directory.exists():
+            candidates.update(
+                path.parent for path in directory.glob("*/epiq.toml") if path.is_file()
+            )
+        return sorted(candidates)
+
+    def select_project(path: Path) -> LedgerDatabase:
+        nonlocal root
+        selected = LedgerDatabase(path)
+        root = path.resolve()
+        app.state.project = root
+        app.state.project_open = True
+        app.state.projects_directory.mkdir(parents=True, exist_ok=True)
+        marker = app.state.active_project_marker
+        temporary_marker = marker.with_suffix(".tmp")
+        temporary_marker.write_text(f"{root}\n")
+        temporary_marker.replace(marker)
+        if app.state.workspace_agent_runner_is_default:
+            app.state.workspace_agent_runner = PiWorkspaceAgentRunner(root)
+        with app.state.research_lock:
+            app.state.research_jobs.clear()
+        hydrate_workspace_history()
+        return selected
+
+    def project_slug(name: str) -> str:
+        ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+        slug = "-".join(part for part in re.split(r"[^a-zA-Z0-9]+", ascii_name.lower()) if part)
+        return slug or "epiq-project"
+
+    def ensure_project_switch_safe() -> None:
+        with app.state.research_lock:
+            active = any(
+                job.get("status") in {"queued", "running"}
+                or job.get("approval_status") == "applying"
+                for job in app.state.research_jobs.values()
+            )
+        if active:
+            raise EpiqError(
+                "research_active",
+                "Wait for active Control Center work before switching projects",
+            )
+
     def now() -> str:
         return datetime.now(UTC).isoformat()
 
@@ -193,12 +254,21 @@ def create_ledger_app(
             questions = []
             for question in matrix["questions"]:
                 states = {"answered": 0, "not_found": 0, "unasked": 0}
+                current_answers = []
                 for entity in matrix["entities"]:
                     claims = matrix["cells"].get(entity["entity_id"], {}).get(
                         question["question_id"], []
                     )
                     if claims:
                         states["answered"] += 1
+                        current_answers.extend(
+                            {
+                                "row": entity["name"],
+                                "claim_id": claim["claim_id"],
+                                "value": claim["value"],
+                            }
+                            for claim in claims
+                        )
                     else:
                         outcome = (entity["entity_id"], question["question_id"]) in not_found
                         states["not_found" if outcome else "unasked"] += 1
@@ -208,6 +278,7 @@ def create_ledger_app(
                         "value_type": question["value_type"],
                         "definition": question["definition"],
                         "coverage": states,
+                        "current_answers": current_answers,
                     }
                 )
             return {
@@ -228,6 +299,9 @@ def create_ledger_app(
 
     def plan_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
         commands: list[dict[str, Any]] = []
+        claims_by_id = {
+            claim["claim_id"]: claim for claim in database().claims(include_closed=True)
+        }
         kinds = dict.fromkeys(
             [
                 *plan["entity_kinds"],
@@ -272,6 +346,52 @@ def create_ledger_app(
                     "status": "proposed",
                 }
             )
+        for item in plan.get("retractions", []):
+            commands.append(
+                {
+                    "argv": [
+                        "epiq",
+                        "--project",
+                        str(root),
+                        "retract-claim",
+                        item["claim_id"],
+                        "--reason",
+                        item["reason"],
+                    ],
+                    "status": "proposed",
+                }
+            )
+        for item in plan.get("replacements", []):
+            claim = claims_by_id.get(item["claim_id"])
+            if claim is None:
+                raise EpiqError(
+                    "claim_not_found",
+                    f"Replacement claim not found: {item['claim_id']}",
+                )
+            argv = [
+                "epiq",
+                "--project",
+                str(root),
+                "supersede-claim",
+                item["claim_id"],
+                "--value",
+                json.dumps(item["value"]),
+                "--valid-from",
+                claim["valid_from"],
+            ]
+            for evidence_id in claim["evidence_ids"]:
+                argv.extend(["--evidence-id", evidence_id])
+            argv.extend(
+                [
+                    "--reason",
+                    item["reason"],
+                    "--confidence",
+                    claim["confidence"],
+                    "--temporal-basis",
+                    claim["temporal_basis"],
+                ]
+            )
+            commands.append({"argv": argv, "status": "proposed"})
         for item in plan["research"]:
             argv = [
                 "epiq",
@@ -403,6 +523,8 @@ def create_ledger_app(
                 "entity_kinds": list(dict.fromkeys(str(x) for x in plan["entity_kinds"]))[:6],
                 "entities": entities,
                 "questions": list(plan["questions"])[:24],
+                "retractions": list(plan.get("retractions", []))[:24],
+                "replacements": list(plan.get("replacements", []))[:24],
                 "research": list(plan["research"])[:24],
             }
             estimated = sum(len(item.get("entity_names", [])) for item in plan["research"])
@@ -540,6 +662,78 @@ def create_ledger_app(
                 record_result(argv, result)
                 existing_questions.add(key)
                 written += 1
+        for item in plan.get("retractions", []):
+            argv = [
+                "epiq",
+                "--project",
+                str(root),
+                "retract-claim",
+                item["claim_id"],
+                "--reason",
+                item["reason"],
+            ]
+            result = (
+                execute_cli(argv)
+                if app.state.cli_execution
+                else current.retract_claim(
+                    item["claim_id"],
+                    item["reason"],
+                    actor="agent:web",
+                    idempotency_key=f"{job_id}:retract:{item['claim_id']}",
+                )
+            )
+            record_result(argv, result)
+            written += 1
+        claims_by_id = {
+            claim["claim_id"]: claim for claim in current.claims(include_closed=True)
+        }
+        for item in plan.get("replacements", []):
+            claim = claims_by_id.get(item["claim_id"])
+            if claim is None:
+                raise EpiqError(
+                    "claim_not_found",
+                    f"Replacement claim not found: {item['claim_id']}",
+                )
+            argv = [
+                "epiq",
+                "--project",
+                str(root),
+                "supersede-claim",
+                item["claim_id"],
+                "--value",
+                json.dumps(item["value"]),
+                "--valid-from",
+                claim["valid_from"],
+            ]
+            for evidence_id in claim["evidence_ids"]:
+                argv.extend(["--evidence-id", evidence_id])
+            argv.extend(
+                [
+                    "--reason",
+                    item["reason"],
+                    "--confidence",
+                    claim["confidence"],
+                    "--temporal-basis",
+                    claim["temporal_basis"],
+                ]
+            )
+            result = (
+                execute_cli(argv)
+                if app.state.cli_execution
+                else current.supersede_claim(
+                    item["claim_id"],
+                    item["value"],
+                    valid_from=claim["valid_from"],
+                    evidence_ids=claim["evidence_ids"],
+                    reason=item["reason"],
+                    confidence=claim["confidence"],
+                    temporal_basis=claim["temporal_basis"],
+                    actor="agent:web",
+                    idempotency_key=f"{job_id}:replace:{item['claim_id']}",
+                )
+            )
+            record_result(argv, result)
+            written += 1
         current.review_proposal(
             job["proposal_id"],
             "accepted",
@@ -812,37 +1006,70 @@ def create_ledger_app(
         }
 
     @app.post("/api/project", status_code=201)
-    def create_project(body: ProjectCreate) -> dict[str, Any]:
+    def initialize_project(body: ProjectCreate) -> dict[str, Any]:
         created = LedgerDatabase(root, create=True, name=body.name, actor=body.actor)
         app.state.project_open = True
         return {"project": created.project(), "path": str(root)}
 
-    @app.get("/api/projects")
-    def projects() -> list[dict[str, Any]]:
-        if not root.exists():
-            return []
-        project = LedgerDatabase(root).project()
-        return [
-            {
-                "project_id": project["project_id"],
-                "name": project["name"],
-                "path": str(root),
-                "active": bool(app.state.project_open),
-            }
-        ]
-
-    @app.post("/api/projects/open")
-    def open_project(body: ProjectOpen) -> dict[str, Any]:
-        if not root.exists():
-            raise EpiqError("project_not_found", "The configured project no longer exists")
-        project = LedgerDatabase(root).project()
-        if body.project_id != project["project_id"]:
-            raise EpiqError("project_not_found", "The selected project is not configured")
-        app.state.project_open = True
+    @app.post("/api/projects", status_code=201)
+    def create_project(body: ProjectCreate) -> dict[str, Any]:
+        ensure_project_switch_safe()
+        directory = app.state.projects_directory
+        directory.mkdir(parents=True, exist_ok=True)
+        slug = project_slug(body.name)
+        path = directory / slug
+        suffix = 2
+        while path.exists():
+            path = directory / f"{slug}-{suffix}"
+            suffix += 1
+        created = LedgerDatabase(path, create=True, name=body.name, actor=body.actor)
+        select_project(path)
+        project = created.project()
         return {
             "project_id": project["project_id"],
             "name": project["name"],
-            "path": str(root),
+            "path": str(path),
+            "active": True,
+        }
+
+    @app.get("/api/projects")
+    def projects() -> list[dict[str, Any]]:
+        available = []
+        for path in project_directories():
+            if not (path / "epiq.toml").exists():
+                continue
+            project = LedgerDatabase(path).project()
+            available.append(
+                {
+                    "project_id": project["project_id"],
+                    "name": project["name"],
+                    "path": str(path),
+                    "active": path.resolve() == root and bool(app.state.project_open),
+                }
+            )
+        return available
+
+    @app.post("/api/projects/open")
+    def open_project(body: ProjectOpen) -> dict[str, Any]:
+        selected_path = None
+        selected = None
+        for path in project_directories():
+            if not (path / "epiq.toml").exists():
+                continue
+            candidate = LedgerDatabase(path)
+            if candidate.project()["project_id"] == body.project_id:
+                selected_path = path
+                selected = candidate
+                break
+        if selected_path is None or selected is None:
+            raise EpiqError("project_not_found", "The selected project is not configured")
+        if selected_path.resolve() != root:
+            ensure_project_switch_safe()
+        project = select_project(selected_path).project()
+        return {
+            "project_id": project["project_id"],
+            "name": project["name"],
+            "path": str(selected_path),
             "active": True,
         }
 

@@ -164,7 +164,15 @@ FIELD_SUGGESTION_SCHEMA = {
 WORKSPACE_PLAN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["summary", "entity_kinds", "entities", "questions", "research"],
+    "required": [
+        "summary",
+        "entity_kinds",
+        "entities",
+        "questions",
+        "retractions",
+        "replacements",
+        "research",
+    ],
     "properties": {
         "summary": {"type": "string"},
         "entity_kinds": {"type": "array", "items": {"type": "string"}},
@@ -210,6 +218,37 @@ WORKSPACE_PLAN_SCHEMA = {
                 },
             },
         },
+        "retractions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["claim_id", "reason"],
+                "properties": {
+                    "claim_id": {
+                        "type": "string",
+                        "pattern": "^clm_[A-Za-z0-9]+$",
+                    },
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
+        },
+        "replacements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["claim_id", "value", "reason"],
+                "properties": {
+                    "claim_id": {
+                        "type": "string",
+                        "pattern": "^clm_[A-Za-z0-9]+$",
+                    },
+                    "value": {},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
+        },
         "research": {
             "type": "array",
             "items": {
@@ -241,12 +280,17 @@ Epiq is an evidence-backed, Git-ledger database. The user's durable intent matte
 literal reading of one message. Maintain continuity across turns, but treat the current workspace
 snapshot in each turn as authoritative.
 
-Design explicit, additive Epiq CLI plans. Before choosing a schema, critique whether it represents
-the user's actual concept. Detect ambiguous umbrella terms, institutional taxonomies, and lossy
-booleans. Prefer an exact categorical status plus a derived convenience field when an external
-organization uses multiple official categories. Never treat a different positive affiliation
-category as a negative. Absence of evidence is unknown, not false. If ambiguity would materially
-change the schema, say so in the summary and propose the information-preserving representation.
+Design explicit Epiq CLI plans. Plans may add schema, rows, and evidence-backed research, retract an
+exact incorrect claim, or supersede an exact claim with a corrected value supported by the same
+evidence. Retraction and supersession are append-only:
+it preserves the claim and evidence while adding a corrective ledger event. Never invent a claim ID
+or retract merely because newer evidence may differ. Before choosing a schema, critique whether it
+represents the user's actual concept. Detect ambiguous umbrella terms, institutional taxonomies,
+and lossy booleans. Prefer an exact categorical status plus a derived convenience field when an
+external organization uses multiple official categories. Never treat a different positive
+affiliation category as a negative. Absence of evidence is unknown, not false. If ambiguity would
+materially change the schema, say so in the summary and propose the information-preserving
+representation.
 
 Reuse existing schema and rows. Model durable things as entity rows, typed questions as columns,
 and repeated things as related tables with Ref[Kind]. Research guidance must define positive,
@@ -292,10 +336,13 @@ class PiWorkspaceAgentRunner:
 Current authoritative Epiq workspace snapshot:
 {json.dumps(context, sort_keys=True)}
 
-Create the next bounded plan. You may propose only additive entity kinds, entities, questions, and
-research requests. Question names must be snake_case. Use value types such as String, Bool, Int,
-Float, Year, Date, URL, Image, Probability, Enum[a,b], Quantity[USD], and Ref[Kind]. Every research
-request must use an exact table kind, exact question name, and existing or proposed row names.
+Create the next bounded plan. You may propose additive entity kinds, entities, questions, research
+requests, explicit retractions, and evidence-preserving replacements of claim IDs supplied in the
+conversation or workspace. Use a replacement—not research—when changing an already answered value
+without changing its evidence. Question names must be snake_case. Use value types such as String,
+Bool, Int, Float, Year, Date, URL, Image, Probability, Enum[a,b], Quantity[USD], and Ref[Kind].
+Every research request must use an exact table kind, exact question name, and existing or proposed
+row names.
 
 Required JSON Schema:
 {json.dumps(WORKSPACE_PLAN_SCHEMA, sort_keys=True)}
@@ -569,9 +616,13 @@ rows, typed questions as columns, and one-to-many facts (funding rounds, press a
 observations) as related entity tables rather than JSON arrays. Prefer one primary table plus only
 the related tables genuinely needed by the user's goal. Use Ref[Kind] questions for relationships.
 
-You may propose only additive operations: entity kinds, entities, questions, and research requests.
-Do not rename, delete, retire, supersede, or invent claims. Reuse existing schema and rows. For an
-empty workspace, propose at most 3 tables, 5 recognizable seed rows, 8 initial fields, and 24
+You may propose additive entity kinds, entities, questions, and research requests. You may also
+retract an exact claim ID supplied by the user when it is specifically identified as incorrect, or
+replace its value while preserving its evidence. These corrections append ledger events. Do not
+rename, delete, retire, invent claim IDs, or correct claims speculatively. Reuse existing schema and
+rows. Use a replacement rather than research to change an already answered value without changing
+its supporting evidence.
+For an empty workspace, propose at most 3 tables, 5 recognizable seed rows, 8 initial fields, and 24
 initial research cells. Seed rows are a bounded starting set, never a claim of exhaustive coverage.
 Broader entity discovery happens incrementally after approval. Research only the cells needed to
 make the starter workspace useful. Question names must be snake_case. Use Epiq

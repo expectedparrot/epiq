@@ -142,6 +142,64 @@ def test_ledger_web_can_close_and_reopen_configured_project(tmp_path: Path) -> N
     assert client.get("/api/project").json()["project"]["name"] == "Closeable"
 
 
+def test_ledger_web_creates_and_switches_between_git_projects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    projects = tmp_path / "projects"
+    first_root = projects / "first"
+    monkeypatch.setenv("EPIQ_PROJECTS_DIR", str(projects))
+    client = TestClient(create_ledger_app(first_root))
+    first = client.post("/api/project", json={"name": "First"}).json()["project"]
+    client.post("/api/projects/close", json={})
+    client.app.state.research_jobs["old-project-job"] = {
+        "job_id": "old-project-job",
+        "job_type": "workspace_agent",
+    }
+
+    response = client.post("/api/projects", json={"name": "Restaurants in Bourne, MA"})
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["name"] == "Restaurants in Bourne, MA"
+    assert Path(created["path"]).name == "restaurants-in-bourne-ma"
+    assert (Path(created["path"]) / "epiq.toml").exists()
+    assert client.get("/api/project").json()["project"]["name"] == created["name"]
+    assert client.get("/api/research/jobs").json() == []
+    listed = client.get("/api/projects").json()
+    assert {item["name"] for item in listed} == {"First", created["name"]}
+    assert next(item for item in listed if item["name"] == created["name"])["active"] is True
+
+    restarted = TestClient(create_ledger_app(first_root))
+    assert restarted.get("/api/project").json()["project"]["name"] == created["name"]
+
+    reopened = client.post("/api/projects/open", json={"project_id": first["project_id"]})
+    assert reopened.status_code == 200
+    assert reopened.json()["name"] == "First"
+    assert client.get("/api/project").json()["project"]["name"] == "First"
+
+
+def test_ledger_web_refuses_to_switch_projects_during_active_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    projects = tmp_path / "projects"
+    first_root = projects / "first"
+    second_root = projects / "second"
+    monkeypatch.setenv("EPIQ_PROJECTS_DIR", str(projects))
+    first = LedgerDatabase(first_root, create=True, name="First").project()
+    second = LedgerDatabase(second_root, create=True, name="Second").project()
+    client = TestClient(create_ledger_app(first_root))
+    client.app.state.research_jobs["active"] = {
+        "job_id": "active",
+        "status": "running",
+    }
+
+    response = client.post("/api/projects/open", json={"project_id": second["project_id"]})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "research_active"
+    assert client.get("/api/project").json()["project"]["project_id"] == first["project_id"]
+
+
 def test_ledger_web_review_visibility_and_retraction_are_durable(tmp_path: Path) -> None:
     root = tmp_path / "project"
     client = TestClient(create_ledger_app(root))
@@ -333,6 +391,165 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
     assert history[0]["assistant_summary"] == "Add profile photos for every faculty member."
     assert history[0]["approval_status"] == "approved"
     assert history[0]["command_transcript"][-1]["argv"][3] == "research"
+
+
+def test_workspace_agent_can_retract_an_exact_claim(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    claim_id = ""
+
+    def correction_plan(_goal, _context, progress=None):
+        return {
+            "summary": "Retract the address attached to the wrong restaurant.",
+            "entity_kinds": [],
+            "entities": [],
+            "questions": [],
+            "retractions": [
+                {"claim_id": claim_id, "reason": "wrong restaurant location"}
+            ],
+            "research": [],
+        }
+
+    client = TestClient(
+        create_ledger_app(
+            root,
+            workspace_agent_runner=correction_plan,
+            research_runner=photo_research,
+        )
+    )
+    client.post("/api/project", json={"name": "Restaurants"})
+    client.post("/api/entity-kinds", json={"kind": "Restaurant"})
+    entity = client.post(
+        "/api/entities", json={"kind": "Restaurant", "name": "The Chart Room"}
+    ).json()["entity_id"]
+    question = client.post(
+        "/api/questions",
+        json={"name": "address", "subject_kind": "Restaurant", "value_type": "String"},
+    ).json()["question_id"]
+    evidence = client.post(
+        "/api/evidence",
+        json={
+            "title": "Operator page",
+            "url": "https://example.test/chart-room",
+            "retrieved_at": "2026-11-21",
+            "excerpt": "565 Eden St, Bar Harbor, ME",
+        },
+    ).json()["evidence_id"]
+    claim_id = client.post(
+        "/api/claims",
+        json={
+            "subject": entity,
+            "question": question,
+            "value": "565 Eden St, Bar Harbor, ME",
+            "valid_from": "2026-11-21",
+            "evidence_ids": [evidence],
+        },
+    ).json()["claim_id"]
+
+    job_id = client.post(
+        "/api/workspace-agent/jobs", json={"message": "Retract the wrong address"}
+    ).json()["job_id"]
+    for _ in range(100):
+        job = next(
+            item for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == job_id
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["command_transcript"][0]["argv"][3:] == [
+        "retract-claim",
+        claim_id,
+        "--reason",
+        "wrong restaurant location",
+    ]
+    approved = client.post(f"/api/workspace-agent/jobs/{job_id}/approve")
+    assert approved.status_code == 202
+    assert client.get("/api/matrix/Restaurant").json()["rows"][0]["cells"]["address"][
+        "state"
+    ] == "Unasked"
+
+
+def test_workspace_agent_can_replace_an_answered_claim_preserving_evidence(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    claim_id = ""
+
+    def correction_plan(_goal, _context, progress=None):
+        return {
+            "summary": "Normalize the address value while preserving its evidence.",
+            "entity_kinds": [],
+            "entities": [],
+            "questions": [],
+            "retractions": [],
+            "replacements": [
+                {
+                    "claim_id": claim_id,
+                    "value": "290 Shore Rd., Bourne, MA 02532",
+                    "reason": "Normalize address capitalization",
+                }
+            ],
+            "research": [],
+        }
+
+    client = TestClient(
+        create_ledger_app(
+            root,
+            workspace_agent_runner=correction_plan,
+            research_runner=photo_research,
+        )
+    )
+    client.post("/api/project", json={"name": "Restaurants"})
+    client.post("/api/entity-kinds", json={"kind": "Restaurant"})
+    entity = client.post(
+        "/api/entities", json={"kind": "Restaurant", "name": "The Lobster Trap"}
+    ).json()["entity_id"]
+    question = client.post(
+        "/api/questions",
+        json={"name": "address", "subject_kind": "Restaurant", "value_type": "String"},
+    ).json()["question_id"]
+    evidence = client.post(
+        "/api/evidence",
+        json={
+            "title": "Contact page",
+            "url": "https://example.test/contact",
+            "retrieved_at": "2026-11-21",
+            "excerpt": "290 SHORE RD., BOURNE, MA 02532",
+        },
+    ).json()["evidence_id"]
+    claim_id = client.post(
+        "/api/claims",
+        json={
+            "subject": entity,
+            "question": question,
+            "value": "290 SHORE RD., BOURNE, MA 02532",
+            "valid_from": "2026-11-21",
+            "evidence_ids": [evidence],
+        },
+    ).json()["claim_id"]
+
+    job_id = client.post(
+        "/api/workspace-agent/jobs", json={"message": "Normalize the address"}
+    ).json()["job_id"]
+    for _ in range(100):
+        job = next(
+            item for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == job_id
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["command_transcript"][0]["argv"][3] == "supersede-claim"
+    assert client.post(f"/api/workspace-agent/jobs/{job_id}/approve").status_code == 202
+    cell = client.get("/api/matrix/Restaurant").json()["rows"][0]["cells"]["address"]
+    assert cell["value"] == "290 Shore Rd., Bourne, MA 02532"
+    assert cell["lineage"][0]["evidence_id"] == evidence
+    claims = LedgerDatabase(root).claims(include_closed=True)
+    original = next(item for item in claims if item["claim_id"] == claim_id)
+    assert original["value"] == "290 SHORE RD., BOURNE, MA 02532"
+    assert cell["claims"][0]["claim_id"] != claim_id
 
 
 def test_workspace_agent_receives_cell_coverage(tmp_path: Path) -> None:

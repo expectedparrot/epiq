@@ -149,6 +149,8 @@ export interface ResearchJob {
     entity_kinds: string[];
     entities: Array<{ kind: string; name: string }>;
     questions: Array<{ kind: string; name: string; label: string }>;
+    retractions?: Array<{ claim_id: string; reason: string }>;
+    replacements?: Array<{ claim_id: string; value: unknown; reason: string }>;
     research: Array<{ kind: string; question: string; entity_names: string[] }>;
   };
   child_job_ids?: string[];

@@ -109,13 +109,11 @@ type Dialog =
   | "suggestEntities"
   | "suggestFields"
   | "policy"
-  | "challenge"
   | "schemaChallenge"
   | "editQuestion"
   | "retireQuestion"
   | "mergeEntity"
   | "findDuplicates"
-  | "researchChallenge"
   | "paste"
   | "fill"
   | null;
@@ -320,9 +318,6 @@ export default function App() {
     stale: DiagnosticCell[];
     contradictions: DiagnosticCell[];
   }>({ stale: [], contradictions: [] });
-  const [challengedClaimId, setChallengedClaimId] = useState<string | null>(
-    null,
-  );
   const [projectClosed, setProjectClosed] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [wrapText, setWrapText] = useState(true);
@@ -367,6 +362,7 @@ export default function App() {
     overview?.project.project_id, kind, !needsInit && !projectClosed, setError,
   );
   const overviewGeneration = useRef(0);
+  const activeProjectIdRef = useRef<string | null>(null);
   const layoutKey = `epiq-layout:${overview?.project.project_id ?? "project"}:${kind}`;
   const viewsKey = `epiq-views:${overview?.project.project_id ?? "project"}:${kind}`;
   const getColumnFormat = (question: Question): NumberFormat => {
@@ -388,13 +384,29 @@ export default function App() {
     try {
       const next = await api<Overview>("/api/project");
       if (generation !== overviewGeneration.current) return;
-      setOverview(next);
-      setNeedsInit(false);
       const primaryKind = [...next.entity_kinds].sort(
         (left, right) =>
           right.questions - left.questions || right.entities - left.entities,
       )[0]?.kind;
-      setKind((current) => current || primaryKind || "");
+      const nextProjectId = next.project.project_id;
+      const projectChanged =
+        activeProjectIdRef.current !== null &&
+        activeProjectIdRef.current !== nextProjectId;
+      activeProjectIdRef.current = nextProjectId;
+      if (projectChanged) {
+        clearMatrix();
+        setJobs([]);
+        jobsRef.current = [];
+        jobsRevisionRef.current = "";
+        setSelection(null);
+        setEntitySelection(null);
+        setChatDraft("");
+        setKind(primaryKind || "");
+      } else {
+        setKind((current) => current || primaryKind || "");
+      }
+      setOverview(next);
+      setNeedsInit(false);
     } catch (caught) {
       if (generation !== overviewGeneration.current) return;
       if (caught instanceof ApiError && caught.code === "project_not_found")
@@ -411,7 +423,7 @@ export default function App() {
     } finally {
       if (generation === overviewGeneration.current) setLoading(false);
     }
-  }, []);
+  }, [clearMatrix]);
 
   const staleDerivedClaimIds = useMemo(
     () => new Set(staleDerivations.map((item) => item.claim_id)),
@@ -633,6 +645,12 @@ export default function App() {
     setKind("");
     clearMatrix();
     setOverview(null);
+    setJobs([]);
+    jobsRef.current = [];
+    jobsRevisionRef.current = "";
+    setSelection(null);
+    setEntitySelection(null);
+    setChatDraft("");
     setProjectClosed(false);
     setShowProjects(false);
     await loadOverview();
@@ -644,6 +662,9 @@ export default function App() {
       setOverview(null);
       clearMatrix();
       setKind("");
+      setJobs([]);
+      jobsRef.current = [];
+      jobsRevisionRef.current = "";
       setProjectClosed(true);
     } catch (caught) {
       setError(
@@ -1235,6 +1256,21 @@ export default function App() {
     setWrapText(next);
     setActiveViewId("");
     saveLayout(next, columnOrder, columnWidths);
+  };
+  const showRowView = () => {
+    const entityId =
+      activeGridCell?.entityId ??
+      selection?.entityId ??
+      entitySelection?.entityId ??
+      displayedRows[0]?.entity_id;
+    const row = matrix?.rows.find((item) => item.entity_id === entityId);
+    if (!row) return;
+    setEntitySelection({
+      entityId: row.entity_id,
+      entityName: row.name,
+      entityKind: kind,
+    });
+    setCenterView("row");
   };
   const resizeColumn = (key: string, event: React.MouseEvent) => {
     event.preventDefault();
@@ -1875,13 +1911,15 @@ export default function App() {
             </button>
             <button
               className={centerView === "row" ? "active" : ""}
-              disabled={!entitySelection}
-              onClick={() => setCenterView("row")}
+              disabled={!matrix?.rows.length}
+              onClick={showRowView}
             >
               Row
             </button>
           </div>
-          {centerView === "row" && entitySelection && matrix ? (
+          {centerView === "row" && entitySelection && matrix?.rows.some(
+            (row) => row.entity_id === entitySelection.entityId,
+          ) ? (
             <CenterRowView
               row={matrix.rows.find((row) => row.entity_id === entitySelection.entityId)!}
               questions={matrix.questions}
@@ -2199,8 +2237,6 @@ export default function App() {
                               if (!event.shiftKey || !selectionAnchor)
                                 setSelectionAnchor(clicked);
                               setActiveGridCell(clicked);
-                            }}
-                            onDoubleClick={() => {
                               setEntitySelection(null);
                               setSelection({
                                 entityId: row.entity_id,
@@ -2420,10 +2456,38 @@ export default function App() {
               setSchemaChallengeQuestion(selection.question);
               setDialog("schemaChallenge");
             }}
-            onChallengeResearch={() => setDialog("researchChallenge")}
+            onChallengeResearch={() => {
+              const label = String(
+                selection.question.definition.label ?? selection.question.name,
+              );
+              const prior = selection.cell.research;
+              const context = [
+                `Revisit the NotFound result for ${selection.entityName} · ${label}.`,
+                prior?.query ? `Previous query: ${prior.query}` : "",
+                prior?.notes ? `Previous result: ${prior.notes}` : "",
+                "Explain what prevented an answer, then retry with a better evidence strategy. Preserve existing data and add a value only when supported by appropriate evidence.",
+              ].filter(Boolean).join("\n\n");
+              draftForAgent(context);
+            }}
             onChallenge={(claimId) => {
-              setChallengedClaimId(claimId);
-              setDialog("challenge");
+              const label = String(
+                selection.question.definition.label ?? selection.question.name,
+              );
+              const claimEvidence = selection.cell.lineage.filter(
+                (item) => item.claim_id === claimId,
+              );
+              const currentValue = claimEvidence[0]?.value ?? selection.cell.value;
+              const sources = claimEvidence.slice(0, 3).map(
+                (item) =>
+                  `Source: ${item.source.title}${item.source.url ? ` (${item.source.url})` : ""}\nExcerpt: ${item.excerpt}`,
+              );
+              const context = [
+                `Revisit the current answer for ${selection.entityName} · ${label}.`,
+                `Current value: ${JSON.stringify(currentValue)}\nClaim ID: ${claimId}`,
+                ...sources,
+                "Help me assess what may be wrong with this answer or its interpretation. Propose explicit Epiq CLI commands to correct or retract it and research a replacement if appropriate. Do not change anything without preserving the evidence trail.",
+              ].filter(Boolean).join("\n\n");
+              draftForAgent(context);
             }}
             onAcceptProvisional={async (suggestion) => {
               await acceptRelationshipSuggestions(suggestion.jobId, [
@@ -2651,19 +2715,6 @@ export default function App() {
           onSaved={refresh}
         />
       )}
-      {dialog === "challenge" && selection && challengedClaimId && (
-        <ChallengeDialog
-          kind={kind}
-          selection={selection}
-          claimId={challengedClaimId}
-          onClose={() => setDialog(null)}
-          onSaved={async (job) => {
-            if (job) setJobs((current) => mergeJobs(current, [job]));
-            setDialog(null);
-            await refresh();
-          }}
-        />
-      )}
       {dialog === "schemaChallenge" && schemaChallengeQuestion && (
         <QuestionChallengeDialog
           question={schemaChallengeQuestion}
@@ -2713,18 +2764,6 @@ export default function App() {
           onChanged={async () => {
             await loadOverview();
             await loadMatrix();
-          }}
-        />
-      )}
-      {dialog === "researchChallenge" && selection?.cell.research && (
-        <ResearchOutcomeChallengeDialog
-          kind={kind}
-          selection={selection}
-          onClose={() => setDialog(null)}
-          onSaved={async (job) => {
-            setJobs((current) => mergeJobs(current, [job]));
-            setDialog(null);
-            await refresh();
           }}
         />
       )}
@@ -4977,18 +5016,11 @@ function WorkspaceAgentPanel({
       setSending(false);
     }
   };
-  const examples = [
-    "Collect data on AI interviewer startups, their founders, funding, and press coverage.",
-    "Build a workspace for comparing Cape Cod towns, housing prices, and population.",
-    "Add the schema and initial rows needed to track papers by David Autor and their coauthors.",
-  ];
   return (
     <aside className="workspace-agent-panel">
       <div className="drawer-head">
-        <div className="eyebrow">CONTROL CENTER</div>
         <button className="close" onClick={onClose}>×</button>
-        <h2>What should Epiq do?</h2>
-        <p>Describe the outcome. Epiq will propose explicit CLI commands before changing the project.</p>
+        <h2>Control Center</h2>
       </div>
       <div
         className="agent-conversation"
@@ -5000,15 +5032,7 @@ function WorkspaceAgentPanel({
         }}
       >
         {ordered.length === 0 && (
-          <div className="agent-welcome">
-            <b>Start with a research goal</b>
-            <p>Epiq will turn it into visible, typed database operations. It only adds data; it will not delete or rewrite existing work.</p>
-            <div className="agent-examples">
-              {examples.map((example) => (
-                <button key={example} onClick={() => setMessage(example)}>{example}</button>
-              ))}
-            </div>
-          </div>
+          <p className="agent-empty">Tell Epiq what to research or change.</p>
         )}
         {ordered.map((job) => {
           const children = (job.child_job_ids ?? [])
@@ -5046,6 +5070,12 @@ function WorkspaceAgentPanel({
                     <span>{job.workspace_plan.entity_kinds.length} tables</span>
                     <span>{job.workspace_plan.entities.length} rows</span>
                     <span>{job.workspace_plan.questions.length} fields</span>
+                    {(job.workspace_plan.retractions?.length ?? 0) > 0 && (
+                      <span>{job.workspace_plan.retractions?.length} retractions</span>
+                    )}
+                    {(job.workspace_plan.replacements?.length ?? 0) > 0 && (
+                      <span>{job.workspace_plan.replacements?.length} replacements</span>
+                    )}
                     <span>{job.estimated_research_cells ?? job.child_job_ids?.length ?? 0} research cells</span>
                   </div>
                   {job.approval_status === "pending" && (
@@ -5129,7 +5159,7 @@ function WorkspaceAgentPanel({
         <textarea
           value={message}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder="Create a database of…"
+          placeholder="What should Epiq do?"
           rows={3}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -5873,115 +5903,6 @@ function PolicyDialog({
   );
 }
 
-function ChallengeDialog({
-  kind,
-  selection,
-  claimId,
-  onClose,
-  onSaved,
-}: {
-  kind: string;
-  selection: Selection;
-  claimId: string;
-  onClose: () => void;
-  onSaved: (job: ResearchJob | null) => Promise<void>;
-}) {
-  const [reason, setReason] = useState("");
-  const [guidance, setGuidance] = useState("");
-  const [retract, setRetract] = useState(true);
-  const [researchAgain, setResearchAgain] = useState(true);
-  const [error, setError] = useState("");
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    try {
-      const result = await post<{
-        question_id: string;
-        subject_id: string;
-      }>(`/api/claims/${claimId}/challenge`, {
-        reason,
-        research_guidance: guidance,
-        retract,
-      });
-      const job = researchAgain
-        ? await post<ResearchJob>("/api/research/jobs", {
-            entity_kind: kind,
-            question: result.question_id,
-            mode: "fill_missing",
-            instructions: `Address this human correction: ${reason}`,
-            entity_ids: [result.subject_id],
-            scope: "cell",
-          })
-        : null;
-      await onSaved(job);
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not challenge claim",
-      );
-    }
-  };
-  return (
-    <Modal
-      title="Challenge this answer"
-      subtitle={`${selection.entityName} · ${String(selection.question.definition.label ?? selection.question.name)}`}
-      onClose={onClose}
-    >
-      <form onSubmit={(event) => void submit(event)}>
-        <label>
-          What is wrong with this answer or its interpretation?
-          <textarea
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            placeholder="For example: birthplace is not equivalent to citizenship at birth."
-            autoFocus
-            required
-          />
-        </label>
-        <label>
-          Guidance for future research on this field
-          {Boolean(selection.question.definition.research_guidance) && (
-            <span className="existing-guidance">
-              Existing:{" "}
-              {String(selection.question.definition.research_guidance)}
-            </span>
-          )}
-          <textarea
-            value={guidance}
-            onChange={(event) => setGuidance(event.target.value)}
-            placeholder="Define the decision rule and evidence needed. Distinguish citizenship at birth from place of birth and naturalization."
-          />
-          <span className="field-hint">
-            This versions the field definition and is sent to every future
-            research agent.
-          </span>
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={retract}
-            onChange={(event) => setRetract(event.target.checked)}
-          />
-          Retract this answer from the current projection
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={researchAgain}
-            onChange={(event) => setResearchAgain(event.target.checked)}
-          />
-          Research this cell again using the correction
-        </label>
-        {error && <div className="form-error">{error}</div>}
-        <div className="modal-actions">
-          <button type="button" className="ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="primary">Record challenge</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
 const challengeProblems = [
   ["modal_ambiguity", "Possibility vs. actuality"],
   ["type_mismatch", "Wrong answer type"],
@@ -5995,103 +5916,6 @@ const challengeProblems = [
   ["definition_ambiguity", "Ambiguous definition"],
   ["other", "Other category error"],
 ];
-
-function ResearchOutcomeChallengeDialog({
-  kind,
-  selection,
-  onClose,
-  onSaved,
-}: {
-  kind: string;
-  selection: Selection;
-  onClose: () => void;
-  onSaved: (job: ResearchJob) => Promise<void>;
-}) {
-  const [reason, setReason] = useState("");
-  const [guidance, setGuidance] = useState("");
-  const [saveToField, setSaveToField] = useState(true);
-  const [error, setError] = useState("");
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    try {
-      const result = await post<{ question_id: string; subject_id: string }>(
-        `/api/research/${selection.cell.research?.task_id}/feedback`,
-        {
-          reason,
-          research_guidance: guidance,
-          save_to_field: saveToField,
-        },
-      );
-      const job = await post<ResearchJob>("/api/research/jobs", {
-        entity_kind: kind,
-        question: result.question_id,
-        mode: "retry_not_found",
-        instructions: `Human challenge to the prior NotFound outcome: ${reason}\nInterpretation guidance: ${guidance}`,
-        entity_ids: [result.subject_id],
-        scope: "cell",
-      });
-      await onSaved(job);
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Could not challenge research outcome",
-      );
-    }
-  };
-  return (
-    <Modal
-      title="Challenge NotFound outcome"
-      subtitle={`${selection.entityName} · ${String(selection.question.definition.label ?? selection.question.name)}`}
-      onClose={onClose}
-    >
-      <form onSubmit={(event) => void submit(event)}>
-        <div className="research-disclosure negative-evidence-note">
-          <span>⊘</span>
-          <p>
-            A missing mention is usually inconclusive. But absence from an
-            authoritative, exhaustive list can support a negative answer when
-            its scope and date match the question.
-          </p>
-        </div>
-        <label>
-          Why is the NotFound interpretation wrong?
-          <textarea
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            placeholder="The official AEA recipient list is complete through 2026, so absence from it is evidence that the person did not win the medal."
-            autoFocus
-            required
-          />
-        </label>
-        <label>
-          Guidance for the retry
-          <textarea
-            value={guidance}
-            onChange={(event) => setGuidance(event.target.value)}
-            placeholder="Treat an authoritative complete recipient list as closed-world evidence. Cite the list and return False when the person is absent."
-            required
-          />
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={saveToField}
-            onChange={(event) => setSaveToField(event.target.checked)}
-          />
-          Apply this interpretation to future research on this field
-        </label>
-        {error && <div className="form-error">{error}</div>}
-        <div className="modal-actions">
-          <button type="button" className="ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="primary">Record challenge and retry</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
 
 function QuestionChallengeDialog({
   question,
@@ -6988,7 +6812,7 @@ function CellDrawer({
             <code>{cell.research?.query}</code>
             <p>{cell.research?.notes}</p>
             <button className="challenge-outcome" onClick={onChallengeResearch}>
-              Challenge this NotFound outcome
+              Discuss and retry in Control Center
             </button>
           </div>
         )}
@@ -7099,7 +6923,7 @@ function CellDrawer({
               )}
               {reviewError && <span role="alert">{reviewError}</span>}
               <button onClick={() => onChallenge(claim.claim_id)}>
-                Challenge answer
+                Discuss in Control Center
               </button>
               <button
                 className="retract"
@@ -7129,7 +6953,7 @@ function CellDrawer({
           </button>
         ) : cell.state === "NotFound" ? (
           <button className="primary" onClick={onChallengeResearch}>
-            Challenge and retry
+            Discuss and retry in Control Center
           </button>
         ) : (
           <button className="primary" onClick={onResearch}>
