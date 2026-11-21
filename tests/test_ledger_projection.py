@@ -1,0 +1,139 @@
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from epiq.errors import EpiqError
+from epiq.ledger import LedgerRepository, Operation, Transaction
+from epiq.ledger_projection import LedgerProjector
+
+
+def project(tmp_path: Path) -> tuple[LedgerRepository, LedgerProjector]:
+    repository = LedgerRepository.initialize(
+        tmp_path / "project",
+        "Projection test",
+        actor="human:test",
+        recorded_at="2026-11-21T12:00:00Z",
+        project_id="prj_projection",
+        replica_id="rep_projection",
+    )
+    return repository, LedgerProjector(repository)
+
+
+def append(
+    repository: LedgerRepository,
+    transaction_id: str,
+    *,
+    parents: tuple[str, ...] | None = None,
+) -> Transaction:
+    transaction = Transaction.create(
+        repository.config.project_id,
+        repository.config.replica_id,
+        "agent:test",
+        [Operation.create("entity_kind.define", {"kind": transaction_id})],
+        transaction_id=transaction_id,
+        recorded_at="2026-11-21T12:01:00Z",
+        parents=repository.frontier() if parents is None else parents,
+    )
+    repository.append(transaction)
+    return transaction
+
+
+def projected_ids(projector: LedgerProjector) -> list[str]:
+    with sqlite3.connect(projector.path) as connection:
+        return [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT transaction_id FROM ledger_transactions ORDER BY ordinal"
+            )
+        ]
+
+
+def test_full_rebuild_is_disposable_and_verifiable(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+
+    built = projector.build()
+    assert built["mode"] == "rebuild"
+    assert built["transactions"] == 1
+    assert projector.verify()["verified"] is True
+    first_ids = projected_ids(projector)
+    manifest = json.loads(projector.manifest_path.read_text())
+    assert manifest["transaction_set_digest"] == repository.transaction_set_digest()
+
+    projector.path.unlink()
+    rebuilt = projector.build()
+    assert rebuilt["mode"] == "rebuild"
+    assert projected_ids(projector) == first_ids
+
+
+def test_incremental_projection_and_current_noop(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+    projector.build()
+    item = append(repository, "txn_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+
+    incremental = projector.build()
+    assert incremental["mode"] == "incremental"
+    assert incremental["applied"] == 1
+    assert projected_ids(projector)[-1] == item.transaction_id
+    assert projector.build()["mode"] == "current"
+
+
+def test_git_merge_that_changes_order_forces_rebuild(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+    genesis = repository.frontier()[0]
+    later = append(
+        repository,
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        parents=(genesis,),
+    )
+    projector.build()
+    earlier = append(
+        repository,
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        parents=(genesis,),
+    )
+
+    result = projector.build()
+    assert result["mode"] == "rebuild"
+    assert projected_ids(projector)[-2:] == [earlier.transaction_id, later.transaction_id]
+
+
+def test_verify_detects_stale_or_corrupt_projection(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+    projector.build()
+    append(repository, "txn_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+
+    with pytest.raises(EpiqError) as stale:
+        projector.verify()
+    assert stale.value.code == "projection_out_of_date"
+
+    projector.build()
+    with sqlite3.connect(projector.path) as connection:
+        connection.execute(
+            "UPDATE projection_meta SET value='wrong' WHERE key='transaction_set_digest'"
+        )
+    with pytest.raises(EpiqError) as corrupt:
+        projector.verify()
+    assert corrupt.value.code == "projection_out_of_date"
+
+    projector.build(force=True)
+    with sqlite3.connect(projector.path) as connection:
+        connection.execute("UPDATE ledger_operations SET payload_json='{}'")
+    with pytest.raises(EpiqError) as content:
+        projector.verify()
+    assert content.value.code == "projection_content_mismatch"
+
+
+def test_invalid_ledger_does_not_replace_good_projection(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+    projector.build()
+    before = projector.path.read_bytes()
+    transaction = repository.transactions()[0]
+    path = repository.root / transaction.relative_path()
+    path.write_text(path.read_text().replace("project.initialize", "entity.create"))
+
+    with pytest.raises(EpiqError) as error:
+        projector.build(force=True)
+    assert error.value.code == "ledger_digest_mismatch"
+    assert projector.path.read_bytes() == before

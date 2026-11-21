@@ -117,10 +117,12 @@ def _validate_json(value: Any, path: str = "$") -> None:
     )
 
 
-def canonical_bytes(document: dict[str, Any], *, omit_digest: bool = False) -> bytes:
+def canonical_bytes(document: Any, *, omit_digest: bool = False) -> bytes:
     """Encode Epiq Canonical JSON 1 without a trailing newline."""
-    value = dict(document)
+    value = dict(document) if isinstance(document, dict) else document
     if omit_digest:
+        if not isinstance(value, dict):
+            raise EpiqError("invalid_ledger_json", "Only JSON objects can omit a digest")
         value.pop("digest", None)
     _validate_json(value)
     try:
