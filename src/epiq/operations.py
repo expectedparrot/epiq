@@ -104,6 +104,11 @@ _BINDINGS = [
 
 _LOCAL_ONLY = [
     (
+        "schema-plan",
+        "read",
+        "Schema planning is local, non-mutating guidance and does not require a hosted API.",
+    ),
+    (
         "use-project",
         "administrative",
         "Ledger project selection is local workspace configuration.",

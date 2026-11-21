@@ -32,6 +32,8 @@ Before acting, inspect Epiq's built-in JSON guidance:
   epiq capabilities
   epiq guide
   epiq guide workflow
+  epiq guide schema-design
+  epiq guide schema-patterns
   epiq guide evidence
   epiq guide git
   epiq guide recovery
@@ -52,6 +54,15 @@ answer is negative. Never invent evidence or expose credentials.
 After material writes, run `epiq doctor`. After fetching and explicitly integrating Git changes,
 run `epiq merge-check` and inspect `epiq conflicts`. Publish Epiq-owned changes with
 `epiq remote publish --message MESSAGE`; use `--pr --base main` when review is appropriate.
+```
+
+For common collection designs, inspect a non-mutating, review-first schema plan before creating any
+project objects:
+
+```bash
+epiq schema-plan faculty
+epiq schema-plan literature
+epiq schema-plan startups
 ```
 
 ## Git-native projects

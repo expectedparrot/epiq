@@ -9,6 +9,7 @@ from typing import Any
 
 from . import __version__
 from .errors import EpiqError
+from .schema_guidance import SCHEMA_DESIGN_CHECKLIST, pattern_summaries
 from .store import LATEST_SCHEMA_VERSION, Store
 
 ENVELOPE_SCHEMA_VERSION = "1.0"
@@ -159,6 +160,28 @@ GUIDE_TOPICS: dict[str, dict[str, Any]] = {
             {"stage": "verify", "commands": [["epiq", "doctor"], ["epiq", "build", "--verify"]]},
             {"stage": "share", "commands": [["epiq", "remote", "publish", "--message", "..."]]},
         ],
+    },
+    "schema-design": {
+        "purpose": "Design a collection schema before creating kinds and questions.",
+        "checklist": SCHEMA_DESIGN_CHECKLIST,
+        "principles": [
+            "Entities have stable identity and independent evidence-backed history.",
+            "Relationships use Ref[Kind], not embedded names or comma-separated strings.",
+            "Repeated events become observation entities instead of overwritten fields.",
+            "Every question declares a type, cardinality, temporal policy, and evidence rule.",
+            "Pilot typical and adversarial cases before scaling collection.",
+        ],
+        "next": ["epiq", "guide", "schema-patterns"],
+    },
+    "schema-patterns": {
+        "purpose": "Start from a reviewable collection pattern and adapt it to the project.",
+        "patterns": pattern_summaries(),
+        "commands": [
+            ["epiq", "schema-plan", "faculty"],
+            ["epiq", "schema-plan", "literature"],
+            ["epiq", "schema-plan", "startups"],
+        ],
+        "rule": "A schema plan is guidance only and never mutates a project.",
     },
     "evidence": {
         "purpose": "Record claims with bounded source evidence and explicit time semantics.",

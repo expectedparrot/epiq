@@ -11,6 +11,8 @@ Run these instead of guessing CLI arguments:
 epiq capabilities
 epiq guide
 epiq guide workflow
+epiq guide schema-design
+epiq guide schema-patterns
 epiq guide evidence
 epiq guide git
 epiq guide recovery

@@ -44,6 +44,7 @@ from .ledger_git import GitTransport
 from .ledger_projection import LedgerProjector
 from .ledger_writer import LedgerWriter
 from .operations import operation_catalog
+from .schema_guidance import schema_plan
 from .store import QUESTION_CHALLENGE_PROBLEMS, Store
 from .xlsx import write_xlsx
 
@@ -753,8 +754,15 @@ def parser() -> argparse.ArgumentParser:
         "topic",
         nargs="?",
         default="quickstart",
-        help="quickstart, workflow, evidence, git, recovery, or exports",
+        help=(
+            "quickstart, workflow, schema-design, schema-patterns, evidence, git, recovery, "
+            "or exports"
+        ),
     )
+    schema_plan_parser = commands.add_parser(
+        "schema-plan", help="Return a non-mutating evidence-collection schema plan"
+    )
+    schema_plan_parser.add_argument("pattern", choices=["faculty", "literature", "startups"])
     commands.add_parser("next", help="Return the safest useful next action for this project")
 
     ledger_parser = commands.add_parser(
@@ -1581,6 +1589,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         return version_data()
     if args.command == "guide":
         return guide_data(args.topic)
+    if args.command == "schema-plan":
+        return schema_plan(args.pattern)
     if args.command == "docs":
         return docs_list_data() if args.docs_command == "list" else docs_show_data(args.name)
     if args.command == "agent" and args.agent_command == "schema":
