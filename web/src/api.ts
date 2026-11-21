@@ -153,6 +153,8 @@ export interface ResearchJob {
   child_job_ids?: string[];
   approval_status?: "pending" | "approved" | "rejected";
   estimated_research_cells?: number;
+  command_transcript?: Array<{ argv: string[]; status: "proposed" }>;
+  command_results?: Array<{ argv: string[]; result: Record<string, unknown> }>;
 }
 
 export interface SchemaAdaptation {

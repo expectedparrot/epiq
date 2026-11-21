@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from epiq.cli import main
+from epiq.ledger_api import LedgerDatabase
 from epiq.store import Store
 
 
@@ -67,6 +68,52 @@ def test_cli_can_remember_workspace_database(tmp_path: Path, capsys, monkeypatch
     current = _data(capsys)
     assert current["database"] == str(environment_database)
     assert current["source"] == "environment"
+
+
+def test_ledger_research_is_one_json_enveloped_cli_operation(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Research CLI")
+    database.define_kind("Company")
+    entity_id = database.create_entity("Company", "Acme")["entity_id"]
+    database.define_question("website", "Company", "URL")
+
+    class FakeRunner:
+        def __call__(self, _kind, _question, entities):
+            return [
+                {
+                    "entity_id": entities[0]["entity_id"],
+                    "status": "answered",
+                    "value": "https://acme.example",
+                    "source_title": "Acme",
+                    "source_url": "https://acme.example",
+                    "source_type": "web",
+                    "excerpt": "Acme official website",
+                    "confidence": "high",
+                    "source_published_at": None,
+                    "observed_as_of": "2026-11-21",
+                }
+            ]
+
+    monkeypatch.setattr("epiq.cli.OpenAIResearchRunner", FakeRunner)
+    main(
+        [
+            "--project",
+            str(root),
+            "research",
+            "--kind",
+            "Company",
+            "--question",
+            "website",
+            "--entity-name",
+            "Acme",
+        ]
+    )
+    result = _data(capsys)
+    assert result["target_count"] == 1
+    assert result["writes"][0]["entity_id"] == entity_id
+    assert database.matrix("Company")["cells"][entity_id]
 
 
 def test_capabilities_are_machine_readable_without_a_project(tmp_path: Path, capsys) -> None:
@@ -465,8 +512,7 @@ def test_cli_claims_actor_tally_and_long_export(tmp_path: Path, capsys) -> None:
     assert claims["count"] == 1
     assert claims["claims"][0]["value"] == "pass"
     tally = invoke(
-        "aggregate", "--kind", "Item", "--question", "verdict", "--op", "tally",
-        "--group-by-actor"
+        "aggregate", "--kind", "Item", "--question", "verdict", "--op", "tally", "--group-by-actor"
     )
     assert tally["groups"] == [
         {"group": "model:a", "value": {'"pass"': 1}, "count": 1},
@@ -478,7 +524,8 @@ def test_cli_claims_actor_tally_and_long_export(tmp_path: Path, capsys) -> None:
     )
     assert exported["count"] == 2
     assert {json.loads(line)["actor"] for line in output.read_text().splitlines()} == {
-        "model:a", "model:b"
+        "model:a",
+        "model:b",
     }
 
 
@@ -1060,14 +1107,30 @@ def test_tally_groups_by_question_and_rejects_unknown_group(tmp_path: Path, caps
     store.add_question("verdict", "Item", "Bool", {}, "setup")
     store.add_question("category", "Item", "String", {}, "setup")
     evidence = store.add_evidence("urn:test", "Test", "2026-09-09", "results", "setup")[1]
-    for name, category, verdict in [("A", "alpha", True), ("B", "beta", False),
-                                    ("C", "alpha", True), ("D", None, False)]:
+    for name, category, verdict in [
+        ("A", "alpha", True),
+        ("B", "beta", False),
+        ("C", "alpha", True),
+        ("D", None, False),
+    ]:
         store.add_entity("Item", name, {}, "setup")
         store.assert_claim(name, "verdict", verdict, "2026-09-09", evidence, "model:a")
         if category:
             store.assert_claim(name, "category", category, "2026-09-09", evidence, "setup")
-    args = ["--db", str(store.path), "aggregate", "--kind", "Item", "--question", "verdict",
-            "--op", "tally", "--actor", "model:a", "--group-by"]
+    args = [
+        "--db",
+        str(store.path),
+        "aggregate",
+        "--kind",
+        "Item",
+        "--question",
+        "verdict",
+        "--op",
+        "tally",
+        "--actor",
+        "model:a",
+        "--group-by",
+    ]
     main([*args, "category"])
     groups = {item["group"]: item["value"] for item in _data(capsys)["groups"]}
     assert groups == {"alpha": {"true": 2}, "beta": {"false": 1}, "Unasked": {"false": 1}}

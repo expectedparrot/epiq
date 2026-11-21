@@ -314,6 +314,7 @@ export default function App() {
   const [rightPane, setRightPane] = useState<
     "agent" | "inspect" | "activity" | "review" | null
   >("agent");
+  const [chatDraft, setChatDraft] = useState("");
   const [centerView, setCenterView] = useState<"table" | "row">("table");
   const [reviewItems, setReviewItems] = useState<{
     stale: DiagnosticCell[];
@@ -591,6 +592,11 @@ export default function App() {
     jobsRef.current = mergeJobs(jobsRef.current, [job]);
     setRightPane("agent");
   };
+  const draftForAgent = (message: string) => {
+    setChatDraft(message);
+    setDialog(null);
+    setRightPane("agent");
+  };
   const approveWorkspacePlan = async (jobId: string) => {
     const job = await post<ResearchJob>(
       `/api/workspace-agent/jobs/${jobId}/approve`,
@@ -678,31 +684,14 @@ export default function App() {
     instructions: string,
     entityIds: string[] | null,
   ) => {
-    try {
-      const request = {
-        entity_kind: kind,
-        question: question.question_id,
-        mode,
-        instructions,
-        entity_ids: entityIds,
-        scope: entityIds ? "cell" : "column",
-      };
-      if (entityIds) {
-        const job = await post<ResearchJob>("/api/research/jobs", request);
-        setJobs((current) => mergeJobs(current, [job]));
-      } else {
-        const result = await post<{ jobs: ResearchJob[] }>(
-          "/api/research/column",
-          request,
-        );
-        setJobs((current) => mergeJobs(current, result.jobs));
-      }
-      setDialog(null);
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not launch research",
-      );
-    }
+    const label = String(question.definition.label ?? question.name);
+    const target = entityIds?.length
+      ? `the ${label} field for ${researchTarget?.entityName ?? entityIds[0]}`
+      : `the ${label} column in the ${kind} table`;
+    const action = mode === "add_evidence"
+      ? `Find and attach additional independent evidence for ${target}. Keep existing values.`
+      : `Research and fill unanswered cells in ${target}. Keep existing answers.`;
+    draftForAgent(`${action}${instructions.trim() ? `\n\nInstructions: ${instructions.trim()}` : ""}`);
   };
   const cancelResearch = async (jobId: string) => {
     try {
@@ -796,74 +785,20 @@ export default function App() {
         ].includes(entityId),
     );
   const launchTableResearch = async () => {
-    try {
-      const result = await post<{ jobs: ResearchJob[] }>(
-        "/api/research/table",
-        {
-          entity_kind: kind,
-        },
-      );
-      setJobs((current) => mergeJobs(current, result.jobs));
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Could not launch table research",
-      );
-    }
+    draftForAgent(`Research every unanswered research cell in the ${kind} table. Keep existing answers and require evidence for every new value.`);
   };
   const launchRowResearch = async (instructions: string) => {
     if (!rowResearchTarget) return;
-    try {
-      const result = await post<{ jobs: ResearchJob[] }>("/api/research/rows", {
-        entity_kind: kind,
-        entity_id: rowResearchTarget.entityId,
-        instructions,
-      });
-      setJobs((current) => mergeJobs(current, result.jobs));
-      setDialog(null);
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Could not launch row research",
-      );
-    }
+    draftForAgent(`Research every unanswered field for ${rowResearchTarget.entityName} in the ${kind} table. Keep existing answers.${instructions.trim() ? `\n\nInstructions: ${instructions.trim()}` : ""}`);
   };
   const launchSuggestions = async (count: number, instructions: string) => {
-    try {
-      const job = await post<ResearchJob>("/api/entity-suggestions/jobs", {
-        entity_kind: kind,
-        count,
-        instructions,
-      });
-      setJobs((current) => mergeJobs(current, [job]));
-      setDialog(null);
-      setRightPane("activity");
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not suggest rows",
-      );
-    }
+    draftForAgent(`Find up to ${count} additional rows for the ${kind} table matching this request: ${instructions.trim()}. Propose them for review before adding anything.`);
   };
   const launchFieldSuggestions = async (
     count: number,
     instructions: string,
   ) => {
-    try {
-      const job = await post<ResearchJob>("/api/field-suggestions/jobs", {
-        entity_kind: kind,
-        count,
-        instructions,
-      });
-      setJobs((current) => mergeJobs(current, [job]));
-      setDialog(null);
-      setRightPane("activity");
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Could not suggest fields",
-      );
-    }
+    draftForAgent(`Suggest up to ${count} useful, typed, evidence-backed fields for the ${kind} table.${instructions.trim() ? ` They should help with: ${instructions.trim()}` : ""} Propose them for review before adding anything.`);
   };
   const acceptFieldSuggestions = async (
     jobId: string,
@@ -1532,7 +1467,7 @@ export default function App() {
         </div>
         <div className="header-actions">
           <button className="agent-command-button" onClick={() => setRightPane("agent")}>
-            <span>✦ Ask Epiq</span>
+            <span>✦ Control Center</span>
           </button>
           <button className="ghost" onClick={() => setRightPane("activity")}>
             <span>✦ Activity</span>
@@ -1670,7 +1605,7 @@ export default function App() {
                   className="primary"
                   onClick={() => setRightPane("agent")}
                 >
-                  ✦ Ask Epiq
+                  ✦ Control Center
                 </button>
                 <button onClick={() => setDialog("entityKind")}>＋ Add table</button>
               </div>
@@ -2655,7 +2590,7 @@ export default function App() {
                   className={rightPane === pane ? "active" : ""}
                   onClick={() => setRightPane(pane)}
                 >
-                  {pane === "agent" ? "Ask Epiq" : pane[0].toUpperCase() + pane.slice(1)}
+                  {pane === "agent" ? "Control Center" : pane[0].toUpperCase() + pane.slice(1)}
                 </button>
               ))}
               <button className="workspace-pane-collapse" onClick={() => setRightPane(null)}>×</button>
@@ -2767,6 +2702,8 @@ export default function App() {
         {rightPane === "agent" && (
           <WorkspaceAgentPanel
             jobs={jobs}
+            draft={chatDraft}
+            onDraftConsumed={() => setChatDraft("")}
             onClose={() => setRightPane(null)}
             onSend={directWorkspaceAgent}
             onCancel={cancelResearch}
@@ -4881,7 +4818,7 @@ function ResearchDialog({
             )
           }
         >
-          Launch research →
+          Add to Control Center →
         </button>
       </div>
     </Modal>
@@ -4943,7 +4880,7 @@ function RowResearchDialog({
           disabled={target.missing === 0}
           onClick={() => void onLaunch(instructions)}
         >
-          Research {target.missing} field{target.missing === 1 ? "" : "s"} →
+          Add to Control Center →
         </button>
       </div>
     </Modal>
@@ -5187,6 +5124,8 @@ function ReviewPanel({
 
 function WorkspaceAgentPanel({
   jobs,
+  draft,
+  onDraftConsumed,
   onClose,
   onSend,
   onCancel,
@@ -5194,6 +5133,8 @@ function WorkspaceAgentPanel({
   onReject,
 }: {
   jobs: ResearchJob[];
+  draft: string;
+  onDraftConsumed: () => void;
   onClose: () => void;
   onSend: (message: string) => Promise<void>;
   onCancel: (jobId: string) => Promise<void>;
@@ -5204,6 +5145,11 @@ function WorkspaceAgentPanel({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!draft) return;
+    setMessage(draft);
+    onDraftConsumed();
+  }, [draft, onDraftConsumed]);
   const ordered = jobs
     .filter((job) => job.job_type === "workspace_agent")
     .reverse();
@@ -5234,10 +5180,10 @@ function WorkspaceAgentPanel({
   return (
     <aside className="workspace-agent-panel">
       <div className="drawer-head">
-        <div className="eyebrow">WORKSPACE AGENT</div>
+        <div className="eyebrow">CONTROL CENTER</div>
         <button className="close" onClick={onClose}>×</button>
-        <h2>What should Epiq build?</h2>
-        <p>Describe the outcome. The agent can add tables, fields, initial rows, and research jobs.</p>
+        <h2>What should Epiq do?</h2>
+        <p>Describe the outcome. Epiq will propose explicit CLI commands before changing the project.</p>
       </div>
       <div className="agent-conversation" ref={listRef}>
         {ordered.length === 0 && (
@@ -5314,6 +5260,25 @@ function WorkspaceAgentPanel({
                     <small className="plan-dismissed">Plan dismissed without changing the workspace.</small>
                   )}
                 </>
+              )}
+              {job.command_transcript && job.command_transcript.length > 0 && (
+                <details className="agent-command-transcript" open={job.approval_status === "pending"}>
+                  <summary>{job.command_transcript.length} proposed CLI command{job.command_transcript.length === 1 ? "" : "s"}</summary>
+                  {job.command_transcript.map((command, index) => (
+                    <pre key={`${job.job_id}:command:${index}`}><code>$ {command.argv.map((part) => JSON.stringify(part)).join(" ")}</code></pre>
+                  ))}
+                </details>
+              )}
+              {job.command_results && job.command_results.length > 0 && (
+                <details className="agent-command-transcript">
+                  <summary>{job.command_results.length} command result{job.command_results.length === 1 ? "" : "s"}</summary>
+                  {job.command_results.map((command, index) => (
+                    <div key={`${job.job_id}:result:${index}`}>
+                      <pre><code>$ {command.argv.map((part) => JSON.stringify(part)).join(" ")}</code></pre>
+                      <pre><code>{JSON.stringify(command.result, null, 2)}</code></pre>
+                    </div>
+                  ))}
+                </details>
               )}
               {children.length > 0 && (
                 <div className="agent-child-progress">
@@ -5855,7 +5820,7 @@ function SuggestEntitiesDialog({
           disabled={count < 1 || count > 20 || !instructions.trim()}
           onClick={() => void onLaunch(count, instructions)}
         >
-          Research candidates →
+          Add to Control Center →
         </button>
       </div>
     </Modal>
@@ -5916,7 +5881,7 @@ function SuggestFieldsDialog({
           disabled={count < 1 || count > 20}
           onClick={() => void onLaunch(count, instructions)}
         >
-          Design fields →
+          Add to Control Center →
         </button>
       </div>
     </Modal>

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -147,6 +150,7 @@ def create_ledger_app(
     app.state.project_open = root.exists()
     app.state.workspace_agent_runner = workspace_agent_runner or OpenAIWorkspaceAgentRunner()
     app.state.research_runner = research_runner or OpenAIResearchRunner()
+    app.state.cli_execution = research_runner is None
     app.state.research_jobs: dict[str, dict[str, Any]] = {}
     app.state.research_lock = threading.RLock()
     app.add_middleware(
@@ -203,6 +207,95 @@ def create_ledger_app(
         with app.state.research_lock:
             app.state.research_jobs[job_id].update(changes)
 
+    def plan_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
+        commands: list[dict[str, Any]] = []
+        kinds = dict.fromkeys(
+            [
+                *plan["entity_kinds"],
+                *[item["kind"] for item in plan["entities"]],
+                *[item["kind"] for item in plan["questions"]],
+            ]
+        )
+        for kind in kinds:
+            commands.append(
+                {"argv": ["epiq", "--project", str(root), "kind", kind], "status": "proposed"}
+            )
+        for item in plan["entities"]:
+            commands.append(
+                {
+                    "argv": ["epiq", "--project", str(root), "entity", item["kind"], item["name"]],
+                    "status": "proposed",
+                }
+            )
+        for item in plan["questions"]:
+            definition = {
+                "label": item.get("label") or item["name"].replace("_", " ").title(),
+                "cardinality": item.get("cardinality", "one"),
+                "volatility": item.get("volatility", "stable"),
+                "freshness_days": item.get("freshness_days"),
+                "research_guidance": item.get("research_guidance", ""),
+            }
+            commands.append(
+                {
+                    "argv": [
+                        "epiq",
+                        "--project",
+                        str(root),
+                        "question",
+                        item["name"],
+                        "--for",
+                        item["kind"],
+                        "--type",
+                        item["value_type"],
+                        "--definition",
+                        json.dumps(definition, sort_keys=True),
+                    ],
+                    "status": "proposed",
+                }
+            )
+        for item in plan["research"]:
+            argv = [
+                "epiq",
+                "--project",
+                str(root),
+                "research",
+                "--kind",
+                item["kind"],
+                "--question",
+                item["question"],
+            ]
+            for name in item.get("entity_names", []):
+                argv.extend(["--entity-name", name])
+            if item.get("instructions"):
+                argv.extend(["--instructions", str(item["instructions"])])
+            commands.append({"argv": argv, "status": "proposed"})
+        return commands
+
+    def execute_cli(argv: list[str]) -> dict[str, Any]:
+        """Execute one fixed argv command without a shell and return its JSON envelope."""
+        if argv[:3] != ["epiq", "--project", str(root)]:
+            raise EpiqError("unsafe_command", "Control Center command targets another project")
+        completed = subprocess.run(
+            [sys.executable, "-m", "epiq", *argv[1:]],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        payload_text = completed.stdout.strip() or completed.stderr.strip()
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError as error:
+            raise EpiqError(
+                "invalid_command_result", f"Epiq returned non-JSON output: {payload_text[-500:]}"
+            ) from error
+        if completed.returncode or payload.get("status") != "ok":
+            raise EpiqError(
+                "command_failed",
+                str(payload.get("errors") or f"Command exited {completed.returncode}"),
+            )
+        return payload
+
     def plan_workspace(job_id: str, message: str) -> None:
         def progress(text: str) -> None:
             with app.state.research_lock:
@@ -236,6 +329,7 @@ def create_ledger_app(
                 approval_status="pending",
                 estimated_research_cells=estimated,
                 proposal_id=proposal["proposal_id"],
+                command_transcript=plan_commands(plan),
                 finished_at=now(),
             )
         except Exception as error:
@@ -250,10 +344,29 @@ def create_ledger_app(
         current = database()
         existing_kinds = set(current.kinds())
         existing_entities = {(item["kind"], item["name"].casefold()) for item in current.entities()}
-        existing_questions = {
-            (item["subject_kind"], item["name"]) for item in current.questions()
-        }
+        existing_questions = {(item["subject_kind"], item["name"]) for item in current.questions()}
         written = 0
+        command_results: list[dict[str, Any]] = []
+
+        def record_result(argv: list[str], data: Any) -> None:
+            command_results.append(
+                {
+                    "argv": argv,
+                    "result": data
+                    if isinstance(data, dict) and data.get("schema_version") == "1.0"
+                    else {
+                        "schema_version": "1.0",
+                        "status": "ok",
+                        "command": " ".join(argv[:4]),
+                        "argv": argv,
+                        "data": data,
+                        "errors": [],
+                        "warnings": [],
+                        "next_steps": [],
+                    },
+                }
+            )
+
         for kind in dict.fromkeys(
             [
                 *plan["entity_kinds"],
@@ -262,39 +375,70 @@ def create_ledger_app(
             ]
         ):
             if kind not in existing_kinds:
-                current.define_kind(
-                    kind, actor="agent:web", idempotency_key=f"{job_id}:kind:{kind}"
+                argv = ["epiq", "--project", str(root), "kind", kind]
+                result = (
+                    execute_cli(argv)
+                    if app.state.cli_execution
+                    else current.define_kind(
+                        kind, actor="agent:web", idempotency_key=f"{job_id}:kind:{kind}"
+                    )
                 )
+                record_result(argv, result)
                 existing_kinds.add(kind)
                 written += 1
         for item in plan["entities"]:
             key = (item["kind"], item["name"].casefold())
             if key not in existing_entities:
-                current.create_entity(
-                    item["kind"],
-                    item["name"],
-                    actor="agent:web",
-                    idempotency_key=f"{job_id}:entity:{item['kind']}:{item['name']}",
+                argv = ["epiq", "--project", str(root), "entity", item["kind"], item["name"]]
+                result = (
+                    execute_cli(argv)
+                    if app.state.cli_execution
+                    else current.create_entity(
+                        item["kind"],
+                        item["name"],
+                        actor="agent:web",
+                        idempotency_key=f"{job_id}:entity:{item['kind']}:{item['name']}",
+                    )
                 )
+                record_result(argv, result)
                 existing_entities.add(key)
                 written += 1
         for item in plan["questions"]:
             key = (item["kind"], item["name"])
             if key not in existing_questions:
-                current.define_question(
+                definition = {
+                    "label": item.get("label") or item["name"].replace("_", " ").title(),
+                    "cardinality": item.get("cardinality", "one"),
+                    "volatility": item.get("volatility", "stable"),
+                    "freshness_days": item.get("freshness_days"),
+                    "research_guidance": item.get("research_guidance", ""),
+                }
+                argv = [
+                    "epiq",
+                    "--project",
+                    str(root),
+                    "question",
                     item["name"],
+                    "--for",
                     item["kind"],
+                    "--type",
                     item["value_type"],
-                    definition={
-                        "label": item.get("label") or item["name"].replace("_", " ").title(),
-                        "cardinality": item.get("cardinality", "one"),
-                        "volatility": item.get("volatility", "stable"),
-                        "freshness_days": item.get("freshness_days"),
-                        "research_guidance": item.get("research_guidance", ""),
-                    },
-                    actor="agent:web",
-                    idempotency_key=f"{job_id}:question:{item['kind']}:{item['name']}",
+                    "--definition",
+                    json.dumps(definition, sort_keys=True),
+                ]
+                result = (
+                    execute_cli(argv)
+                    if app.state.cli_execution
+                    else current.define_question(
+                        item["name"],
+                        item["kind"],
+                        item["value_type"],
+                        definition=definition,
+                        actor="agent:web",
+                        idempotency_key=f"{job_id}:question:{item['kind']}:{item['name']}",
+                    )
                 )
+                record_result(argv, result)
                 existing_questions.add(key)
                 written += 1
         current.review_proposal(
@@ -318,6 +462,7 @@ def create_ledger_app(
                 outcome=None,
                 approval_status="approved",
                 written=written,
+                command_results=command_results,
                 messages=messages,
             )
             threading.Thread(
@@ -333,6 +478,7 @@ def create_ledger_app(
                 outcome="changed",
                 approval_status="approved",
                 written=written,
+                command_results=command_results,
                 finished_at=now(),
                 messages=messages,
             )
@@ -348,11 +494,47 @@ def create_ledger_app(
             with app.state.research_lock:
                 plan = app.state.research_jobs[job_id]["workspace_plan"]
                 schema_writes = int(app.state.research_jobs[job_id].get("written", 0))
+                research_commands = [
+                    item["argv"]
+                    for item in app.state.research_jobs[job_id].get("command_transcript", [])
+                    if item["argv"][3:4] == ["research"]
+                ]
+            if app.state.cli_execution:
+                update_job(job_id, total=len(research_commands), completed=0)
+                written = 0
+                no_result = 0
+                for argv in research_commands:
+                    with app.state.research_lock:
+                        if app.state.research_jobs[job_id].get("cancel_requested"):
+                            update_job(job_id, status="cancelled", finished_at=now())
+                            return
+                    result = execute_cli(argv)
+                    data = result.get("data", {})
+                    writes = data.get("writes", []) if isinstance(data, dict) else []
+                    written += sum(item.get("status") == "answered" for item in writes)
+                    no_result += sum(item.get("status") == "not_found" for item in writes)
+                    with app.state.research_lock:
+                        app.state.research_jobs[job_id].setdefault("command_results", []).append(
+                            {"argv": argv, "result": result}
+                        )
+                        app.state.research_jobs[job_id]["completed"] += 1
+                progress(f"Research finished: {written} answers, {no_result} without a result")
+                update_job(
+                    job_id,
+                    status="completed",
+                    outcome="changed" if schema_writes + written else "no_change",
+                    written=schema_writes + written,
+                    no_result=no_result,
+                    finished_at=now(),
+                )
+                return
             written = 0
             no_result = 0
             total = sum(len(item.get("entity_names", [])) for item in plan["research"])
             update_job(job_id, total=total, completed=0)
             for request in plan["research"]:
+                request_written = 0
+                request_no_result = 0
                 with app.state.research_lock:
                     if app.state.research_jobs[job_id].get("cancel_requested"):
                         update_job(job_id, status="cancelled", finished_at=now())
@@ -412,6 +594,7 @@ def create_ledger_app(
                             actor="agent:web",
                         )
                         no_result += 1
+                        request_no_result += 1
                     elif finding.get("status") == "answered":
                         current.record(
                             target["entity_id"],
@@ -439,8 +622,42 @@ def create_ledger_app(
                             actor="agent:web",
                         )
                         written += 1
+                        request_written += 1
                     with app.state.research_lock:
                         app.state.research_jobs[job_id]["completed"] += 1
+                argv = [
+                    "epiq",
+                    "--project",
+                    str(root),
+                    "research",
+                    "--kind",
+                    str(request["kind"]),
+                    "--question",
+                    str(request["question"]),
+                ]
+                for name in request.get("entity_names", []):
+                    argv.extend(["--entity-name", str(name)])
+                if request.get("instructions"):
+                    argv.extend(["--instructions", str(request["instructions"])])
+                with app.state.research_lock:
+                    app.state.research_jobs[job_id].setdefault("command_results", []).append(
+                        {
+                            "argv": argv,
+                            "result": {
+                                "schema_version": "1.0",
+                                "status": "ok",
+                                "command": "epiq ledger research",
+                                "argv": argv,
+                                "data": {
+                                    "written": request_written,
+                                    "not_found": request_no_result,
+                                },
+                                "errors": [],
+                                "warnings": [],
+                                "next_steps": [],
+                            },
+                        }
+                    )
             progress(f"Research finished: {written} answers, {no_result} without a result")
             update_job(
                 job_id,
@@ -508,8 +725,7 @@ def create_ledger_app(
     def close_project() -> dict[str, bool]:
         with app.state.research_lock:
             active = any(
-                job["status"] in {"queued", "running"}
-                for job in app.state.research_jobs.values()
+                job["status"] in {"queued", "running"} for job in app.state.research_jobs.values()
             )
         if active:
             raise EpiqError(
@@ -725,8 +941,7 @@ def create_ledger_app(
         questions = {
             item["question_id"]: item
             for item in current.questions()
-            if str(item["value_type"]).startswith("Ref[")
-            and (via is None or item["name"] == via)
+            if str(item["value_type"]).startswith("Ref[") and (via is None or item["name"] == via)
         }
         graph_edges = []
         for claim in current.claims():

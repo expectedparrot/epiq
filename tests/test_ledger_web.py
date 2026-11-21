@@ -62,9 +62,9 @@ def test_ledger_web_runs_core_spreadsheet_workflow_and_rebuilds(tmp_path: Path) 
     assert client.get("/api/health").json()["storage"] == "git-ledger"
     assert client.post("/api/project", json={"name": "Market"}).status_code == 201
     client.post("/api/entity-kinds", json={"kind": "Company"})
-    entity = client.post(
-        "/api/entities", json={"kind": "Company", "name": "Acme"}
-    ).json()["entity_id"]
+    entity = client.post("/api/entities", json={"kind": "Company", "name": "Acme"}).json()[
+        "entity_id"
+    ]
     question = client.post(
         "/api/questions",
         json={"name": "employees", "subject_kind": "Company", "value_type": "Int"},
@@ -90,9 +90,7 @@ def test_ledger_web_runs_core_spreadsheet_workflow_and_rebuilds(tmp_path: Path) 
     ).json()["claim_id"]
 
     overview = client.get("/api/project").json()
-    assert overview["entity_kinds"] == [
-        {"kind": "Company", "entities": 1, "questions": 1}
-    ]
+    assert overview["entity_kinds"] == [{"kind": "Company", "entities": 1, "questions": 1}]
     cell = client.get("/api/matrix/Company").json()["rows"][0]["cells"]["employees"]
     assert cell["state"] == "Answered"
     assert cell["value"] == 12
@@ -100,9 +98,9 @@ def test_ledger_web_runs_core_spreadsheet_workflow_and_rebuilds(tmp_path: Path) 
 
     (root / ".epiq" / "projection.sqlite").unlink()
     restarted = TestClient(create_ledger_app(root))
-    assert restarted.get("/api/matrix/Company").json()["rows"][0]["cells"]["employees"][
-        "value"
-    ] == 12
+    assert (
+        restarted.get("/api/matrix/Company").json()["rows"][0]["cells"]["employees"]["value"] == 12
+    )
     assert restarted.get("/api/doctor").json()["healthy"] is True
 
 
@@ -126,9 +124,7 @@ def test_ledger_web_can_close_and_reopen_configured_project(tmp_path: Path) -> N
     assert closed.json()["error"]["code"] == "project_not_selected"
     assert client.get("/api/projects").json()[0]["active"] is False
 
-    opened = client.post(
-        "/api/projects/open", json={"project_id": project["project_id"]}
-    )
+    opened = client.post("/api/projects/open", json={"project_id": project["project_id"]})
     assert opened.status_code == 200
     assert opened.json()["active"] is True
     assert client.get("/api/project").json()["project"]["name"] == "Closeable"
@@ -139,9 +135,7 @@ def test_ledger_web_review_visibility_and_retraction_are_durable(tmp_path: Path)
     client = TestClient(create_ledger_app(root))
     client.post("/api/project", json={"name": "Review"})
     client.post("/api/entity-kinds", json={"kind": "Item"})
-    entity = client.post(
-        "/api/entities", json={"kind": "Item", "name": "One"}
-    ).json()["entity_id"]
+    entity = client.post("/api/entities", json={"kind": "Item", "name": "One"}).json()["entity_id"]
     question = client.post(
         "/api/questions",
         json={"name": "value", "subject_kind": "Item", "value_type": "Int"},
@@ -166,13 +160,14 @@ def test_ledger_web_review_visibility_and_retraction_are_durable(tmp_path: Path)
         },
     ).json()["claim_id"]
 
-    assert client.post(
-        f"/api/evidence/{evidence}/assess",
-        json={"status": "accepted", "reason": "Checked"},
-    ).status_code == 201
-    assert client.post(
-        f"/api/claims/{claim}/review", json={"reason": "Checked"}
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/evidence/{evidence}/assess",
+            json={"status": "accepted", "reason": "Checked"},
+        ).status_code
+        == 201
+    )
+    assert client.post(f"/api/claims/{claim}/review", json={"reason": "Checked"}).status_code == 200
     reviewed = client.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"]
     assert reviewed["lineage"][0]["review"] == {
         "status": "accepted",
@@ -185,15 +180,13 @@ def test_ledger_web_review_visibility_and_retraction_are_durable(tmp_path: Path)
     assert client.get("/api/matrix/Item").json()["rows"] == []
     client.post(f"/api/entities/{entity}/restore", json={"reason": "Keep"})
     client.post(f"/api/claims/{claim}/retract", json={"reason": "Incorrect"})
-    assert client.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"][
-        "state"
-    ] == "Unasked"
+    assert client.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"]["state"] == "Unasked"
 
     (root / ".epiq" / "projection.sqlite").unlink()
     restarted = TestClient(create_ledger_app(root))
-    assert restarted.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"][
-        "state"
-    ] == "Unasked"
+    assert (
+        restarted.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"]["state"] == "Unasked"
+    )
 
 
 def test_question_challenges_round_trip_through_ledger_web(tmp_path: Path) -> None:
@@ -229,9 +222,7 @@ def test_not_found_remains_distinct_after_projection_rebuild(tmp_path: Path) -> 
     client = TestClient(create_ledger_app(root))
     client.post("/api/project", json={"name": "Research"})
     client.post("/api/entity-kinds", json={"kind": "Item"})
-    entity = client.post(
-        "/api/entities", json={"kind": "Item", "name": "One"}
-    ).json()["entity_id"]
+    entity = client.post("/api/entities", json={"kind": "Item", "name": "One"}).json()["entity_id"]
     question = client.post(
         "/api/questions",
         json={"name": "value", "subject_kind": "Item", "value_type": "String"},
@@ -252,9 +243,9 @@ def test_not_found_remains_distinct_after_projection_rebuild(tmp_path: Path) -> 
 
     (root / ".epiq" / "projection.sqlite").unlink()
     restarted = TestClient(create_ledger_app(root))
-    assert restarted.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"][
-        "state"
-    ] == "NotFound"
+    assert (
+        restarted.get("/api/matrix/Item").json()["rows"][0]["cells"]["value"]["state"] == "NotFound"
+    )
 
 
 def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) -> None:
@@ -268,9 +259,7 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
     )
     client.post("/api/project", json={"name": "Faculty research"})
 
-    launched = client.post(
-        "/api/workspace-agent/jobs", json={"message": "Add photos"}
-    )
+    launched = client.post("/api/workspace-agent/jobs", json={"message": "Add photos"})
     assert launched.status_code == 202
     job_id = launched.json()["job_id"]
     for _ in range(100):
@@ -283,6 +272,13 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
 
     assert job["outcome"] == "workspace_proposal"
     assert job["approval_status"] == "pending"
+    assert [item["argv"][3] for item in job["command_transcript"]] == [
+        "kind",
+        "entity",
+        "question",
+        "research",
+    ]
+    assert all(item["status"] == "proposed" for item in job["command_transcript"])
     assert client.get("/api/project").json()["entity_kinds"] == []
 
     approved = client.post(f"/api/workspace-agent/jobs/{job_id}/approve")
@@ -297,6 +293,16 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
         time.sleep(0.01)
     assert not job.get("error"), job["error"]
     assert job["status"] == "completed"
+    assert [item["result"]["status"] for item in job["command_results"]] == [
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+    ]
+    assert job["command_results"][-1]["result"]["data"] == {
+        "written": 1,
+        "not_found": 0,
+    }
     matrix = client.get("/api/matrix/Faculty").json()
     assert [row["name"] for row in matrix["rows"]] == ["Ada Lovelace"]
     assert matrix["questions"][0]["value_type"] == "Image"
@@ -308,6 +314,47 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
     assert proposals[0]["proposal_type"] == "workspace_agent"
 
 
+def test_control_center_executes_schema_through_cli_and_keeps_exact_envelope(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+
+    def schema_only(_goal, _context, progress=None):
+        return {
+            "summary": "Create a company table.",
+            "entity_kinds": ["Company"],
+            "entities": [{"kind": "Company", "name": "Acme"}],
+            "questions": [],
+            "research": [],
+        }
+
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=schema_only))
+    client.post("/api/project", json={"name": "CLI control center"})
+    launched = client.post("/api/workspace-agent/jobs", json={"message": "Add Acme"}).json()
+    for _ in range(100):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    approved = client.post(f"/api/workspace-agent/jobs/{job['job_id']}/approve").json()
+    assert approved["status"] == "completed"
+    assert [item["result"]["status"] for item in approved["command_results"]] == ["ok", "ok"]
+    assert approved["command_results"][0]["result"]["argv"] == [
+        "epiq",
+        "ledger",
+        "kind",
+        "--path",
+        str(root),
+        "Company",
+    ]
+    assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
+
+
 def test_web_matrix_resolves_references_and_preserves_derivations(tmp_path: Path) -> None:
     root = tmp_path / "project"
     database = LedgerDatabase(root, create=True, name="Relationships")
@@ -315,9 +362,7 @@ def test_web_matrix_resolves_references_and_preserves_derivations(tmp_path: Path
     database.define_kind("Person")
     company = database.create_entity("Company", "Acme")["entity_id"]
     founder = database.create_entity("Person", "Ada")["entity_id"]
-    founder_question = database.define_question(
-        "founder", "Company", "Ref[Person]"
-    )["question_id"]
+    founder_question = database.define_question("founder", "Company", "Ref[Person]")["question_id"]
     employees = database.define_question("employees", "Company", "Int")["question_id"]
     doubled = database.define_question("employees_doubled", "Company", "Int")["question_id"]
     evidence = database.capture_evidence(

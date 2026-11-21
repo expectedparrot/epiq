@@ -44,6 +44,7 @@ from .ledger_git import GitTransport
 from .ledger_projection import LedgerProjector
 from .ledger_writer import LedgerWriter
 from .operations import operation_catalog
+from .research import OpenAIResearchRunner
 from .schema_guidance import schema_plan
 from .store import QUESTION_CHALLENGE_PROBLEMS, Store
 from .xlsx import write_xlsx
@@ -72,6 +73,7 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "support-claim",
         "supersede-claim",
         "record",
+        "research",
         "matrix",
         "claims",
         "retire-entity",
@@ -217,23 +219,27 @@ def _write_claims_long(rows: list[dict[str, Any]], output: str) -> Path:
         raise EpiqError(
             "invalid_export_path", "claims-long output must have a .csv or .jsonl suffix"
         )
-    fieldnames = list(rows[0]) if rows else [
-        "claim_id",
-        "subject_id",
-        "subject_name",
-        "subject_kind",
-        "question_id",
-        "question",
-        "value",
-        "actor",
-        "confidence",
-        "temporal_basis",
-        "valid_from",
-        "valid_to",
-        "status",
-        "evidence_id",
-        "created_seq",
-    ]
+    fieldnames = (
+        list(rows[0])
+        if rows
+        else [
+            "claim_id",
+            "subject_id",
+            "subject_name",
+            "subject_kind",
+            "question_id",
+            "question",
+            "value",
+            "actor",
+            "confidence",
+            "temporal_basis",
+            "valid_from",
+            "valid_to",
+            "status",
+            "evidence_id",
+            "created_seq",
+        ]
+    )
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -316,9 +322,7 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
     commands = []
     for name in names:
         is_ledger_command = name not in subparsers.choices
-        child = (
-            ledger_subparsers.choices[name] if is_ledger_command else subparsers.choices[name]
-        )
+        child = ledger_subparsers.choices[name] if is_ledger_command else subparsers.choices[name]
         groups = [
             {
                 "required": bool(group.required),
@@ -749,9 +753,7 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     commands.add_parser("version", help="Report package and public contract versions")
-    guide = commands.add_parser(
-        "guide", help="Return JSON-enveloped ledger-native usage guidance"
-    )
+    guide = commands.add_parser("guide", help="Return JSON-enveloped ledger-native usage guidance")
     guide.add_argument(
         "topic",
         nargs="?",
@@ -880,6 +882,19 @@ def parser() -> argparse.ArgumentParser:
     ledger_record.add_argument(
         "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
     )
+    ledger_research = ledger_commands.add_parser(
+        "research", help="Research and write evidence-backed values through one auditable command"
+    )
+    ledger_research.add_argument("--path", default=".")
+    ledger_research.add_argument("--kind", required=True)
+    ledger_research.add_argument("--question", required=True)
+    ledger_research.add_argument("--entity-name", action="append", default=[])
+    ledger_research.add_argument(
+        "--mode",
+        choices=["fill_missing", "add_evidence", "retry_not_found"],
+        default="fill_missing",
+    )
+    ledger_research.add_argument("--instructions", default="")
     ledger_record.add_argument("--recorded-at")
     ledger_record.add_argument("--idempotency-key")
     ledger_evidence = ledger_mutation("evidence", "Capture immutable evidence")
@@ -913,9 +928,7 @@ def parser() -> argparse.ArgumentParser:
     ledger_supersede.add_argument("--valid-from", required=True)
     ledger_supersede.add_argument("--evidence-id", action="append", required=True)
     ledger_supersede.add_argument("--reason", required=True)
-    ledger_supersede.add_argument(
-        "--confidence", choices=["low", "medium", "high"], default="high"
-    )
+    ledger_supersede.add_argument("--confidence", choices=["low", "medium", "high"], default="high")
     ledger_supersede.add_argument(
         "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
     )
@@ -1055,9 +1068,7 @@ def parser() -> argparse.ArgumentParser:
     ledger_report.add_argument("--input", required=True)
     ledger_report.add_argument("--parameters")
     ledger_report.add_argument("--input-transaction-id", action="append", default=[])
-    ledger_report.add_argument(
-        "--retention", choices=["git", "git-lfs", "external"], default="git"
-    )
+    ledger_report.add_argument("--retention", choices=["git", "git-lfs", "external"], default="git")
     ledger_reports = ledger_commands.add_parser("reports", help="List durable report records")
     ledger_reports.add_argument("--path", default=".")
     ledger_export = ledger_mutation("export", "Export ledger-backed data or native EDSL objects")
@@ -1078,9 +1089,7 @@ def parser() -> argparse.ArgumentParser:
     ledger_export.add_argument("--output", "--output-path", dest="output", required=True)
     ledger_export.add_argument("--include-closed", action="store_true")
     ledger_export.add_argument("--record-manifest", action="store_true")
-    ledger_export.add_argument(
-        "--retention", choices=["git", "git-lfs", "external"], default="git"
-    )
+    ledger_export.add_argument("--retention", choices=["git", "git-lfs", "external"], default="git")
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1679,6 +1688,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "support-claim",
             "supersede-claim",
             "record",
+            "research",
             "matrix",
             "claims",
             "retire-entity",
@@ -1738,6 +1748,108 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     recorded_at=args.recorded_at,
                     idempotency_key=args.idempotency_key,
                 )
+            if args.ledger_command == "research":
+                projection = database.matrix(args.kind)
+                question = next(
+                    (
+                        item
+                        for item in projection["questions"]
+                        if item["name"] == args.question or item["question_id"] == args.question
+                    ),
+                    None,
+                )
+                if question is None:
+                    raise EpiqError(
+                        "missing_domain_object",
+                        f"Missing question in {args.kind}: {args.question}",
+                    )
+                requested = {name.casefold() for name in args.entity_name}
+                targets = [
+                    {
+                        "entity_id": item["entity_id"],
+                        "name": item["name"],
+                        "attributes": item.get("attributes", {}),
+                    }
+                    for item in projection["entities"]
+                    if not requested or item["name"].casefold() in requested
+                ]
+                if requested:
+                    found = {item["name"].casefold() for item in targets}
+                    missing = sorted(requested - found)
+                    if missing:
+                        raise EpiqError(
+                            "missing_domain_object",
+                            f"Missing {args.kind} rows: {', '.join(missing)}",
+                        )
+                if args.mode == "fill_missing":
+                    targets = [
+                        item
+                        for item in targets
+                        if not projection["cells"]
+                        .get(item["entity_id"], {})
+                        .get(question["question_id"], [])
+                    ]
+                research_question = {
+                    **question,
+                    "task_mode": args.mode,
+                    "instructions": args.instructions,
+                }
+                findings = OpenAIResearchRunner()(args.kind, research_question, targets)
+                target_ids = {item["entity_id"] for item in targets}
+                writes: list[dict[str, Any]] = []
+                today = datetime.now(UTC).date().isoformat()
+                for index, finding in enumerate(findings):
+                    entity_id = str(finding.get("entity_id", ""))
+                    if entity_id not in target_ids:
+                        continue
+                    key = f"research:{args.kind}:{question['question_id']}:{entity_id}:{index}"
+                    if finding.get("status") == "not_found":
+                        result = database.record_not_found(
+                            entity_id,
+                            question["question_id"],
+                            f"Agent research for {question['name']}",
+                            str(finding.get("notes") or "No sufficient evidence found."),
+                            actor=args.actor,
+                            idempotency_key=key,
+                        )
+                    elif finding.get("status") == "answered":
+                        result = database.record(
+                            entity_id,
+                            question["question_id"],
+                            finding["value"],
+                            valid_from=str(
+                                finding.get("observed_as_of")
+                                or finding.get("source_published_at")
+                                or today
+                            ),
+                            source_title=str(finding["source_title"]),
+                            source_type=str(finding.get("source_type") or "web"),
+                            url=str(finding["source_url"]),
+                            retrieved_at=today,
+                            excerpt=str(finding["excerpt"]),
+                            published_at=finding.get("source_published_at"),
+                            confidence=str(finding.get("confidence") or "medium"),
+                            temporal_basis=(
+                                "observed"
+                                if finding.get("observed_as_of")
+                                else "source"
+                                if finding.get("source_published_at")
+                                else "unknown"
+                            ),
+                            actor=args.actor,
+                            idempotency_key=key,
+                        )
+                    else:
+                        continue
+                    writes.append({"entity_id": entity_id, "status": finding["status"], **result})
+                return {
+                    "kind": args.kind,
+                    "question": question["name"],
+                    "mode": args.mode,
+                    "target_count": len(targets),
+                    "finding_count": len(findings),
+                    "writes": writes,
+                }
             if args.ledger_command == "record":
                 return database.record(
                     args.subject_id,
@@ -2695,9 +2807,9 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 for row in projection["rows"]:
                     cell = row["cells"][args.group_by]
                     values = cell.get("display_values") or cell.get("values") or []
-                    keys_by_subject[row["entity_id"]] = (
-                        list(dict.fromkeys(_display(value) for value in values)) or ["Unasked"]
-                    )
+                    keys_by_subject[row["entity_id"]] = list(
+                        dict.fromkeys(_display(value) for value in values)
+                    ) or ["Unasked"]
             claims = store.list_claims(args.kind, args.question, args.claim_actor)
             grouped_claims: dict[str, list[Any]] = {}
             for claim in claims:
