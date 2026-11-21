@@ -5145,6 +5145,7 @@ function WorkspaceAgentPanel({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
+  const followConversationTail = useRef(true);
   useEffect(() => {
     if (!draft) return;
     setMessage(draft);
@@ -5155,7 +5156,10 @@ function WorkspaceAgentPanel({
     .reverse();
   const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+    const list = listRef.current;
+    if (list && followConversationTail.current) {
+      list.scrollTo({ top: list.scrollHeight });
+    }
   }, [jobs]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -5163,6 +5167,7 @@ function WorkspaceAgentPanel({
     if (!value || sending) return;
     setSending(true);
     setSendError("");
+    followConversationTail.current = true;
     try {
       await onSend(value);
       setMessage("");
@@ -5185,7 +5190,15 @@ function WorkspaceAgentPanel({
         <h2>What should Epiq do?</h2>
         <p>Describe the outcome. Epiq will propose explicit CLI commands before changing the project.</p>
       </div>
-      <div className="agent-conversation" ref={listRef}>
+      <div
+        className="agent-conversation"
+        ref={listRef}
+        onScroll={(event) => {
+          const list = event.currentTarget;
+          followConversationTail.current =
+            list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+        }}
+      >
         {ordered.length === 0 && (
           <div className="agent-welcome">
             <b>Start with a research goal</b>
