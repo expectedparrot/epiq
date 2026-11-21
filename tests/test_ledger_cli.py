@@ -52,6 +52,22 @@ def test_ledger_cli_initializes_validates_and_rebuilds(tmp_path: Path, capsys) -
     assert measured["iterations"] == 1
     assert measured["network_used"] is False
 
+    thresholds = tmp_path / "thresholds.json"
+    thresholds.write_text('{"cold_rebuild": 60000}')
+    main(
+        [
+            "--project",
+            str(root),
+            "benchmark",
+            "--iterations",
+            "1",
+            "--thresholds",
+            str(thresholds),
+            "--fail-on-regression",
+        ]
+    )
+    assert data(capsys)["thresholds"]["passed"] is True
+
 
 def test_ledger_cli_command_name_includes_nested_action(tmp_path: Path, capsys) -> None:
     root = tmp_path / "research"

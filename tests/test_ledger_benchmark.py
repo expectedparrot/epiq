@@ -4,7 +4,7 @@ import pytest
 
 from epiq.errors import EpiqError
 from epiq.ledger import LedgerRepository
-from epiq.ledger_benchmark import benchmark
+from epiq.ledger_benchmark import assess_thresholds, benchmark, benchmark_synthetic
 
 
 def test_benchmark_measures_local_ledger_and_projection_operations(tmp_path: Path) -> None:
@@ -47,3 +47,13 @@ def test_benchmark_rejects_unbounded_iterations(tmp_path: Path) -> None:
     with pytest.raises(EpiqError) as error:
         benchmark(root, iterations=0)
     assert error.value.code == "invalid_iterations"
+
+
+def test_synthetic_profile_and_threshold_assessment() -> None:
+    result = benchmark_synthetic("small", iterations=1)
+
+    assert result["synthetic_profile"] == "small"
+    assert result["transactions"] == 100
+    assert result["ephemeral"] is True
+    assessment = assess_thresholds(result, {"cold_rebuild": 60_000})
+    assert assessment["passed"] is True

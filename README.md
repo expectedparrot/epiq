@@ -69,7 +69,11 @@ Measure local storage behavior without contacting a remote:
 
 ```bash
 epiq --project research benchmark --iterations 5
+epiq benchmark --synthetic medium --iterations 3
 ```
+
+See [the performance baseline](docs/ledger-performance.md) for profile definitions, measurements,
+and the deliberately broad CI regression thresholds.
 
 An ordinary evidence-backed workflow does not require raw transaction JSON:
 

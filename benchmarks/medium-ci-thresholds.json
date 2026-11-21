@@ -1,0 +1,7 @@
+{
+  "ledger_validate": 2500,
+  "cold_rebuild": 3000,
+  "incremental_open": 2500,
+  "projection_read": 100,
+  "semantic_fingerprint": 500
+}

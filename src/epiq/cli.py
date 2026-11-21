@@ -36,6 +36,7 @@ from .html import write_html
 from .importers import import_cham_corpus
 from .ledger import LedgerRepository, Operation
 from .ledger_api import LedgerDatabase
+from .ledger_benchmark import assess_thresholds, benchmark_synthetic
 from .ledger_benchmark import benchmark as benchmark_ledger
 from .ledger_diagnostics import diagnose as diagnose_ledger
 from .ledger_exports import export_ledger
@@ -755,6 +756,11 @@ def parser() -> argparse.ArgumentParser:
     )
     ledger_benchmark.add_argument("--path", default=".")
     ledger_benchmark.add_argument("--iterations", type=int, default=5)
+    ledger_benchmark.add_argument("--synthetic", choices=["small", "medium", "large"])
+    ledger_benchmark.add_argument(
+        "--thresholds", help="JSON object mapping metric names to maximum median milliseconds"
+    )
+    ledger_benchmark.add_argument("--fail-on-regression", action="store_true")
     ledger_remote = ledger_commands.add_parser(
         "remote", help="Clone, inspect, fetch, or publish a Git-backed ledger"
     )
@@ -1571,6 +1577,28 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "ledger": repository.validate(),
                 "projection": projection,
             }
+        if args.ledger_command == "benchmark":
+            result = (
+                benchmark_synthetic(args.synthetic, iterations=args.iterations)
+                if args.synthetic
+                else benchmark_ledger(root, iterations=args.iterations)
+            )
+            if args.thresholds:
+                thresholds = _json_file(args.thresholds)
+                if not isinstance(thresholds, dict):
+                    raise EpiqError("invalid_benchmark_thresholds", "Thresholds must be an object")
+                result["thresholds"] = assess_thresholds(result, thresholds)
+                if args.fail_on_regression and not result["thresholds"]["passed"]:
+                    raise EpiqError(
+                        "benchmark_regression",
+                        f"Benchmark thresholds failed: {result['thresholds']['checks']}",
+                    )
+            elif args.fail_on_regression:
+                raise EpiqError(
+                    "missing_benchmark_thresholds",
+                    "--fail-on-regression requires --thresholds",
+                )
+            return result
         repository = LedgerRepository(root)
         if args.ledger_command == "remote":
             transport = GitTransport(root)
@@ -1973,8 +2001,6 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             if args.ledger_command == "merge-check":
                 result["mergeable"] = result["healthy"]
             return result
-        if args.ledger_command == "benchmark":
-            return benchmark_ledger(root, iterations=args.iterations)
         if args.ledger_command == "validate":
             return {"ok": True, "root": str(root), **repository.validate()}
         projector = LedgerProjector(repository)
@@ -2916,6 +2942,8 @@ def _promote_ledger_arguments(arguments: list[str]) -> list[str]:
     command = values[command_index]
     if project is None:
         if command == "remote" and values[command_index + 1 : command_index + 2] == ["clone"]:
+            return [*values[:command_index], "ledger", *values[command_index:]]
+        if command == "benchmark" and "--synthetic" in values[command_index + 1 :]:
             return [*values[:command_index], "ledger", *values[command_index:]]
         return values
     if command == "remote" and command_index + 1 < len(values):
