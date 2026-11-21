@@ -36,6 +36,7 @@ from .html import write_html
 from .importers import import_cham_corpus
 from .ledger import LedgerRepository, Operation
 from .ledger_api import LedgerDatabase
+from .ledger_benchmark import benchmark as benchmark_ledger
 from .ledger_diagnostics import diagnose as diagnose_ledger
 from .ledger_exports import export_ledger
 from .ledger_projection import LedgerProjector
@@ -57,6 +58,7 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "conflicts",
         "merge-check",
         "doctor",
+        "benchmark",
         "transact",
         "kind",
         "entity",
@@ -746,6 +748,11 @@ def parser() -> argparse.ArgumentParser:
         if name == "build":
             command.add_argument("--force", action="store_true")
             command.add_argument("--verify", action="store_true")
+    ledger_benchmark = ledger_commands.add_parser(
+        "benchmark", help="Measure local ledger and projection performance"
+    )
+    ledger_benchmark.add_argument("--path", default=".")
+    ledger_benchmark.add_argument("--iterations", type=int, default=5)
     ledger_transact = ledger_commands.add_parser(
         "transact", help="Validate and atomically append typed operations"
     )
@@ -1931,6 +1938,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             if args.ledger_command == "merge-check":
                 result["mergeable"] = result["healthy"]
             return result
+        if args.ledger_command == "benchmark":
+            return benchmark_ledger(root, iterations=args.iterations)
         if args.ledger_command == "validate":
             return {"ok": True, "root": str(root), **repository.validate()}
         projector = LedgerProjector(repository)

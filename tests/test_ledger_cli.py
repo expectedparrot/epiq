@@ -46,6 +46,11 @@ def test_ledger_cli_initializes_validates_and_rebuilds(tmp_path: Path, capsys) -
     assert rebuilt["verified"] is True
     assert rebuilt["transactions"] == 1
 
+    main(["--project", str(root), "benchmark", "--iterations", "1"])
+    measured = data(capsys)
+    assert measured["iterations"] == 1
+    assert measured["network_used"] is False
+
 
 def test_ledger_cli_command_name_includes_nested_action(tmp_path: Path, capsys) -> None:
     root = tmp_path / "research"
