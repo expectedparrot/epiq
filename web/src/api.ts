@@ -5,6 +5,14 @@ export interface Lineage {
   claim_id: string;
   value: unknown;
   confidence: "low" | "medium" | "high";
+  epistemic_status?: "observed" | "reported" | "derived" | "estimated";
+  estimate?: {
+    lower?: number | null;
+    upper?: number | null;
+    method?: string;
+    assumptions?: string[];
+    proxy?: string;
+  };
   evidence_id: string;
   provenance?: {
     capture_method: "legacy" | "manual" | "discovery" | "fetched";
@@ -151,7 +159,12 @@ export interface ResearchJob {
     questions: Array<{ kind: string; name: string; label: string }>;
     retractions?: Array<{ claim_id: string; reason: string }>;
     replacements?: Array<{ claim_id: string; value: unknown; reason: string }>;
-    research: Array<{ kind: string; question: string; entity_names: string[] }>;
+    research: Array<{
+      kind: string;
+      question: string;
+      entity_names: string[];
+      allow_estimates?: boolean;
+    }>;
   };
   child_job_ids?: string[];
   approval_status?: "pending" | "applying" | "approved" | "rejected";
@@ -159,6 +172,27 @@ export interface ResearchJob {
   estimated_research_cells?: number;
   command_transcript?: Array<{ argv: string[]; status: "proposed" }>;
   command_results?: Array<{ argv: string[]; result: Record<string, unknown> }>;
+}
+
+export interface CuratorState {
+  curator_id: string;
+  objective: string;
+  status: "running" | "paused" | "stopping" | "stopped" | "completed";
+  max_cycles: number;
+  max_research_cells: number;
+  completed_cycles: number;
+  research_cells_used: number;
+  active_job_id?: string | null;
+  message: string;
+  cycles: Array<{
+    cycle: number;
+    job_id: string;
+    status: string;
+    summary: string;
+    written: number;
+    research_cells: number;
+    finished_at: string;
+  }>;
 }
 
 export interface SchemaAdaptation {

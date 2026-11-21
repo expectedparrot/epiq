@@ -48,6 +48,27 @@ def normalize(value: str, *, field: str = "timestamp") -> str:
     return value if _DATE.fullmatch(value) else canonical
 
 
+def research_instant(value: object) -> str | None:
+    """Coerce a research date or ISO interval to one valid claim instant.
+
+    Research providers sometimes report an observation period as ``start/end``. Claims require a
+    single ``valid_from`` instant, so the interval end is the conservative point at which the
+    period's result was fully observed.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    candidates = [value]
+    if "/" in value:
+        start, end = value.split("/", 1)
+        candidates = [end, start]
+    for candidate in candidates:
+        try:
+            return normalize(candidate.strip(), field="research date")
+        except EpiqError:
+            continue
+    return None
+
+
 def compare(left: str, right: str) -> int:
     """SQLite collation for old and new representations without rewriting history."""
     a, b = instant(left), instant(right)

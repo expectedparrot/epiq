@@ -1786,6 +1786,14 @@ commands. Configure the frontier planning model with `EPIQ_PI_MODEL` (default
 `openai/gpt-6.2-astra`) and reasoning level with `EPIQ_PI_THINKING` (default `high`). Repetitive
 row research remains separately configurable through `EPIQ_RESEARCH_MODEL`.
 
+The Control Center's **Keep enriching this project** curator runs that same project-scoped Pi agent
+for multiple bounded cycles. Each cycle reflects on current coverage and usefulness, chooses one
+high-value enrichment, exposes its CLI commands and results in the conversation, and then evaluates
+the updated project before continuing. Curators have explicit cycle and research-cell budgets, can
+pause or stop at safe cycle boundaries, and stop automatically when a cycle makes no useful changes.
+Their state is stored in `.epiq/curator.json`; a curator that was running when the server stopped is
+restored paused rather than silently resuming external work.
+
 Background research jobs and provisional entity/field suggestions are persisted in the project
 database. Completed review queues therefore survive a server restart. Startup recovers every queued
 or running job, including jobs older than the recent 200-job activity window. Interrupted jobs become

@@ -9,6 +9,7 @@ import {
 import {
   ApiError,
   Cell,
+  CuratorState,
   DiagnosticCell,
   DiagnosticResult,
   Matrix,
@@ -197,6 +198,27 @@ const formattedValue = (
     unknown
   >;
   const hasDisplayFormat = Boolean(override ?? definition.display_format);
+  if (
+    valueType?.startsWith("Quantity[") &&
+    valueType.endsWith("]") &&
+    value !== null &&
+    typeof value === "object" &&
+    "value" in value
+  ) {
+    const quantity = value as { value: unknown; unit?: unknown };
+    const unit =
+      typeof quantity.unit === "string"
+        ? quantity.unit
+        : valueType.slice("Quantity[".length, -1);
+    const amount =
+      typeof quantity.value === "number"
+        ? new Intl.NumberFormat("en-US", {
+            maximumFractionDigits: 6,
+            useGrouping: format.use_grouping !== false,
+          }).format(quantity.value)
+        : display(quantity.value);
+    return `${amount} ${unit}`.trim();
+  }
   if (valueType === "Year" && typeof value === "number") return String(value);
   if (valueType === "Int" && typeof value === "number") {
     return new Intl.NumberFormat("en-US", {
@@ -228,13 +250,21 @@ const cellDisplay = (
     return cell.references.map((item) => item.name).join(", ");
   if (cell.state === "Answered") {
     const value = cell.value ?? cell.values;
-    return formattedValue(value, question, format);
+    const rendered = formattedValue(value, question, format);
+    return cell.lineage.some((item) => item.epistemic_status === "estimated")
+      ? `≈ ${rendered}`
+      : rendered;
   }
   if (cell.state === "Contested")
     return `${cell.values.length} competing answers`;
   if (cell.state === "NotFound") return "No evidence found";
   return "";
 };
+const cellStateLabel = (cell: Cell) =>
+  cell.state === "Answered" &&
+  cell.lineage.some((item) => item.epistemic_status === "estimated")
+    ? "Estimated"
+    : cell.state;
 
 function parseValue(raw: string, type: string): unknown {
   if (
@@ -294,6 +324,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [needsInit, setNeedsInit] = useState(false);
   const [jobs, setJobs] = useState<ResearchJob[]>([]);
+  const [curator, setCurator] = useState<CuratorState | null>(null);
   const [researchQuestion, setResearchQuestion] = useState<Question | null>(
     null,
   );
@@ -581,6 +612,24 @@ export default function App() {
   }, [needsInit, projectClosed, loadMatrix, loadOverview]);
   useEffect(() => {
     if (needsInit || projectClosed) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const state = await api<CuratorState | null>("/api/curator");
+        if (!cancelled) setCurator(state);
+      } catch {
+        /* Curator controls are optional while the project remains usable. */
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [needsInit, projectClosed]);
+  useEffect(() => {
+    if (needsInit || projectClosed) return;
     const refreshVisibleProject = () => {
       if (document.visibilityState !== "visible") return;
       void loadOverview();
@@ -604,6 +653,21 @@ export default function App() {
     setJobs((current) => mergeJobs(current, [job]));
     jobsRef.current = mergeJobs(jobsRef.current, [job]);
     setRightPane("agent");
+  };
+  const startCurator = async (
+    objective: string,
+    maxCycles: number,
+    maxResearchCells: number,
+  ) => {
+    const state = await post<CuratorState>("/api/curator", {
+      objective,
+      max_cycles: maxCycles,
+      max_research_cells: maxResearchCells,
+    });
+    setCurator(state);
+  };
+  const controlCurator = async (action: "pause" | "resume" | "stop") => {
+    setCurator(await post<CuratorState>(`/api/curator/${action}`, {}));
   };
   const draftForAgent = (message: string) => {
     setChatDraft(message);
@@ -646,6 +710,7 @@ export default function App() {
     clearMatrix();
     setOverview(null);
     setJobs([]);
+    setCurator(null);
     jobsRef.current = [];
     jobsRevisionRef.current = "";
     setSelection(null);
@@ -663,6 +728,7 @@ export default function App() {
       clearMatrix();
       setKind("");
       setJobs([]);
+      setCurator(null);
       jobsRef.current = [];
       jobsRevisionRef.current = "";
       setProjectClosed(true);
@@ -2469,6 +2535,15 @@ export default function App() {
               ].filter(Boolean).join("\n\n");
               draftForAgent(context);
             }}
+            onEstimate={() => {
+              const label = String(
+                selection.question.definition.label ?? selection.question.name,
+              );
+              draftForAgent(
+                `Provide a useful ballpark estimate for ${selection.entityName} · ${label}.\n\n` +
+                "An exact answer was not found. Use an authoritative reference class or proxy, return a point estimate and plausible range, and state the method, proxy, and assumptions. Mark the result as estimated so it cannot be mistaken for an exact fact.",
+              );
+            }}
             onChallenge={(claimId) => {
               const label = String(
                 selection.question.definition.label ?? selection.question.name,
@@ -2550,6 +2625,7 @@ export default function App() {
         {rightPane === "agent" && (
           <WorkspaceAgentPanel
             jobs={jobs}
+            curator={curator}
             draft={chatDraft}
             onDraftConsumed={() => setChatDraft("")}
             onClose={() => setRightPane(null)}
@@ -2557,6 +2633,8 @@ export default function App() {
             onCancel={cancelResearch}
             onApprove={approveWorkspacePlan}
             onReject={rejectWorkspacePlan}
+            onStartCurator={startCurator}
+            onControlCurator={controlCurator}
           />
         )}
         {rightPane === "review" && (
@@ -4947,6 +5025,7 @@ function ReviewPanel({
 
 function WorkspaceAgentPanel({
   jobs,
+  curator,
   draft,
   onDraftConsumed,
   onClose,
@@ -4954,8 +5033,11 @@ function WorkspaceAgentPanel({
   onCancel,
   onApprove,
   onReject,
+  onStartCurator,
+  onControlCurator,
 }: {
   jobs: ResearchJob[];
+  curator: CuratorState | null;
   draft: string;
   onDraftConsumed: () => void;
   onClose: () => void;
@@ -4963,10 +5045,18 @@ function WorkspaceAgentPanel({
   onCancel: (jobId: string) => Promise<void>;
   onApprove: (jobId: string) => Promise<void>;
   onReject: (jobId: string) => Promise<void>;
+  onStartCurator: (
+    objective: string,
+    maxCycles: number,
+    maxResearchCells: number,
+  ) => Promise<void>;
+  onControlCurator: (action: "pause" | "resume" | "stop") => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
+  const [curatorObjective, setCuratorObjective] = useState("");
+  const [curatorStarting, setCuratorStarting] = useState(false);
   const [yoloMode, setYoloMode] = useState(
     () => window.localStorage.getItem("epiq-control-center-yolo") === "true",
   );
@@ -5021,6 +5111,58 @@ function WorkspaceAgentPanel({
       <div className="drawer-head">
         <button className="close" onClick={onClose}>×</button>
         <h2>Control Center</h2>
+      </div>
+      <div className="curator-control">
+        {curator && ["running", "paused", "stopping"].includes(curator.status) ? (
+          <div className="curator-status">
+            <div>
+              <b>Curator · {curator.status}</b>
+              <small>
+                {curator.completed_cycles}/{curator.max_cycles} cycles · {curator.research_cells_used}/{curator.max_research_cells} research cells
+              </small>
+            </div>
+            <p>{curator.message}</p>
+            <div>
+              {curator.status === "running" && (
+                <button onClick={() => void onControlCurator("pause")}>Pause</button>
+              )}
+              {curator.status === "paused" && (
+                <button onClick={() => void onControlCurator("resume")}>Resume</button>
+              )}
+              {curator.status !== "stopping" && (
+                <button onClick={() => void onControlCurator("stop")}>Stop</button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <details>
+            <summary>Keep enriching this project</summary>
+            {curator && <small>{curator.message}</small>}
+            <textarea
+              value={curatorObjective}
+              onChange={(event) => setCuratorObjective(event.target.value)}
+              placeholder="What should this dataset become useful for?"
+              rows={2}
+            />
+            <div className="curator-budget">
+              <span>Up to 5 cycles · 50 research cells</span>
+              <button
+                disabled={curatorStarting || !curatorObjective.trim()}
+                onClick={async () => {
+                  setCuratorStarting(true);
+                  try {
+                    await onStartCurator(curatorObjective.trim(), 5, 50);
+                    setCuratorObjective("");
+                  } finally {
+                    setCuratorStarting(false);
+                  }
+                }}
+              >
+                {curatorStarting ? "Starting…" : "Start curator"}
+              </button>
+            </div>
+          </details>
+        )}
       </div>
       <div
         className="agent-conversation"
@@ -6596,6 +6738,7 @@ function CellDrawer({
   onPolicy,
   onSchemaChallenge,
   onChallengeResearch,
+  onEstimate,
   onChallenge,
   onAcceptProvisional,
   onAcceptAllProvisional,
@@ -6616,6 +6759,7 @@ function CellDrawer({
   onPolicy: () => void;
   onSchemaChallenge: () => void;
   onChallengeResearch: () => void;
+  onEstimate: () => void;
   onChallenge: (claimId: string) => void;
   onAcceptProvisional: (suggestion: ProvisionalRelationship) => Promise<void>;
   onAcceptAllProvisional: (
@@ -6691,7 +6835,7 @@ function CellDrawer({
           )}
           <div>
             <small>CURRENT STATE</small>
-            <b>{isResearching ? "Researching" : cell.state}</b>
+            <b>{isResearching ? "Researching" : cellStateLabel(cell)}</b>
             {isResearching && <em>Searching and validating evidence…</em>}
           </div>
         </div>
@@ -6825,6 +6969,9 @@ function CellDrawer({
               <span className={`confidence ${claim.confidence}`}>
                 {claim.confidence}
               </span>
+              {claim.epistemic_status === "estimated" && (
+                <span className="estimate-badge">≈ estimated</span>
+              )}
               <code>{claim.token}</code>
             </div>
             <div className="answer">
@@ -6853,6 +7000,25 @@ function CellDrawer({
             {claim.as_of && (
               <div className="claim-as-of">
                 Claim observed as of {claim.as_of}
+              </div>
+            )}
+            {claim.epistemic_status === "estimated" && claim.estimate && (
+              <div className="estimate-panel">
+                <b>Ballpark estimate</b>
+                {(claim.estimate.lower != null || claim.estimate.upper != null) && (
+                  <p>
+                    Plausible range: {String(claim.estimate.lower ?? "?")}–
+                    {String(claim.estimate.upper ?? "?")}
+                    {question.value_type.startsWith("Quantity[")
+                      ? ` ${question.value_type.slice("Quantity[".length, -1)}`
+                      : ""}
+                  </p>
+                )}
+                {claim.estimate.method && <p>{claim.estimate.method}</p>}
+                {claim.estimate.proxy && <small>Proxy: {claim.estimate.proxy}</small>}
+                {claim.estimate.assumptions?.length ? (
+                  <ul>{claim.estimate.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
+                ) : null}
               </div>
             )}
             {claim.derivation && (
@@ -6952,9 +7118,14 @@ function CellDrawer({
             ✦ Get more evidence
           </button>
         ) : cell.state === "NotFound" ? (
-          <button className="primary" onClick={onChallengeResearch}>
-            Discuss and retry in Control Center
-          </button>
+          <>
+            <button className="primary" onClick={onEstimate}>
+              Estimate a ballpark value
+            </button>
+            <button className="ghost" onClick={onChallengeResearch}>
+              Retry exact research
+            </button>
+          </>
         ) : (
           <button className="primary" onClick={onResearch}>
             Ask Control Center to research

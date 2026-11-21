@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import unicodedata
 import uuid
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ from .research import (
     ResearchRunner,
     WorkspaceAgentRunner,
 )
+from .temporal import research_instant
 
 
 class ProjectCreate(BaseModel):
@@ -135,6 +137,12 @@ class WorkspaceAgentCreate(BaseModel):
     auto_approve: bool = False
 
 
+class CuratorCreate(BaseModel):
+    objective: str = Field(min_length=1)
+    max_cycles: int = Field(default=5, ge=1, le=50)
+    max_research_cells: int = Field(default=50, ge=0, le=5000)
+
+
 def create_ledger_app(
     project: str | Path | None = None,
     frontend: str | Path | None = None,
@@ -169,6 +177,7 @@ def create_ledger_app(
     app.state.research_runner = research_runner or OpenAIResearchRunner()
     app.state.cli_execution = research_runner is None
     app.state.research_jobs: dict[str, dict[str, Any]] = {}
+    app.state.curator: dict[str, Any] | None = None
     app.state.research_lock = threading.RLock()
     app.add_middleware(
         CORSMiddleware,
@@ -221,6 +230,7 @@ def create_ledger_app(
         with app.state.research_lock:
             app.state.research_jobs.clear()
         hydrate_workspace_history()
+        load_curator()
         return selected
 
     def project_slug(name: str) -> str:
@@ -235,6 +245,10 @@ def create_ledger_app(
                 or job.get("approval_status") == "applying"
                 for job in app.state.research_jobs.values()
             )
+            active = active or bool(
+                app.state.curator
+                and app.state.curator.get("status") in {"running", "stopping"}
+            )
         if active:
             raise EpiqError(
                 "research_active",
@@ -243,6 +257,35 @@ def create_ledger_app(
 
     def now() -> str:
         return datetime.now(UTC).isoformat()
+
+    def curator_path() -> Path:
+        return root / ".epiq" / "curator.json"
+
+    def save_curator() -> None:
+        state = app.state.curator
+        if state is None or not root.exists():
+            return
+        path = curator_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+        temporary.replace(path)
+
+    def load_curator() -> None:
+        path = curator_path()
+        if not path.is_file():
+            app.state.curator = None
+            return
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            app.state.curator = None
+            return
+        if state.get("status") in {"running", "stopping"}:
+            state["status"] = "paused"
+            state["message"] = "Paused after server restart; resume when ready."
+        app.state.curator = state
+        save_curator()
 
     def workspace_context(current: LedgerDatabase) -> dict[str, Any]:
         def table_context(kind: str) -> dict[str, Any]:
@@ -407,6 +450,8 @@ def create_ledger_app(
                 argv.extend(["--entity-name", name])
             if item.get("instructions"):
                 argv.extend(["--instructions", str(item["instructions"])])
+            if item.get("allow_estimates"):
+                argv.append("--allow-estimates")
             commands.append({"argv": argv, "status": "proposed"})
         return commands
 
@@ -484,6 +529,7 @@ def create_ledger_app(
             }
 
     hydrate_workspace_history()
+    load_curator()
 
     def plan_workspace(job_id: str, message: str) -> None:
         def progress(text: str) -> None:
@@ -527,6 +573,21 @@ def create_ledger_app(
                 "replacements": list(plan.get("replacements", []))[:24],
                 "research": list(plan["research"])[:24],
             }
+            with app.state.research_lock:
+                research_cell_limit = app.state.research_jobs[job_id].get(
+                    "research_cell_limit"
+                )
+            if research_cell_limit is not None:
+                remaining = max(0, int(research_cell_limit))
+                bounded_research = []
+                for request in plan["research"]:
+                    names = list(request.get("entity_names", []))[:remaining]
+                    if names:
+                        bounded_research.append({**request, "entity_names": names})
+                        remaining -= len(names)
+                    if remaining == 0:
+                        break
+                plan = {**plan, "research": bounded_research}
             estimated = sum(len(item.get("entity_names", [])) for item in plan["research"])
             proposal = current.create_proposal(
                 {"user_message": message, "workspace_plan": plan},
@@ -891,6 +952,7 @@ def create_ledger_app(
                     **question,
                     "task_mode": "fill_missing",
                     "instructions": str(request.get("instructions", "")),
+                    "allow_estimates": bool(request.get("allow_estimates", False)),
                 }
                 findings = app.state.research_runner(
                     str(request["kind"]), research_question, targets, progress
@@ -915,13 +977,15 @@ def create_ledger_app(
                         no_result += 1
                         request_no_result += 1
                     elif finding.get("status") == "answered":
+                        observed_at = research_instant(finding.get("observed_as_of"))
+                        published_at = research_instant(finding.get("source_published_at"))
                         current.record(
                             target["entity_id"],
                             question["question_id"],
                             finding["value"],
-                            valid_from=str(
-                                finding.get("observed_as_of")
-                                or finding.get("source_published_at")
+                            valid_from=(
+                                observed_at
+                                or published_at
                                 or datetime.now(UTC).date().isoformat()
                             ),
                             source_title=str(finding["source_title"]),
@@ -929,7 +993,7 @@ def create_ledger_app(
                             url=str(finding["source_url"]),
                             retrieved_at=datetime.now(UTC).date().isoformat(),
                             excerpt=str(finding["excerpt"]),
-                            published_at=finding.get("source_published_at"),
+                            published_at=published_at,
                             confidence=str(finding.get("confidence") or "medium"),
                             temporal_basis=(
                                 "observed"
@@ -937,6 +1001,14 @@ def create_ledger_app(
                                 else "source"
                                 if finding.get("source_published_at")
                                 else "unknown"
+                            ),
+                            epistemic_status=str(
+                                finding.get("epistemic_status") or "reported"
+                            ),
+                            estimate=(
+                                finding.get("estimate")
+                                if isinstance(finding.get("estimate"), dict)
+                                else {}
                             ),
                             actor="agent:web",
                         )
@@ -958,6 +1030,8 @@ def create_ledger_app(
                     argv.extend(["--entity-name", str(name)])
                 if request.get("instructions"):
                     argv.extend(["--instructions", str(request["instructions"])])
+                if request.get("allow_estimates"):
+                    argv.append("--allow-estimates")
                 with app.state.research_lock:
                     app.state.research_jobs[job_id].setdefault("command_results", []).append(
                         {
@@ -988,6 +1062,143 @@ def create_ledger_app(
             )
         except Exception as error:
             update_job(job_id, status="failed", error=str(error), finished_at=now())
+
+    def run_curator(curator_id: str) -> None:
+        while True:
+            with app.state.research_lock:
+                state = app.state.curator
+                if state is None or state.get("curator_id") != curator_id:
+                    return
+                if state.get("stop_requested"):
+                    state.update(
+                        status="stopped",
+                        message="Stopped by the user.",
+                        finished_at=now(),
+                    )
+                    save_curator()
+                    return
+                if state.get("pause_requested"):
+                    state.update(
+                        status="paused",
+                        message="Paused between enrichment cycles.",
+                    )
+                    save_curator()
+                    return
+                cycle = int(state.get("completed_cycles", 0)) + 1
+                remaining_cells = int(state["max_research_cells"]) - int(
+                    state.get("research_cells_used", 0)
+                )
+                if cycle > int(state["max_cycles"]) or remaining_cells <= 0:
+                    state.update(
+                        status="completed",
+                        message="Finished the configured curation budget.",
+                        finished_at=now(),
+                    )
+                    save_curator()
+                    return
+                previous = state.get("cycles", [])[-1] if state.get("cycles") else None
+                objective = str(state["objective"])
+                message = (
+                    f"Curator cycle {cycle}. Keep enriching this project toward this objective: "
+                    f"{objective}\n\nReflect on the current authoritative workspace, identify the "
+                    "single "
+                    "highest-value next enrichment, and execute a bounded step. Prefer useful "
+                    "coverage, natural related tables, stronger evidence, and comparison fields. "
+                    "Do not repeat completed work or add low-value fields merely to keep going."
+                )
+                if previous:
+                    message += (
+                        "\n\nPrevious cycle outcome: "
+                        f"{previous.get('summary', '')} "
+                        f"({previous.get('written', 0)} writes; status "
+                        f"{previous.get('status', 'unknown')}). Choose a genuinely useful "
+                        "next step."
+                    )
+                job_id = f"curator_{curator_id}_{cycle}"
+                job = {
+                    "job_id": job_id,
+                    "job_type": "workspace_agent",
+                    "entity_kind": "Workspace",
+                    "question_id": "",
+                    "mode": "workspace_agent",
+                    "instructions": message,
+                    "user_message": f"Curator cycle {cycle}: {objective}",
+                    "auto_approve": True,
+                    "curator_id": curator_id,
+                    "curator_cycle": cycle,
+                    "research_cell_limit": remaining_cells,
+                    "status": "queued",
+                    "total": 0,
+                    "completed": 0,
+                    "target_entity_ids": [],
+                    "created_at": now(),
+                    "error": None,
+                    "messages": [{"at": now(), "message": f"Curator cycle {cycle} queued"}],
+                }
+                app.state.research_jobs[job_id] = job
+                state.update(
+                    status="running",
+                    active_job_id=job_id,
+                    message=f"Cycle {cycle}: reflecting on the next enrichment.",
+                )
+                save_curator()
+
+            plan_workspace(job_id, message)
+            while True:
+                with app.state.research_lock:
+                    job = app.state.research_jobs[job_id]
+                    terminal = job.get("status") in {"completed", "failed", "cancelled"}
+                    applying = job.get("approval_status") == "applying"
+                if terminal and not applying:
+                    break
+                time.sleep(0.1)
+
+            with app.state.research_lock:
+                state = app.state.curator
+                if state is None or state.get("curator_id") != curator_id:
+                    return
+                job = app.state.research_jobs[job_id]
+                attempted = int(job.get("estimated_research_cells", 0))
+                cycle_record = {
+                    "cycle": cycle,
+                    "job_id": job_id,
+                    "status": job.get("status"),
+                    "summary": job.get("assistant_summary") or job.get("error") or "",
+                    "written": int(job.get("written", 0)),
+                    "research_cells": attempted,
+                    "finished_at": now(),
+                }
+                state.setdefault("cycles", []).append(cycle_record)
+                state["completed_cycles"] = cycle
+                state["research_cells_used"] = int(
+                    state.get("research_cells_used", 0)
+                ) + attempted
+                state["active_job_id"] = None
+                state["message"] = str(cycle_record["summary"])
+                if job.get("status") == "failed":
+                    state.update(
+                        status="paused",
+                        message=f"Paused after cycle {cycle} failed: {job.get('error')}",
+                    )
+                    save_curator()
+                    return
+                if int(job.get("written", 0)) == 0:
+                    state.update(
+                        status="completed",
+                        message="Stopped after a cycle produced no useful changes.",
+                        finished_at=now(),
+                    )
+                    save_curator()
+                    return
+                save_curator()
+
+    def start_curator_thread(curator_id: str) -> None:
+        threading.Thread(
+            target=run_curator,
+            args=(curator_id,),
+            daemon=True,
+            name=f"epiq-curator-{curator_id}",
+        ).start()
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -1419,6 +1630,88 @@ def create_ledger_app(
         with app.state.research_lock:
             return list(app.state.research_jobs.values())
 
+    @app.get("/api/curator")
+    def curator_status() -> dict[str, Any] | None:
+        with app.state.research_lock:
+            return app.state.curator
+
+    @app.post("/api/curator", status_code=202)
+    def launch_curator(body: CuratorCreate) -> dict[str, Any]:
+        database().project()
+        with app.state.research_lock:
+            existing = app.state.curator
+            if existing and existing.get("status") in {"running", "stopping"}:
+                raise EpiqError("curator_active", "A curator is already running for this project")
+            curator_id = uuid.uuid4().hex[:16]
+            app.state.curator = {
+                "curator_id": curator_id,
+                "objective": body.objective,
+                "status": "running",
+                "max_cycles": body.max_cycles,
+                "max_research_cells": body.max_research_cells,
+                "completed_cycles": 0,
+                "research_cells_used": 0,
+                "active_job_id": None,
+                "pause_requested": False,
+                "stop_requested": False,
+                "cycles": [],
+                "message": "Starting the first enrichment cycle.",
+                "created_at": now(),
+            }
+            save_curator()
+            state = dict(app.state.curator)
+        start_curator_thread(curator_id)
+        return state
+
+    @app.post("/api/curator/pause", status_code=202)
+    def pause_curator() -> dict[str, Any]:
+        with app.state.research_lock:
+            state = app.state.curator
+            if state is None:
+                raise EpiqError("curator_not_found", "No curator is configured for this project")
+            if state.get("status") == "running":
+                state["pause_requested"] = True
+                state["message"] = "Will pause after the current cycle."
+                save_curator()
+            return dict(state)
+
+    @app.post("/api/curator/resume", status_code=202)
+    def resume_curator() -> dict[str, Any]:
+        with app.state.research_lock:
+            state = app.state.curator
+            if state is None:
+                raise EpiqError("curator_not_found", "No curator is configured for this project")
+            if state.get("status") != "paused":
+                raise EpiqError("curator_not_paused", "The curator is not paused")
+            state.update(
+                status="running",
+                pause_requested=False,
+                stop_requested=False,
+                message="Resuming enrichment.",
+            )
+            save_curator()
+            curator_id = str(state["curator_id"])
+            response = dict(state)
+        start_curator_thread(curator_id)
+        return response
+
+    @app.post("/api/curator/stop", status_code=202)
+    def stop_curator() -> dict[str, Any]:
+        with app.state.research_lock:
+            state = app.state.curator
+            if state is None:
+                raise EpiqError("curator_not_found", "No curator is configured for this project")
+            if state.get("status") in {"running", "paused"}:
+                state["stop_requested"] = True
+                state["pause_requested"] = False
+                if state.get("status") == "paused":
+                    state.update(status="stopped", finished_at=now())
+                else:
+                    state["status"] = "stopping"
+                state["message"] = "Stopping after the current safe boundary."
+                save_curator()
+            return dict(state)
+
     @app.post("/api/workspace-agent/jobs", status_code=202)
     def launch_workspace_agent(body: WorkspaceAgentCreate) -> dict[str, Any]:
         database().project()
@@ -1582,6 +1875,8 @@ def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[st
                             "claim_id": claim["claim_id"],
                             "value": claim["value"],
                             "confidence": claim["confidence"],
+                            "epistemic_status": claim["epistemic_status"],
+                            "estimate": claim["estimate"],
                             "evidence_id": evidence_id,
                             "source": {
                                 "title": source["title"],

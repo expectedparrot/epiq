@@ -4,7 +4,13 @@ import pytest
 
 from epiq.errors import EpiqError
 from epiq.store import Store
-from epiq.temporal import instant
+from epiq.temporal import instant, research_instant
+
+
+def test_research_interval_uses_end_as_claim_instant() -> None:
+    assert research_instant("2013-01-01/2013-12-31") == "2013-12-31"
+    assert research_instant("2026-11-21") == "2026-11-21"
+    assert research_instant("not a date") is None
 
 
 @pytest.fixture

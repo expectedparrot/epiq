@@ -47,6 +47,7 @@ from .operations import operation_catalog
 from .research import OpenAIResearchRunner
 from .schema_guidance import schema_plan
 from .store import QUESTION_CHALLENGE_PROBLEMS, Store
+from .temporal import research_instant
 from .xlsx import write_xlsx
 
 CONFIG_PATH = Path(".epiq/config.json")
@@ -895,6 +896,7 @@ def parser() -> argparse.ArgumentParser:
         default="fill_missing",
     )
     ledger_research.add_argument("--instructions", default="")
+    ledger_research.add_argument("--allow-estimates", action="store_true")
     ledger_record.add_argument("--recorded-at")
     ledger_record.add_argument("--idempotency-key")
     ledger_evidence = ledger_mutation("evidence", "Capture immutable evidence")
@@ -1793,6 +1795,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     **question,
                     "task_mode": args.mode,
                     "instructions": args.instructions,
+                    "allow_estimates": args.allow_estimates,
                 }
                 findings = OpenAIResearchRunner()(args.kind, research_question, targets)
                 target_ids = {item["entity_id"] for item in targets}
@@ -1804,23 +1807,34 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 ) -> dict[str, Any]:
                     """Persist a scalar finding, resolving Ref values into real ledger rows."""
                     value = finding["value"]
+                    observed_at = research_instant(finding.get("observed_as_of"))
+                    published_at = research_instant(finding.get("source_published_at"))
+                    valid_from = observed_at or published_at or today
+                    interval = next(
+                        (
+                            value
+                            for value in (
+                                finding.get("observed_as_of"),
+                                finding.get("source_published_at"),
+                            )
+                            if isinstance(value, str) and "/" in value
+                        ),
+                        None,
+                    )
                     value_type = str(question["value_type"])
                     if not (value_type.startswith("Ref[") and value_type.endswith("]")):
                         return database.record(
                             entity_id,
                             question["question_id"],
                             value,
-                            valid_from=str(
-                                finding.get("observed_as_of")
-                                or finding.get("source_published_at")
-                                or today
-                            ),
+                            valid_from=valid_from,
                             source_title=str(finding["source_title"]),
                             source_type=str(finding.get("source_type") or "web"),
                             url=str(finding["source_url"]),
                             retrieved_at=today,
                             excerpt=str(finding["excerpt"]),
-                            published_at=finding.get("source_published_at"),
+                            published_at=published_at,
+                            locator={"reported_interval": interval} if interval else None,
                             confidence=str(finding.get("confidence") or "medium"),
                             temporal_basis=(
                                 "observed"
@@ -1828,6 +1842,14 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                                 else "source"
                                 if finding.get("source_published_at")
                                 else "unknown"
+                            ),
+                            epistemic_status=str(
+                                finding.get("epistemic_status") or "reported"
+                            ),
+                            estimate=(
+                                finding.get("estimate")
+                                if isinstance(finding.get("estimate"), dict)
+                                else {}
                             ),
                             actor=args.actor,
                             idempotency_key=key,
@@ -1873,17 +1895,14 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                                 related_id,
                                 related_question["question_id"],
                                 field_value,
-                                valid_from=str(
-                                    finding.get("observed_as_of")
-                                    or finding.get("source_published_at")
-                                    or today
-                                ),
+                                valid_from=valid_from,
                                 source_title=str(finding["source_title"]),
                                 source_type=str(finding.get("source_type") or "web"),
                                 url=str(finding["source_url"]),
                                 retrieved_at=today,
                                 excerpt=str(finding["excerpt"]),
-                                published_at=finding.get("source_published_at"),
+                                published_at=published_at,
+                                locator={"reported_interval": interval} if interval else None,
                                 confidence=str(finding.get("confidence") or "medium"),
                                 temporal_basis="source",
                                 actor=args.actor,
@@ -1897,17 +1916,14 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                         entity_id,
                         question["question_id"],
                         parent_value,
-                        valid_from=str(
-                            finding.get("observed_as_of")
-                            or finding.get("source_published_at")
-                            or today
-                        ),
+                        valid_from=valid_from,
                         source_title=str(finding["source_title"]),
                         source_type=str(finding.get("source_type") or "web"),
                         url=str(finding["source_url"]),
                         retrieved_at=today,
                         excerpt=str(finding["excerpt"]),
-                        published_at=finding.get("source_published_at"),
+                        published_at=published_at,
+                        locator={"reported_interval": interval} if interval else None,
                         confidence=str(finding.get("confidence") or "medium"),
                         temporal_basis="source",
                         actor=args.actor,

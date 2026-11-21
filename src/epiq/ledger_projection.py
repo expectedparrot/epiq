@@ -23,7 +23,7 @@ from .ledger_workflows import WORKFLOW_SCHEMA
 from .ledger_workflows import apply as apply_workflow_operation
 
 REDUCER_VERSION = "1"
-PROJECTION_SCHEMA_VERSION = "5"
+PROJECTION_SCHEMA_VERSION = "6"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;

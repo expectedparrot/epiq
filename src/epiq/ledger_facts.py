@@ -46,6 +46,9 @@ CREATE TABLE projected_claims (
     valid_from TEXT NOT NULL,
     confidence TEXT NOT NULL CHECK(confidence IN ('low','medium','high')),
     temporal_basis TEXT NOT NULL CHECK(temporal_basis IN ('observed','source','unknown')),
+    epistemic_status TEXT NOT NULL
+        CHECK(epistemic_status IN ('observed','reported','derived','estimated')),
+    estimate_json TEXT NOT NULL,
     transaction_id TEXT NOT NULL REFERENCES ledger_transactions(transaction_id),
     created_operation_id TEXT NOT NULL UNIQUE
 );
@@ -122,7 +125,7 @@ _SPECS: dict[str, tuple[set[str], set[str]]] = {
             "confidence",
             "temporal_basis",
         },
-        set(),
+        {"epistemic_status", "estimate"},
     ),
     "claim.support": ({"claim_id", "evidence_id"}, {"exact_quote", "locator"}),
     "claim.supersede": ({"claim_id", "replacement_claim_id", "reason"}, set()),
@@ -181,6 +184,15 @@ def validate_payload(operation_type: str, payload: dict[str, Any]) -> None:
             raise EpiqError("invalid_operation_payload", "Unknown claim confidence")
         if payload["temporal_basis"] not in {"observed", "source", "unknown"}:
             raise EpiqError("invalid_operation_payload", "Unknown temporal_basis")
+        if payload.get("epistemic_status", "reported") not in {
+            "observed",
+            "reported",
+            "derived",
+            "estimated",
+        }:
+            raise EpiqError("invalid_operation_payload", "Unknown epistemic_status")
+        if not isinstance(payload.get("estimate", {}), dict):
+            raise EpiqError("invalid_operation_payload", "estimate must be an object")
     elif operation_type == "claim.support":
         if payload.get("exact_quote") is not None:
             _string(payload, "exact_quote")
@@ -295,7 +307,7 @@ def _assert_claim(
         _require_row(connection, "projected_evidence", "evidence_id", evidence_id)
     try:
         connection.execute(
-            "INSERT INTO projected_claims VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO projected_claims VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 payload["claim_id"],
                 payload["subject_id"],
@@ -304,6 +316,8 @@ def _assert_claim(
                 normalize(payload["valid_from"], field="valid_from"),
                 payload["confidence"],
                 payload["temporal_basis"],
+                payload.get("epistemic_status", "reported"),
+                _json(payload.get("estimate") or {}),
                 transaction_id,
                 operation_id,
             ),

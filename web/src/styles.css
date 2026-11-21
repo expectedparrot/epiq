@@ -2528,6 +2528,50 @@ button:hover {
   display: flex;
   flex-direction: column;
 }
+.curator-control {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px;
+}
+.curator-control details > summary {
+  color: #175b45;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+.curator-control details[open] > summary { margin-bottom: 10px; }
+.curator-control textarea {
+  box-sizing: border-box;
+  font-size: 13px;
+  margin-top: 8px;
+  min-height: 62px;
+  padding: 10px;
+  resize: vertical;
+  width: 100%;
+}
+.curator-budget,
+.curator-status > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.curator-budget span,
+.curator-status small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.curator-status { display: grid; gap: 6px; }
+.curator-status p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+.curator-status button,
+.curator-budget button {
+  font-size: 12px;
+  min-height: 30px;
+  padding: 5px 10px;
+}
 .agent-conversation {
   flex: 1;
   overflow-y: auto;
@@ -2947,6 +2991,24 @@ button:hover {
   background: #eeeae2;
   color: #746c5e;
 }
+.estimate-badge {
+  border-radius: 999px;
+  background: #fff1ce;
+  color: #795509;
+  padding: 3px 7px;
+  font: 9px DM Mono;
+}
+.estimate-panel {
+  margin: 12px 0;
+  border: 1px solid #e5c98c;
+  border-radius: 8px;
+  background: #fff9e9;
+  padding: 12px;
+  color: #65501e;
+}
+.estimate-panel p { margin: 5px 0; }
+.estimate-panel small { display: block; margin-top: 6px; }
+.estimate-panel ul { margin: 7px 0 0; padding-left: 18px; }
 .job-action {
   margin-top: 10px;
   border: 1px solid var(--line);

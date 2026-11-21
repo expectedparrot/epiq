@@ -87,6 +87,8 @@ OUTPUT_SCHEMA = {
                     "source_title",
                     "excerpt",
                     "confidence",
+                    "epistemic_status",
+                    "estimate_json",
                     "notes",
                 ],
                 "properties": {
@@ -103,6 +105,11 @@ OUTPUT_SCHEMA = {
                     "source_title": {"type": "string"},
                     "excerpt": {"type": "string"},
                     "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "epistemic_status": {
+                        "type": "string",
+                        "enum": ["reported", "estimated"],
+                    },
+                    "estimate_json": {"type": "string"},
                     "notes": {"type": "string"},
                 },
             },
@@ -254,7 +261,13 @@ WORKSPACE_PLAN_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["kind", "question", "entity_names", "instructions"],
+                "required": [
+                    "kind",
+                    "question",
+                    "entity_names",
+                    "instructions",
+                    "allow_estimates",
+                ],
                 "properties": {
                     "kind": {
                         "type": "string",
@@ -269,6 +282,7 @@ WORKSPACE_PLAN_SCHEMA = {
                         "type": "string",
                         "description": "Natural-language source and interpretation instructions.",
                     },
+                    "allow_estimates": {"type": "boolean"},
                 },
             },
         },
@@ -343,6 +357,9 @@ without changing its evidence. Question names must be snake_case. Use value type
 Bool, Int, Float, Year, Date, URL, Image, Probability, Enum[a,b], Quantity[USD], and Ref[Kind].
 Every research request must use an exact table kind, exact question name, and existing or proposed
 row names.
+Set allow_estimates true when the user asks for ballpark values or when a useful sourced reference-
+class estimate is preferable to an unknown. Keep it false for identity, legal, categorical, and
+other fields where approximation would be misleading.
 
 Required JSON Schema:
 {json.dumps(WORKSPACE_PLAN_SCHEMA, sort_keys=True)}
@@ -424,6 +441,11 @@ Bool true is the string "true", and a String is the string "\"Boston\""). For an
 results, include a direct source URL, descriptive title, and a short supporting excerpt. Do not
 infer a positive or negative answer from absence. If sufficient evidence cannot be found, use
 status not_found, value_json "null", and explain the searches in notes. Never modify local files.
+When question.allow_estimates is true and an exact answer is unavailable, prefer status answered
+with epistemic_status estimated over not_found. Return a useful point value in value_json and an
+estimate_json object containing lower, upper, method, assumptions (an array), and proxy. Cite the
+authoritative reference-class evidence used. Avoid false precision. For exact sourced answers use
+epistemic_status reported and estimate_json "{{}}".
 """
         with tempfile.TemporaryDirectory(prefix="epiq-research-") as directory:
             temp = Path(directory)
@@ -506,8 +528,13 @@ Treat definition.research_guidance as a binding interpretation rule, including d
 human has identified after reviewing earlier mistakes.
 Return exactly one result for every supplied entity_id. The value_json field must contain the
 conforming value encoded as JSON text. For status not_found, value_json must be the literal JSON
-text "null"; never return an empty string. For any question with cardinality many, return a JSON
-array
+text "null"; never return an empty string.
+When question.allow_estimates is true and an exact answer cannot be supported, return a sourced
+ballpark answer with epistemic_status estimated rather than not_found. Put the point estimate in
+value_json and encode lower, upper, method, assumptions (an array), and proxy in estimate_json.
+Avoid false precision and cite authoritative reference-class evidence. For an exact answer use
+epistemic_status reported and estimate_json "{{}}".
+For any question with cardinality many, return a JSON array
 whose elements individually conform to value_type. For example, a many-valued String may return
 ["SaaS","Healthcare"], and a many-valued Enum[a,b,c] may return ["a","c"]. Epiq stores these as
 separate scalar claims in one cell. For a Ref[Type] question with cardinality many, return every
@@ -870,6 +897,13 @@ def _parse_values(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entity_id = str(item.get("entity_id") or "unknown entity")
         status = str(item.get("status") or "unknown")
         raw_value = item.pop("value_json", None)
+        raw_estimate = item.pop("estimate_json", "{}")
+        try:
+            item["estimate"] = json.loads(raw_estimate)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                f"Research result for {entity_id} has invalid estimate_json"
+            ) from error
         if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
             if status == "not_found":
                 item["value"] = None
@@ -892,6 +926,10 @@ def _parse_values(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if status == "not_found" and item["value"] is not None:
             raise RuntimeError(
                 f"Research result for {entity_id} has status not_found but a non-null value_json"
+            )
+        if item.get("epistemic_status") == "estimated" and not item["estimate"]:
+            raise RuntimeError(
+                f"Research result for {entity_id} is estimated but lacks estimate metadata"
             )
         normalized.append(item)
     return normalized

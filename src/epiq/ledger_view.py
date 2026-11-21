@@ -143,7 +143,8 @@ class LedgerView:
         query = f"""
             SELECT c.claim_id,c.subject_id,e.name AS subject_name,e.kind,
                    c.question_id,q.name AS question_name,c.value_json,c.valid_from,
-                   c.confidence,c.temporal_basis,c.transaction_id,t.actor,t.recorded_at
+                   c.confidence,c.temporal_basis,c.epistemic_status,c.estimate_json,
+                   c.transaction_id,t.actor,t.recorded_at
             FROM {table} c
             JOIN projected_entities e ON e.entity_id=c.subject_id
             JOIN projected_questions q ON q.question_id=c.question_id
@@ -177,6 +178,8 @@ class LedgerView:
                 "valid_from": row["valid_from"],
                 "confidence": row["confidence"],
                 "temporal_basis": row["temporal_basis"],
+                "epistemic_status": row["epistemic_status"],
+                "estimate": _decode(row["estimate_json"]),
                 "transaction_id": row["transaction_id"],
                 "actor": row["actor"],
                 "recorded_at": row["recorded_at"],

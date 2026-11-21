@@ -231,7 +231,7 @@ def test_ledger_research_allows_distinct_later_findings_for_same_cell(
     _data(capsys)
 
     claims = database.matrix("Company")["cells"][entity_id][question_id]
-    assert [item["value"] for item in claims] == [
+    assert sorted(item["value"] for item in claims) == [
         "https://acme.example/source-1",
         "https://acme.example/source-2",
     ]

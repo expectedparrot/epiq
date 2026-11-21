@@ -77,6 +77,37 @@ def test_existing_non_project_directory_is_rejected(tmp_path: Path) -> None:
         epiq.open_ledger(path)
 
 
+def test_estimated_claim_metadata_round_trips(tmp_path: Path) -> None:
+    database = epiq.open_ledger(tmp_path / "project", create=True, name="Estimates")
+    database.define_kind("Food")
+    entity = database.create_entity("Food", "Cheese")["entity_id"]
+    question = database.define_question("kcal_per_100g", "Food", "Float")["question_id"]
+    result = database.record(
+        entity,
+        question,
+        350.0,
+        valid_from="2026-11-21",
+        source_title="Food composition reference",
+        source_type="report",
+        url="https://example.test/food",
+        retrieved_at="2026-11-21",
+        excerpt="Comparable cheeses range from 250 to 450 kcal per 100 g.",
+        epistemic_status="estimated",
+        estimate={
+            "lower": 250,
+            "upper": 450,
+            "method": "Reference-class midpoint",
+            "assumptions": ["Unspecified ordinary full-fat cheese"],
+            "proxy": "Comparable cheeses",
+        },
+    )
+
+    claim = next(item for item in database.claims() if item["claim_id"] == result["claim_id"])
+    assert claim["epistemic_status"] == "estimated"
+    assert claim["estimate"]["lower"] == 250
+    assert claim["estimate"]["upper"] == 450
+
+
 def test_high_level_research_workflow_is_ledger_authoritative(tmp_path: Path) -> None:
     root = tmp_path / "project"
     database = epiq.open_ledger(
