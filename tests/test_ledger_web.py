@@ -285,3 +285,56 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
 
     proposals = LedgerDatabase(root).proposals()
     assert proposals[0]["proposal_type"] == "workspace_agent"
+
+
+def test_web_matrix_resolves_references_and_preserves_derivations(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Relationships")
+    database.define_kind("Company")
+    database.define_kind("Person")
+    company = database.create_entity("Company", "Acme")["entity_id"]
+    founder = database.create_entity("Person", "Ada")["entity_id"]
+    founder_question = database.define_question(
+        "founder", "Company", "Ref[Person]"
+    )["question_id"]
+    employees = database.define_question("employees", "Company", "Int")["question_id"]
+    doubled = database.define_question("employees_doubled", "Company", "Int")["question_id"]
+    evidence = database.capture_evidence(
+        source_title="Acme profile",
+        source_type="web",
+        url="https://example.test/acme",
+        retrieved_at="2026-11-21",
+        excerpt="Ada founded Acme, which has 12 employees.",
+    )["evidence_id"]
+    database.assert_claim(
+        company,
+        founder_question,
+        founder,
+        valid_from="2026-11-21",
+        evidence_ids=[evidence],
+    )
+    input_claim = database.assert_claim(
+        company,
+        employees,
+        12,
+        valid_from="2026-11-21",
+        evidence_ids=[evidence],
+    )["claim_id"]
+    database.derive_claim(
+        company,
+        doubled,
+        24,
+        valid_from="2026-11-21",
+        evidence_ids=[evidence],
+        operation="linear",
+        input_claim_ids=[input_claim],
+        parameters={"multiplier": 2},
+    )
+
+    row = TestClient(create_ledger_app(root)).get("/api/matrix/Company").json()["rows"][0]
+    assert row["cells"]["founder"]["references"] == [
+        {"entity_id": founder, "kind": "Person", "name": "Ada"}
+    ]
+    derivation = row["cells"]["employees_doubled"]["lineage"][0]["derivation"]
+    assert derivation["operation"] == "linear"
+    assert derivation["dependencies"] == [{"claim_id": input_claim, "role": "operand"}]

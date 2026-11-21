@@ -2484,7 +2484,21 @@ export default function App() {
                                 row.entity_id,
                                 question.question_id,
                               ) && <span className="cell-spinner" />}
-                              {question.value_type === "Image" &&
+                              {cell.references?.length ? (
+                                <div className="reference-cell">
+                                  <strong>
+                                    {cell.references
+                                      .map((reference) => reference.name)
+                                      .join(", ")}
+                                  </strong>
+                                  <small>
+                                    ↗ {cell.references[0].kind} ·{" "}
+                                    {cell.references
+                                      .map((reference) => reference.entity_id)
+                                      .join(", ")}
+                                  </small>
+                                </div>
+                              ) : question.value_type === "Image" &&
                               cell.state === "Answered" &&
                               typeof cell.value === "string" ? (
                                 <img
@@ -2550,7 +2564,7 @@ export default function App() {
                                     : `Derived with ${derivedClaims[0].derivation?.operation}`
                                 }
                               >
-                                {derivedIsStale ? "⚠ ƒ" : "ƒ"}
+                                {derivedIsStale ? "⚠ ƒ derived" : "ƒ derived"}
                               </span>
                             )}
                           </td>

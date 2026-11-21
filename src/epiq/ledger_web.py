@@ -799,6 +799,8 @@ def create_ledger_app(
 
 def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[str, Any]:
     questions = projection["questions"]
+    entities = {item["entity_id"]: item for item in database.entities()}
+    derivations = {item["claim_id"]: item for item in database.derivations()}
     outcomes: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for item in database.research_outcomes(kind=projection["kind"]):
         outcomes.setdefault((item["subject_id"], item["question_id"]), []).append(item)
@@ -832,6 +834,7 @@ def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[st
             )
             lineage = []
             for claim in claims:
+                derivation = derivations.get(claim["claim_id"])
                 reviews = claim["reviews"]
                 review = reviews[0] if len(reviews) == 1 else None
                 for evidence_id in claim["evidence_ids"]:
@@ -860,9 +863,27 @@ def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[st
                                 if review
                                 else {"status": "unreviewed"}
                             ),
+                            "derivation": (
+                                {
+                                    "operation": derivation["operation"],
+                                    "parameters": derivation["parameters"],
+                                    "input_claim_ids": [
+                                        claim_id
+                                        for values in derivation["inputs"].values()
+                                        for claim_id in values
+                                    ],
+                                    "dependencies": [
+                                        {"claim_id": claim_id, "role": role}
+                                        for role, claim_ids in derivation["inputs"].items()
+                                        for claim_id in claim_ids
+                                    ],
+                                }
+                                if derivation
+                                else None
+                            ),
                         }
                     )
-            cells[question["name"]] = {
+            cell = {
                 "state": state,
                 "value": values[0] if len(values) == 1 else None,
                 "values": values,
@@ -879,5 +900,22 @@ def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[st
                     else None
                 ),
             }
+            if str(question["value_type"]).startswith("Ref[") and values:
+                identifiers = [
+                    identifier
+                    for value in values
+                    for identifier in (value if isinstance(value, list) else [value])
+                ]
+                cell["references"] = [
+                    {
+                        "entity_id": identifier,
+                        "kind": entities.get(identifier, {}).get(
+                            "kind", str(question["value_type"])[4:-1]
+                        ),
+                        "name": entities.get(identifier, {}).get("name", identifier),
+                    }
+                    for identifier in identifiers
+                ]
+            cells[question["name"]] = cell
         rows.append({**entity, "cells": cells})
     return {"entity_kind": projection["kind"], "questions": questions, "rows": rows}
