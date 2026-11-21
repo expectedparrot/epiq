@@ -246,3 +246,114 @@ def test_ledger_cli_runs_complete_research_workflow(tmp_path: Path, capsys) -> N
     main(["ledger", "matrix", "--path", str(root), "--kind", "Company"])
     matrix = data(capsys)
     assert matrix["cells"][entity_id][question_id][0]["value"] == 12
+
+    for arguments in (
+        [
+            "ledger",
+            "assess-evidence",
+            "--path",
+            str(root),
+            first["evidence_id"],
+            "--status",
+            "accepted",
+            "--reason",
+            "Checked",
+        ],
+        [
+            "ledger",
+            "review-claim",
+            "--path",
+            str(root),
+            first["claim_id"],
+            "--decision",
+            "accepted",
+            "--reason",
+            "Checked",
+        ],
+        [
+            "ledger",
+            "retire-question",
+            "--path",
+            str(root),
+            question_id,
+            "--reason",
+            "Redesign",
+        ],
+        [
+            "ledger",
+            "restore-question",
+            "--path",
+            str(root),
+            question_id,
+            "--reason",
+            "Keep",
+        ],
+    ):
+        main(arguments)
+        data(capsys)
+
+    main(
+        [
+            "ledger",
+            "challenge-question",
+            "--path",
+            str(root),
+            question_id,
+            "--problem",
+            "definition_ambiguity",
+            "--explanation",
+            "Clarify whether contractors count",
+        ]
+    )
+    challenge_id = data(capsys)["challenge_id"]
+    main(["ledger", "question-challenges", "--path", str(root), "--status", "open"])
+    assert data(capsys)["challenges"][0]["challenge_id"] == challenge_id
+    main(
+        [
+            "ledger",
+            "resolve-challenge",
+            "--path",
+            str(root),
+            challenge_id,
+            "--status",
+            "resolved",
+            "--resolution",
+            "Employees excludes contractors",
+        ]
+    )
+    data(capsys)
+    main(
+        [
+            "ledger",
+            "retract-claim",
+            "--path",
+            str(root),
+            first["claim_id"],
+            "--reason",
+            "Outdated",
+        ]
+    )
+    data(capsys)
+    main(
+        [
+            "ledger",
+            "not-found",
+            "--path",
+            str(root),
+            "--subject-id",
+            entity_id,
+            "--question-id",
+            question_id,
+            "--query",
+            "Acme current employees",
+            "--notes",
+            "No current source found",
+        ]
+    )
+    assert data(capsys)["state"] == "NotFound"
+
+    (root / ".epiq" / "projection.sqlite").unlink()
+    main(["ledger", "build", "--path", str(root), "--verify"])
+    assert data(capsys)["verified"] is True
+    main(["ledger", "claims", "--path", str(root), "--include-closed"])
+    assert data(capsys)["claims"][0]["reviews"][0]["decision"] == "accepted"

@@ -752,6 +752,67 @@ def parser() -> argparse.ArgumentParser:
     ledger_claims.add_argument("--question")
     ledger_claims.add_argument("--include-closed", action="store_true")
 
+    def ledger_mutation(name: str, help_text: str) -> argparse.ArgumentParser:
+        command = ledger_commands.add_parser(name, help=help_text)
+        command.add_argument("--path", default=".")
+        command.add_argument("--recorded-at")
+        command.add_argument("--idempotency-key")
+        return command
+
+    for name, help_text in (
+        ("retire-entity", "Retire an entity without erasing history"),
+        ("restore-entity", "Restore a retired entity"),
+    ):
+        command = ledger_mutation(name, help_text)
+        command.add_argument("entity_id")
+        command.add_argument("--reason", required=True)
+    for name, help_text in (
+        ("retire-question", "Retire a question without erasing history"),
+        ("restore-question", "Restore a retired question"),
+    ):
+        command = ledger_mutation(name, help_text)
+        command.add_argument("question_id")
+        command.add_argument("--reason", required=True)
+    ledger_assess = ledger_mutation("assess-evidence", "Assess captured evidence")
+    ledger_assess.add_argument("evidence_id")
+    ledger_assess.add_argument(
+        "--status", choices=["accepted", "disputed", "invalid", "superseded"], required=True
+    )
+    ledger_assess.add_argument("--reason", required=True)
+    ledger_review = ledger_mutation("review-claim", "Record a procedural claim review")
+    ledger_review.add_argument("claim_id")
+    ledger_review.add_argument("--decision", choices=["accepted", "rejected"], required=True)
+    ledger_review.add_argument("--reason", required=True)
+    ledger_retract = ledger_mutation("retract-claim", "Retract an exact claim")
+    ledger_retract.add_argument("claim_id")
+    ledger_retract.add_argument("--reason", required=True)
+    ledger_end = ledger_mutation("end-validity", "Record when an exact claim stopped applying")
+    ledger_end.add_argument("claim_id")
+    ledger_end.add_argument("--valid-to", required=True)
+    ledger_end.add_argument("--reason", required=True)
+    ledger_challenge = ledger_mutation("challenge-question", "Challenge a question definition")
+    ledger_challenge.add_argument("question_id")
+    ledger_challenge.add_argument("--problem", required=True)
+    ledger_challenge.add_argument("--explanation", required=True)
+    ledger_challenge.add_argument("--example-entity-id")
+    ledger_challenge.add_argument("--evidence-id", action="append", default=[])
+    ledger_challenge.add_argument("--proposed-replacement")
+    ledger_challenges = ledger_commands.add_parser(
+        "question-challenges", help="List projected question challenges"
+    )
+    ledger_challenges.add_argument("--path", default=".")
+    ledger_challenges.add_argument("--question")
+    ledger_challenges.add_argument("--status", choices=["open", "resolved", "dismissed"])
+    ledger_resolve = ledger_mutation("resolve-challenge", "Resolve or dismiss a challenge")
+    ledger_resolve.add_argument("challenge_id")
+    ledger_resolve.add_argument("--status", choices=["resolved", "dismissed"], required=True)
+    ledger_resolve.add_argument("--resolution", required=True)
+    ledger_not_found = ledger_mutation("not-found", "Record an unsuccessful bounded search")
+    ledger_not_found.add_argument("--subject-id", required=True)
+    ledger_not_found.add_argument("--question-id", required=True)
+    ledger_not_found.add_argument("--query", required=True)
+    ledger_not_found.add_argument("--notes", required=True)
+
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
     )
@@ -1291,6 +1352,18 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "record",
             "matrix",
             "claims",
+            "retire-entity",
+            "restore-entity",
+            "retire-question",
+            "restore-question",
+            "assess-evidence",
+            "review-claim",
+            "retract-claim",
+            "end-validity",
+            "challenge-question",
+            "question-challenges",
+            "resolve-challenge",
+            "not-found",
         }:
             database = LedgerDatabase(root)
             if args.ledger_command == "kind":
@@ -1344,16 +1417,105 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 )
             if args.ledger_command == "matrix":
                 return database.matrix(args.kind)
-            return {
-                "count": len(
-                    claims := database.claims(
-                        kind=args.kind,
-                        question=args.question,
-                        include_closed=args.include_closed,
-                    )
-                ),
-                "claims": claims,
-            }
+            if args.ledger_command == "claims":
+                claims = database.claims(
+                    kind=args.kind,
+                    question=args.question,
+                    include_closed=args.include_closed,
+                )
+                return {"count": len(claims), "claims": claims}
+            if args.ledger_command in {"retire-entity", "restore-entity"}:
+                return database.set_entity_visibility(
+                    args.entity_id,
+                    args.ledger_command == "restore-entity",
+                    args.reason,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command in {"retire-question", "restore-question"}:
+                return database.set_question_visibility(
+                    args.question_id,
+                    args.ledger_command == "restore-question",
+                    args.reason,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "assess-evidence":
+                return database.assess_evidence(
+                    args.evidence_id,
+                    args.status,
+                    args.reason,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "review-claim":
+                return database.review_claim(
+                    args.claim_id,
+                    args.decision,
+                    args.reason,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "retract-claim":
+                return database.retract_claim(
+                    args.claim_id,
+                    args.reason,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "end-validity":
+                return database.end_claim_validity(
+                    args.claim_id,
+                    args.valid_to,
+                    args.reason,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "challenge-question":
+                return database.challenge_question(
+                    args.question_id,
+                    args.problem,
+                    args.explanation,
+                    example_entity_id=args.example_entity_id,
+                    evidence_ids=args.evidence_id,
+                    proposed_replacement=(
+                        _attributes(args.proposed_replacement)
+                        if args.proposed_replacement
+                        else None
+                    ),
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "question-challenges":
+                challenges = database.question_challenges(
+                    question=args.question, status=args.status
+                )
+                return {"count": len(challenges), "challenges": challenges}
+            if args.ledger_command == "resolve-challenge":
+                return database.resolve_question_challenge(
+                    args.challenge_id,
+                    args.status,
+                    args.resolution,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            return database.record_not_found(
+                args.subject_id,
+                args.question_id,
+                args.query,
+                args.notes,
+                actor=args.actor,
+                recorded_at=args.recorded_at,
+                idempotency_key=args.idempotency_key,
+            )
         if args.ledger_command in {"merge-check", "doctor"}:
             result = diagnose_ledger(root, rebuild=args.ledger_command == "merge-check")
             if args.ledger_command == "merge-check":
