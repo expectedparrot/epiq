@@ -37,6 +37,24 @@ epiq ledger conflicts --path research
 concurrent claims or visibility decisions can be structurally mergeable while reporting explicit
 domain conflicts. See [the architecture specification](docs/git-ledger-architecture.md).
 
+An ordinary evidence-backed workflow does not require raw transaction JSON:
+
+```bash
+epiq ledger kind --path research Company
+epiq ledger entity --path research Company Acme --idempotency-key entity-acme
+epiq ledger question --path research employees --for Company --type Int \
+  --idempotency-key question-employees
+epiq ledger record --path research \
+  --subject-id ent_... --question-id q_... --value 12 \
+  --valid-from 2026-11-21 --source-title "Acme profile" --source-type web \
+  --url https://example.test/acme --retrieved-at 2026-11-21 \
+  --excerpt "Acme has 12 employees." --idempotency-key record-employees
+epiq ledger matrix --path research --kind Company
+```
+
+The record command commits evidence capture and claim assertion in one immutable transaction.
+Supplying an idempotency key makes safe retries reuse the same transaction and object IDs.
+
 ## Design paper and executable example
 
 Read [Epiq: An Epistemic Database for Agent-Driven Research](docs/epiq-short-paper.pdf)

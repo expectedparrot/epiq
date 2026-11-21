@@ -70,6 +70,13 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{_ulid()}"
 
 
+def new_domain_id(prefix: str) -> str:
+    """Allocate a Git-safe, globally unique identifier for a domain object."""
+    if not prefix.isascii() or not prefix.islower() or not prefix.isalpha():
+        raise EpiqError("invalid_id_prefix", f"Invalid domain ID prefix: {prefix}")
+    return f"{prefix}_{_ulid()}"
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:

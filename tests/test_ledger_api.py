@@ -75,3 +75,59 @@ def test_existing_non_project_directory_is_rejected(tmp_path: Path) -> None:
     path.mkdir()
     with pytest.raises(EpiqError):
         epiq.open_ledger(path)
+
+
+def test_high_level_research_workflow_is_ledger_authoritative(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    database = epiq.open_ledger(
+        root,
+        create=True,
+        project_id="prj_workflow",
+        replica_id="rep_workflow",
+        clock=clock,
+    )
+    database.define_kind("Company", idempotency_key="kind-company")
+    entity = database.create_entity(
+        "Company", "Acme", idempotency_key="entity-acme"
+    )
+    question = database.define_question(
+        "employees",
+        "Company",
+        "Int",
+        idempotency_key="question-employees",
+    )
+    recorded = database.record(
+        entity["entity_id"],
+        question["question_id"],
+        12,
+        valid_from="2026-11-21",
+        source_title="Acme profile",
+        source_type="web",
+        url="https://example.test/acme",
+        retrieved_at="2026-11-21",
+        excerpt="Acme has 12 employees.",
+        idempotency_key="record-employees",
+    )
+    retried = database.record(
+        entity["entity_id"],
+        question["question_id"],
+        12,
+        valid_from="2026-11-21",
+        source_title="Acme profile",
+        source_type="web",
+        url="https://example.test/acme",
+        retrieved_at="2026-11-21",
+        excerpt="Acme has 12 employees.",
+        idempotency_key="record-employees",
+    )
+
+    assert retried["created"] is False
+    assert retried["transaction_id"] == recorded["transaction_id"]
+    assert retried["claim_id"] == recorded["claim_id"]
+    assert database.matrix("Company")["cells"][entity["entity_id"]][
+        question["question_id"]
+    ][0]["value"] == 12
+
+    (root / ".epiq" / "projection.sqlite").unlink()
+    reopened = epiq.open_ledger(root, clock=clock)
+    assert reopened.claims()[0]["claim_id"] == recorded["claim_id"]

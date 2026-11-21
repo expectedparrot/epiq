@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .ledger import OPERATION_VERSION, LedgerRepository, Operation
+from .ledger import OPERATION_VERSION, LedgerRepository, Operation, new_domain_id
 from .ledger_view import LedgerView
 from .ledger_writer import LedgerWriter
 
@@ -73,6 +74,152 @@ class LedgerDatabase:
             "projection": result["projection"],
         }
 
+    def define_kind(
+        self,
+        kind: str,
+        *,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        result = self.transact(
+            [{"type": "entity_kind.define", "payload": {"kind": kind}}],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"kind": kind, **result}
+
+    def create_entity(
+        self,
+        kind: str,
+        name: str,
+        *,
+        entity_id: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        role: str = "entity",
+        identity: dict[str, Any] | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id("ent", entity_id, actor, idempotency_key, "entity")
+        payload: dict[str, Any] = {
+            "entity_id": identifier,
+            "kind": kind,
+            "name": name,
+            "attributes": attributes or {},
+            "role": role,
+        }
+        if identity is not None:
+            payload["identity"] = identity
+        result = self.transact(
+            [{"type": "entity.create", "payload": payload}],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"entity_id": identifier, **result}
+
+    def define_question(
+        self,
+        name: str,
+        subject_kind: str,
+        value_type: str,
+        *,
+        question_id: str | None = None,
+        definition: dict[str, Any] | None = None,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id("q", question_id, actor, idempotency_key, "question")
+        result = self.transact(
+            [
+                {
+                    "type": "question.define",
+                    "payload": {
+                        "question_id": identifier,
+                        "name": name,
+                        "subject_kind": subject_kind,
+                        "value_type": value_type,
+                        "definition": definition or {},
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"question_id": identifier, **result}
+
+    def record(
+        self,
+        subject_id: str,
+        question_id: str,
+        value: Any,
+        *,
+        valid_from: str,
+        source_title: str,
+        source_type: str,
+        url: str,
+        retrieved_at: str,
+        excerpt: str,
+        source_id: str | None = None,
+        evidence_id: str | None = None,
+        claim_id: str | None = None,
+        published_at: str | None = None,
+        locator: dict[str, Any] | None = None,
+        confidence: str = "medium",
+        temporal_basis: str = "observed",
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        source = self._domain_id("src", source_id, actor, idempotency_key, "source")
+        evidence = self._domain_id("evd", evidence_id, actor, idempotency_key, "evidence")
+        claim = self._domain_id("clm", claim_id, actor, idempotency_key, "claim")
+        evidence_payload: dict[str, Any] = {
+            "evidence_id": evidence,
+            "source_id": source,
+            "url": url,
+            "source_type": source_type,
+            "title": source_title,
+            "retrieved_at": retrieved_at,
+            "excerpt": excerpt,
+            "content_hash": hashlib.sha256(excerpt.encode()).hexdigest(),
+            "locator": locator or {},
+        }
+        if published_at is not None:
+            evidence_payload["published_at"] = published_at
+        result = self.transact(
+            [
+                {"type": "evidence.capture", "payload": evidence_payload},
+                {
+                    "type": "claim.assert",
+                    "payload": {
+                        "claim_id": claim,
+                        "subject_id": subject_id,
+                        "question_id": question_id,
+                        "value": value,
+                        "valid_from": valid_from,
+                        "evidence_ids": [evidence],
+                        "confidence": confidence,
+                        "temporal_basis": temporal_basis,
+                    },
+                },
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "source_id": source,
+            "evidence_id": evidence,
+            "claim_id": claim,
+            **result,
+        }
+
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.entities(kind=kind)
 
@@ -103,6 +250,21 @@ class LedgerDatabase:
 
     def status(self) -> dict[str, Any]:
         return self.writer.projector.build()
+
+    def _domain_id(
+        self,
+        prefix: str,
+        supplied: str | None,
+        actor: str,
+        idempotency_key: str | None,
+        role: str,
+    ) -> str:
+        if supplied is not None:
+            return supplied
+        if idempotency_key is None:
+            return new_domain_id(prefix)
+        material = f"{self.repository.config.project_id}\n{actor}\n{idempotency_key}\n{role}"
+        return f"{prefix}_{hashlib.sha256(material.encode()).hexdigest()[:24]}"
 
     @staticmethod
     def _operation(value: dict[str, Any] | Operation) -> Operation:

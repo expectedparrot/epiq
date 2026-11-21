@@ -34,6 +34,7 @@ from .errors import EpiqError
 from .html import write_html
 from .importers import import_cham_corpus
 from .ledger import LedgerRepository, Operation
+from .ledger_api import LedgerDatabase
 from .ledger_diagnostics import diagnose as diagnose_ledger
 from .ledger_projection import LedgerProjector
 from .ledger_writer import LedgerWriter
@@ -695,6 +696,61 @@ def parser() -> argparse.ArgumentParser:
     ledger_transact.add_argument("--input", required=True)
     ledger_transact.add_argument("--recorded-at", required=True)
     ledger_transact.add_argument("--idempotency-key")
+    ledger_kind = ledger_commands.add_parser("kind", help="Define an entity kind")
+    ledger_kind.add_argument("--path", default=".")
+    ledger_kind.add_argument("name")
+    ledger_kind.add_argument("--recorded-at")
+    ledger_kind.add_argument("--idempotency-key")
+    ledger_entity = ledger_commands.add_parser("entity", help="Create an entity")
+    ledger_entity.add_argument("--path", default=".")
+    ledger_entity.add_argument("kind")
+    ledger_entity.add_argument("name")
+    ledger_entity.add_argument("--entity-id")
+    ledger_entity.add_argument("--attributes")
+    ledger_entity.add_argument(
+        "--role", choices=["entity", "observation", "relation"], default="entity"
+    )
+    ledger_entity.add_argument("--identity")
+    ledger_entity.add_argument("--recorded-at")
+    ledger_entity.add_argument("--idempotency-key")
+    ledger_question = ledger_commands.add_parser("question", help="Define a typed question")
+    ledger_question.add_argument("--path", default=".")
+    ledger_question.add_argument("name")
+    ledger_question.add_argument("--for", dest="subject_kind", required=True)
+    ledger_question.add_argument("--type", dest="value_type", required=True)
+    ledger_question.add_argument("--question-id")
+    ledger_question.add_argument("--definition")
+    ledger_question.add_argument("--recorded-at")
+    ledger_question.add_argument("--idempotency-key")
+    ledger_record = ledger_commands.add_parser(
+        "record", help="Atomically capture evidence and assert one claim"
+    )
+    ledger_record.add_argument("--path", default=".")
+    ledger_record.add_argument("--subject-id", required=True)
+    ledger_record.add_argument("--question-id", required=True)
+    ledger_record.add_argument("--value", required=True)
+    ledger_record.add_argument("--valid-from", required=True)
+    ledger_record.add_argument("--source-title", required=True)
+    ledger_record.add_argument("--source-type", required=True)
+    ledger_record.add_argument("--url", required=True)
+    ledger_record.add_argument("--retrieved-at", required=True)
+    ledger_record.add_argument("--excerpt", required=True)
+    ledger_record.add_argument("--published-at")
+    ledger_record.add_argument("--locator")
+    ledger_record.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
+    ledger_record.add_argument(
+        "--temporal-basis", choices=["observed", "source", "unknown"], default="observed"
+    )
+    ledger_record.add_argument("--recorded-at")
+    ledger_record.add_argument("--idempotency-key")
+    ledger_matrix = ledger_commands.add_parser("matrix", help="Read a ledger-backed matrix")
+    ledger_matrix.add_argument("--path", default=".")
+    ledger_matrix.add_argument("--kind", required=True)
+    ledger_claims = ledger_commands.add_parser("claims", help="Read ledger-backed claims")
+    ledger_claims.add_argument("--path", default=".")
+    ledger_claims.add_argument("--kind")
+    ledger_claims.add_argument("--question")
+    ledger_claims.add_argument("--include-closed", action="store_true")
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1228,6 +1284,76 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 "projection": projection,
             }
         repository = LedgerRepository(root)
+        if args.ledger_command in {
+            "kind",
+            "entity",
+            "question",
+            "record",
+            "matrix",
+            "claims",
+        }:
+            database = LedgerDatabase(root)
+            if args.ledger_command == "kind":
+                return database.define_kind(
+                    args.name,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "entity":
+                return database.create_entity(
+                    args.kind,
+                    args.name,
+                    entity_id=args.entity_id,
+                    attributes=_attributes(args.attributes),
+                    role=args.role,
+                    identity=_attributes(args.identity) if args.identity else None,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "question":
+                return database.define_question(
+                    args.name,
+                    args.subject_kind,
+                    args.value_type,
+                    question_id=args.question_id,
+                    definition=_attributes(args.definition),
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "record":
+                return database.record(
+                    args.subject_id,
+                    args.question_id,
+                    _value(args.value),
+                    valid_from=args.valid_from,
+                    source_title=args.source_title,
+                    source_type=args.source_type,
+                    url=args.url,
+                    retrieved_at=args.retrieved_at,
+                    excerpt=args.excerpt,
+                    published_at=args.published_at,
+                    locator=_attributes(args.locator),
+                    confidence=args.confidence,
+                    temporal_basis=args.temporal_basis,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "matrix":
+                return database.matrix(args.kind)
+            return {
+                "count": len(
+                    claims := database.claims(
+                        kind=args.kind,
+                        question=args.question,
+                        include_closed=args.include_closed,
+                    )
+                ),
+                "claims": claims,
+            }
         if args.ledger_command in {"merge-check", "doctor"}:
             result = diagnose_ledger(root, rebuild=args.ledger_command == "merge-check")
             if args.ledger_command == "merge-check":

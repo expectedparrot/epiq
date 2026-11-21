@@ -159,3 +159,90 @@ def test_ledger_cli_transacts_logs_retries_and_reports_conflicts(tmp_path: Path,
     assert merge["mergeable"] is True
     assert merge["clean"] is False
     assert merge["build_mode"] == "rebuild"
+
+
+def test_ledger_cli_runs_complete_research_workflow(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "ledger",
+            "init",
+            "--path",
+            str(root),
+            "--name",
+            "Research",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+    main(["ledger", "kind", "--path", str(root), "Company", "--idempotency-key", "kind"])
+    data(capsys)
+    main(
+        [
+            "ledger",
+            "entity",
+            "--path",
+            str(root),
+            "Company",
+            "Acme",
+            "--idempotency-key",
+            "entity",
+        ]
+    )
+    entity_id = data(capsys)["entity_id"]
+    main(
+        [
+            "ledger",
+            "question",
+            "--path",
+            str(root),
+            "employees",
+            "--for",
+            "Company",
+            "--type",
+            "Int",
+            "--idempotency-key",
+            "question",
+        ]
+    )
+    question_id = data(capsys)["question_id"]
+    record_args = [
+        "ledger",
+        "record",
+        "--path",
+        str(root),
+        "--subject-id",
+        entity_id,
+        "--question-id",
+        question_id,
+        "--value",
+        "12",
+        "--valid-from",
+        "2026-11-21",
+        "--source-title",
+        "Acme profile",
+        "--source-type",
+        "web",
+        "--url",
+        "https://example.test/acme",
+        "--retrieved-at",
+        "2026-11-21",
+        "--excerpt",
+        "Acme has 12 employees.",
+        "--idempotency-key",
+        "record",
+    ]
+    main(record_args)
+    first = data(capsys)
+    main(record_args)
+    assert data(capsys)["created"] is False
+
+    main(["ledger", "claims", "--path", str(root), "--kind", "Company"])
+    claims = data(capsys)
+    assert claims["count"] == 1
+    assert claims["claims"][0]["claim_id"] == first["claim_id"]
+
+    main(["ledger", "matrix", "--path", str(root), "--kind", "Company"])
+    matrix = data(capsys)
+    assert matrix["cells"][entity_id][question_id][0]["value"] == 12
