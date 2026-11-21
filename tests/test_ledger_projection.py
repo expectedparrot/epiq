@@ -2,6 +2,8 @@ import json
 import random
 import shutil
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -123,6 +125,25 @@ def test_incremental_projection_and_current_noop(tmp_path: Path) -> None:
     assert incremental["mode"] == "incremental"
     assert incremental["applied"] == 1
     assert projected_ids(projector)[-1] == item.transaction_id
+
+
+def test_concurrent_projection_catch_up_serializes_ordinals(tmp_path: Path) -> None:
+    repository, projector = project(tmp_path)
+    projector.build()
+    appended = append(repository, "txn_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    workers = 12
+    barrier = threading.Barrier(workers)
+
+    def catch_up() -> dict[str, object]:
+        barrier.wait()
+        return LedgerProjector(repository).build()
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = list(executor.map(lambda _index: catch_up(), range(workers)))
+
+    assert sum(int(item["applied"]) for item in results) == 1
+    assert projected_ids(projector)[-1] == appended.transaction_id
+    assert projector.verify()["verified"] is True
     assert projector.build()["mode"] == "current"
 
 

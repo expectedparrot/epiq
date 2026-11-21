@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import sqlite3
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -72,19 +75,32 @@ class LedgerProjector:
         self.state_dir = repository.root / ".epiq"
         self.path = self.state_dir / "projection.sqlite"
         self.manifest_path = self.state_dir / "projection.json"
+        self.lock_path = self.state_dir / "projection.lock"
 
     def build(self, *, force: bool = False) -> dict[str, Any]:
-        transactions = self.repository.ordered()
-        if not force and self.path.exists() and self._can_increment(transactions):
-            applied = self._increment(transactions)
-            mode = "current" if applied == 0 else "incremental"
-        else:
-            self._rebuild(transactions)
-            applied = len(transactions)
-            mode = "rebuild"
-        result = self.status()
-        result.update({"mode": mode, "applied": applied})
-        return result
+        with self._lock():
+            transactions = self.repository.ordered()
+            if not force and self.path.exists() and self._can_increment(transactions):
+                applied = self._increment(transactions)
+                mode = "current" if applied == 0 else "incremental"
+            else:
+                self._rebuild(transactions)
+                applied = len(transactions)
+                mode = "rebuild"
+            result = self.status()
+            result.update({"mode": mode, "applied": applied})
+            return result
+
+    @contextmanager
+    def _lock(self) -> Iterator[None]:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
     def status(self) -> dict[str, Any]:
         if not self.path.exists():

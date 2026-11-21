@@ -84,13 +84,6 @@ function mergeJobs(current: ResearchJob[], incoming: ResearchJob[]) {
   ].map((job) => byId.get(job.job_id)!);
 }
 
-function duplicateLaunchNotice(jobs: ResearchJob[]) {
-  const count = jobs.filter((job) => job.deduplicated).length;
-  return count
-    ? `${count} research ${count === 1 ? "job is" : "jobs are"} already running`
-    : "";
-}
-
 function jobRevision(jobs: ResearchJob[]) {
   return JSON.stringify(
     jobs.map((job) => [
@@ -366,8 +359,7 @@ export default function App() {
     entityId: string;
     questionId: string;
   } | null>(null);
-  const [clipboardNotice, setClipboardNotice] = useState("");
-  const [jobNotice, setJobNotice] = useState("");
+  const [, setClipboardNotice] = useState("");
   const jobsRef = useRef<ResearchJob[]>([]);
   const jobsRevisionRef = useRef("");
   const { matrix, staleDerivations, loadMatrix, clearMatrix } = useTableData(
@@ -545,22 +537,6 @@ export default function App() {
             if (justFinished.job_type === "workspace_agent") {
               void loadOverview();
             }
-            const finalMessage = justFinished.messages.at(-1)?.message;
-            const notice =
-              justFinished.status === "failed"
-                ? `${justFinished.job_type === "workspace_agent" ? "Workspace agent" : "Research"} failed: ${justFinished.error ?? "unknown error"}`
-                : justFinished.status === "cancelled"
-                  ? "Research cancelled"
-                  : justFinished.outcome === "no_change"
-                    ? (finalMessage ??
-                      "Research finished: no new independent evidence was found")
-                    : justFinished.job_type === "workspace_agent"
-                      ? (justFinished.assistant_summary ?? "Workspace plan applied")
-                    : justFinished.outcome === "proposals"
-                      ? `Research prepared ${justFinished.relationship_suggestions?.length ?? 0} relationship proposals for review`
-                      : `Research finished${justFinished.written ? `: ${justFinished.written} answer${justFinished.written === 1 ? "" : "s"} updated` : ""}`;
-            setJobNotice(notice);
-            window.setTimeout(() => setJobNotice(""), 12000);
           }
           jobsRef.current = next;
           const hasActive = next.some(
@@ -714,15 +690,12 @@ export default function App() {
       if (entityIds) {
         const job = await post<ResearchJob>("/api/research/jobs", request);
         setJobs((current) => mergeJobs(current, [job]));
-        if (job.deduplicated)
-          setJobNotice("Research is already running for this cell");
       } else {
         const result = await post<{ jobs: ResearchJob[] }>(
           "/api/research/column",
           request,
         );
         setJobs((current) => mergeJobs(current, result.jobs));
-        setJobNotice(duplicateLaunchNotice(result.jobs));
       }
       setDialog(null);
     } catch (caught) {
@@ -757,11 +730,6 @@ export default function App() {
         },
       );
       setJobs((current) => mergeJobs(current, result.jobs));
-      setJobNotice(
-        result.count
-          ? `Cancelling ${result.count} research ${result.count === 1 ? "job" : "jobs"}`
-          : "No active research matched that scope",
-      );
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Could not cancel research",
@@ -836,7 +804,6 @@ export default function App() {
         },
       );
       setJobs((current) => mergeJobs(current, result.jobs));
-      setJobNotice(duplicateLaunchNotice(result.jobs));
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -854,7 +821,6 @@ export default function App() {
         instructions,
       });
       setJobs((current) => mergeJobs(current, result.jobs));
-      setJobNotice(duplicateLaunchNotice(result.jobs));
       setDialog(null);
     } catch (caught) {
       setError(
@@ -2667,26 +2633,6 @@ export default function App() {
           </div>
           )}
           <div className="toast-region" aria-live="polite" aria-atomic="true">
-            {clipboardNotice && (
-              <div className="app-toast success">
-                <span>✓</span>
-                <p>{clipboardNotice}</p>
-              </div>
-            )}
-            {jobNotice && (
-              <div className="app-toast research">
-                <span>✦</span>
-                <p>{jobNotice}</p>
-                <button
-                  onClick={() => {
-                    setRightPane("activity");
-                    setJobNotice("");
-                  }}
-                >
-                  View
-                </button>
-              </div>
-            )}
             {error && (
               <div className="app-toast error" role="alert">
                 <span>!</span>
