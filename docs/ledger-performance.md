@@ -36,6 +36,25 @@ does not yet justify snapshots or transaction packs: first cache transaction dis
 content within an open repository operation, then repeat the baseline. Packs should be considered
 only if cold-start file traversal remains the bottleneck after that optimization.
 
+## Parse-reuse result
+
+Commit-time optimization now reuses the already parsed, causally ordered transaction set when
+computing the frontier, transaction-set digest, and projection metadata. Each command still reads
+fresh state from disk, so a separate process or Git update is never hidden by a persistent cache.
+
+The large-profile single-sample comparison on the same machine was:
+
+| Metric | Before | After | Reduction |
+|---|---:|---:|---:|
+| Validate ledger | 4,700.3 | 2,075.8 | 56% |
+| Cold rebuild | 5,158.9 | 2,511.2 | 51% |
+| No-op incremental open | 4,777.0 | 2,193.1 | 54% |
+
+File discovery and parsing remain the principal no-op cost at 10,000 files, but the result is not
+yet severe enough to add a second authoritative representation. The next scale optimization, if
+needed, should use manifest metadata to avoid opening unchanged files while retaining canonical
+transaction files as the only durable source of truth.
+
 ## CI regression guard
 
 `benchmarks/medium-ci-thresholds.json` contains intentionally broad ceilings for heterogeneous CI

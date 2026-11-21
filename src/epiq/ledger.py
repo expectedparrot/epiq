@@ -611,22 +611,25 @@ class LedgerRepository:
             raise EpiqError("causal_cycle", f"Transaction parent cycle: {cyclic}")
         return result
 
-    def frontier(self) -> tuple[str, ...]:
-        transactions = self.ordered()
-        parents = {parent for transaction in transactions for parent in transaction.parents}
+    def frontier(self, transactions: list[Transaction] | None = None) -> tuple[str, ...]:
+        """Return maximal transaction IDs, reusing an ordered set when supplied."""
+        ordered = self.ordered() if transactions is None else transactions
+        parents = {parent for transaction in ordered for parent in transaction.parents}
         return tuple(
             sorted(
                 item.transaction_id
-                for item in transactions
+                for item in ordered
                 if item.transaction_id not in parents
             )
         )
 
-    def transaction_set_digest(self) -> str:
+    def transaction_set_digest(self, transactions: list[Transaction] | None = None) -> str:
+        """Hash transaction identities and content, reusing parsed transactions when supplied."""
+        parsed = self.transactions() if transactions is None else transactions
         material = "\n".join(
             f"{item.transaction_id} {item.digest}"
             for item in sorted(
-                self.transactions(), key=lambda transaction: transaction.transaction_id
+                parsed, key=lambda transaction: transaction.transaction_id
             )
         )
         return "sha256:" + hashlib.sha256(material.encode()).hexdigest()
@@ -644,8 +647,8 @@ class LedgerRepository:
             "project_id": self.config.project_id,
             "transactions": len(transactions),
             "operations": sum(len(item.operations) for item in transactions),
-            "frontier": list(self.frontier()),
-            "transaction_set_digest": self.transaction_set_digest(),
+            "frontier": list(self.frontier(transactions)),
+            "transaction_set_digest": self.transaction_set_digest(transactions),
         }
 
 

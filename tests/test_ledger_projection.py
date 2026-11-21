@@ -231,3 +231,28 @@ def test_clean_checkout_rebuilds_identical_projection(tmp_path: Path) -> None:
     assert clean_projector.verify()["verified"] is True
     assert semantic_snapshot(clean_projector) == expected
     assert clean_projector.semantic_fingerprint() == projector.semantic_fingerprint()
+
+
+def test_validation_and_build_parse_each_transaction_set_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, projector = project(tmp_path)
+    append_concurrent_history(repository)
+    original = repository.transactions
+    calls = 0
+
+    def counted() -> list[Transaction]:
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(repository, "transactions", counted)
+
+    repository.validate()
+    assert calls == 1
+    calls = 0
+    projector.build(force=True)
+    assert calls == 1
+    calls = 0
+    projector.build()
+    assert calls == 1

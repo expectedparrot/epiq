@@ -385,8 +385,10 @@ class LedgerProjector:
             "projection_schema_version": PROJECTION_SCHEMA_VERSION,
             "transaction_count": str(len(transactions)),
             "operation_count": str(sum(len(item.operations) for item in transactions)),
-            "frontier_json": canonical_bytes(list(self.repository.frontier())).decode(),
-            "transaction_set_digest": self.repository.transaction_set_digest(),
+            "frontier_json": canonical_bytes(
+                list(self.repository.frontier(transactions))
+            ).decode(),
+            "transaction_set_digest": self.repository.transaction_set_digest(transactions),
         }
         connection.execute("DELETE FROM projection_meta")
         connection.executemany(
