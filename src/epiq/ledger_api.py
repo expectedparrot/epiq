@@ -297,6 +297,154 @@ class LedgerDatabase:
             **result,
         }
 
+    def set_entity_visibility(
+        self,
+        entity_id: str,
+        visible: bool,
+        reason: str,
+        *,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        result = self.transact(
+            [
+                {
+                    "type": "entity.restore" if visible else "entity.retire",
+                    "payload": {"entity_id": entity_id, "reason": reason},
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"entity_id": entity_id, "visible": visible, **result}
+
+    def set_question_visibility(
+        self,
+        question_id: str,
+        visible: bool,
+        reason: str,
+        *,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        result = self.transact(
+            [
+                {
+                    "type": "question.restore" if visible else "question.retire",
+                    "payload": {"question_id": question_id, "reason": reason},
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"question_id": question_id, "visible": visible, **result}
+
+    def assess_evidence(
+        self,
+        evidence_id: str,
+        status: str,
+        reason: str,
+        *,
+        assessment_id: str | None = None,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id(
+            "asm", assessment_id, actor, idempotency_key, "assessment"
+        )
+        result = self.transact(
+            [
+                {
+                    "type": "evidence.assess",
+                    "payload": {
+                        "assessment_id": identifier,
+                        "evidence_id": evidence_id,
+                        "status": status,
+                        "reason": reason,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"assessment_id": identifier, "status": status, **result}
+
+    def review_claim(
+        self,
+        claim_id: str,
+        decision: str,
+        reason: str,
+        *,
+        review_id: str | None = None,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id("rev", review_id, actor, idempotency_key, "review")
+        result = self.transact(
+            [
+                {
+                    "type": "claim.review",
+                    "payload": {
+                        "review_id": identifier,
+                        "claim_id": claim_id,
+                        "decision": decision,
+                        "reason": reason,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"review_id": identifier, "decision": decision, **result}
+
+    def retract_claim(
+        self,
+        claim_id: str,
+        reason: str,
+        *,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        result = self.transact(
+            [{"type": "claim.retract", "payload": {"claim_id": claim_id, "reason": reason}}],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"claim_id": claim_id, "status": "retracted", **result}
+
+    def end_claim_validity(
+        self,
+        claim_id: str,
+        valid_to: str,
+        reason: str,
+        *,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        result = self.transact(
+            [
+                {
+                    "type": "claim.validity_end",
+                    "payload": {"claim_id": claim_id, "valid_to": valid_to, "reason": reason},
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"claim_id": claim_id, "valid_to": valid_to, **result}
+
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         return self.view.entities(kind=kind)
 

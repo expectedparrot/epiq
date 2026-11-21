@@ -68,6 +68,24 @@ class ClaimCreate(BaseModel):
     idempotency_key: str | None = None
 
 
+class VisibilityCreate(BaseModel):
+    reason: str = Field(min_length=1)
+    actor: str = "human:web"
+    idempotency_key: str | None = None
+
+
+class AssessmentCreate(VisibilityCreate):
+    status: Literal["accepted", "disputed", "invalid", "superseded"]
+
+
+class ReviewCreate(VisibilityCreate):
+    decision: Literal["accepted", "rejected"] = "accepted"
+
+
+class ValidityEndCreate(VisibilityCreate):
+    valid_to: str = Field(min_length=1)
+
+
 def create_ledger_app(
     project: str | Path | None = None, frontend: str | Path | None = None
 ) -> FastAPI:
@@ -151,6 +169,28 @@ def create_ledger_app(
         )
         return {"entity_id": result["entity_id"]}
 
+    @app.post("/api/entities/{entity_id}/retire")
+    def retire_entity(entity_id: str, body: VisibilityCreate) -> dict[str, str]:
+        database().set_entity_visibility(
+            entity_id,
+            False,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"entity_id": entity_id, "status": "retired"}
+
+    @app.post("/api/entities/{entity_id}/restore")
+    def restore_entity(entity_id: str, body: VisibilityCreate) -> dict[str, str]:
+        database().set_entity_visibility(
+            entity_id,
+            True,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"entity_id": entity_id, "status": "active"}
+
     @app.post("/api/questions", status_code=201)
     def create_question(body: QuestionCreate) -> dict[str, str]:
         result = database().define_question(
@@ -162,6 +202,28 @@ def create_ledger_app(
             idempotency_key=body.idempotency_key,
         )
         return {"question_id": result["question_id"]}
+
+    @app.post("/api/questions/{question_id}/retire")
+    def retire_question(question_id: str, body: VisibilityCreate) -> dict[str, str]:
+        database().set_question_visibility(
+            question_id,
+            False,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"question_id": question_id, "status": "retired"}
+
+    @app.post("/api/questions/{question_id}/restore")
+    def restore_question(question_id: str, body: VisibilityCreate) -> dict[str, str]:
+        database().set_question_visibility(
+            question_id,
+            True,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"question_id": question_id, "status": "active"}
 
     @app.post("/api/evidence", status_code=201)
     def create_evidence(body: EvidenceCreate) -> dict[str, str]:
@@ -179,6 +241,17 @@ def create_ledger_app(
         )
         return {"source_id": result["source_id"], "evidence_id": result["evidence_id"]}
 
+    @app.post("/api/evidence/{evidence_id}/assess", status_code=201)
+    def assess_evidence(evidence_id: str, body: AssessmentCreate) -> dict[str, str]:
+        result = database().assess_evidence(
+            evidence_id,
+            body.status,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"assessment_id": result["assessment_id"], "status": body.status}
+
     @app.post("/api/claims", status_code=201)
     def create_claim(body: ClaimCreate) -> dict[str, str]:
         result = database().assert_claim(
@@ -194,6 +267,38 @@ def create_ledger_app(
         )
         return {"claim_id": result["claim_id"]}
 
+    @app.post("/api/claims/{claim_id}/review")
+    def review_claim(claim_id: str, body: ReviewCreate) -> dict[str, str]:
+        result = database().review_claim(
+            claim_id,
+            body.decision,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"claim_id": claim_id, "review_id": result["review_id"]}
+
+    @app.post("/api/claims/{claim_id}/retract")
+    def retract_claim(claim_id: str, body: VisibilityCreate) -> dict[str, str]:
+        database().retract_claim(
+            claim_id,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"claim_id": claim_id, "status": "retracted"}
+
+    @app.post("/api/claims/{claim_id}/validity-end", status_code=201)
+    def end_claim_validity(claim_id: str, body: ValidityEndCreate) -> dict[str, str]:
+        database().end_claim_validity(
+            claim_id,
+            body.valid_to,
+            body.reason,
+            actor=body.actor,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"claim_id": claim_id, "valid_to": body.valid_to}
+
     @app.get("/api/claims-long")
     def claims(kind: str | None = None, question: str | None = None) -> dict[str, Any]:
         items = database().claims(kind=kind, question=question)
@@ -201,7 +306,8 @@ def create_ledger_app(
 
     @app.get("/api/matrix/{entity_kind}")
     def matrix(entity_kind: str) -> dict[str, Any]:
-        return _web_matrix(database().matrix(entity_kind))
+        current = database()
+        return _web_matrix(current.matrix(entity_kind), current)
 
     @app.get("/api/conflicts")
     def conflicts() -> dict[str, Any]:
@@ -248,8 +354,20 @@ def create_ledger_app(
     return app
 
 
-def _web_matrix(projection: dict[str, Any]) -> dict[str, Any]:
+def _web_matrix(projection: dict[str, Any], database: LedgerDatabase) -> dict[str, Any]:
     questions = projection["questions"]
+    evidence = {
+        item["evidence_id"]: item
+        for item in database.evidence(
+            evidence_ids=[
+                evidence_id
+                for entity_cells in projection["cells"].values()
+                for claims in entity_cells.values()
+                for claim in claims
+                for evidence_id in claim["evidence_ids"]
+            ]
+        )
+    }
     rows = []
     for entity in projection["entities"]:
         cells: dict[str, Any] = {}
@@ -257,12 +375,44 @@ def _web_matrix(projection: dict[str, Any]) -> dict[str, Any]:
             claims = projection["cells"][entity["entity_id"]][question["question_id"]]
             values = [claim["value"] for claim in claims]
             state = "Unasked" if not claims else "Answered" if len(claims) == 1 else "Contested"
+            lineage = []
+            for claim in claims:
+                reviews = claim["reviews"]
+                review = reviews[0] if len(reviews) == 1 else None
+                for evidence_id in claim["evidence_ids"]:
+                    source = evidence[evidence_id]
+                    lineage.append(
+                        {
+                            "token": f"{claim['claim_id']}:{evidence_id}",
+                            "claim_id": claim["claim_id"],
+                            "value": claim["value"],
+                            "confidence": claim["confidence"],
+                            "evidence_id": evidence_id,
+                            "source": {
+                                "title": source["title"],
+                                "url": source["url"],
+                                "published_at": source["published_at"],
+                                "retrieved_at": source["retrieved_at"],
+                            },
+                            "excerpt": source["excerpt"],
+                            "as_of": claim["valid_from"],
+                            "temporal_basis": claim["temporal_basis"],
+                            "review": (
+                                {
+                                    "status": review["decision"],
+                                    "reason": review["reason"],
+                                }
+                                if review
+                                else {"status": "unreviewed"}
+                            ),
+                        }
+                    )
             cells[question["name"]] = {
                 "state": state,
                 "value": values[0] if len(values) == 1 else None,
                 "values": values,
                 "claims": claims,
-                "lineage": [],
+                "lineage": lineage,
             }
         rows.append({**entity, "cells": cells})
     return {"entity_kind": projection["kind"], "questions": questions, "rows": rows}

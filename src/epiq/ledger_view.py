@@ -164,6 +164,7 @@ class LedgerView:
             rows = connection.execute(query, parameters).fetchall()
             claim_ids = [str(row["claim_id"]) for row in rows]
             supports = self._supports(connection, claim_ids)
+            reviews = self._reviews(connection, claim_ids)
         return [
             {
                 "claim_id": row["claim_id"],
@@ -180,6 +181,7 @@ class LedgerView:
                 "actor": row["actor"],
                 "recorded_at": row["recorded_at"],
                 "evidence_ids": supports.get(str(row["claim_id"]), []),
+                "reviews": reviews.get(str(row["claim_id"]), []),
             }
             for row in rows
         ]
@@ -242,4 +244,29 @@ class LedgerView:
             identifier = str(row["evidence_id"])
             if identifier not in evidence:
                 evidence.append(identifier)
+        return result
+
+    @staticmethod
+    def _reviews(
+        connection: sqlite3.Connection, claim_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not claim_ids:
+            return {}
+        placeholders = ",".join("?" for _ in claim_ids)
+        rows = connection.execute(
+            "SELECT review_id,claim_id,decision,reason,transaction_id "
+            f"FROM projected_claim_reviews WHERE claim_id IN ({placeholders}) "
+            "ORDER BY claim_id,review_id",
+            claim_ids,
+        ).fetchall()
+        result: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            result.setdefault(str(row["claim_id"]), []).append(
+                {
+                    "review_id": row["review_id"],
+                    "decision": row["decision"],
+                    "reason": row["reason"],
+                    "transaction_id": row["transaction_id"],
+                }
+            )
         return result
