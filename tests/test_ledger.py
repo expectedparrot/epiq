@@ -82,3 +82,16 @@ def test_unknown_operations_and_duplicate_operation_ids_are_rejected() -> None:
             recorded_at="2026-11-21T16:30:00Z",
         ).validate()
     assert duplicate.value.code == "duplicate_operation"
+
+
+def test_causal_sets_have_one_canonical_representation() -> None:
+    item = transaction().as_dict()
+    item["parents"] = [
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAX",
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    ]
+    item["digest"] = "sha256:" + "0" * 64
+
+    with pytest.raises(EpiqError) as error:
+        Transaction.from_dict(item, verify=False)
+    assert error.value.code == "noncanonical_parents"

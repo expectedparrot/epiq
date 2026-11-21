@@ -4,7 +4,7 @@
   "title": "Epiq Ledger Operation v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["operation_id", "type", "version", "payload"],
+  "required": ["operation_id", "type", "version", "requires", "payload", "metadata"],
   "properties": {
     "operation_id": {
       "type": "string",

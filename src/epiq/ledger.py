@@ -174,7 +174,7 @@ class Operation:
             operation_id or new_id("op"),
             type,
             payload,
-            requires=tuple(requires),
+            requires=tuple(sorted(requires)),
             metadata=metadata or {},
         )
 
@@ -184,8 +184,8 @@ class Operation:
             raise EpiqError("invalid_ledger_operation", "Ledger operation must be an object")
         _require_keys(
             document,
-            {"operation_id", "type", "version", "payload"},
-            {"requires", "metadata"},
+            {"operation_id", "type", "version", "requires", "payload", "metadata"},
+            set(),
         )
         operation = cls(
             str(document["operation_id"]),
@@ -210,6 +210,8 @@ class Operation:
             )
         if len(self.requires) != len(set(self.requires)):
             raise EpiqError("duplicate_requirement", "Operation requirements must be unique")
+        if tuple(sorted(self.requires)) != self.requires:
+            raise EpiqError("noncanonical_requirements", "Operation requirements must be sorted")
         _validate_json(self.payload, "$.payload")
         _validate_json(self.metadata, "$.metadata")
 
@@ -219,12 +221,10 @@ class Operation:
             "operation_id": self.operation_id,
             "type": self.type,
             "version": self.version,
+            "requires": list(self.requires),
             "payload": self.payload,
+            "metadata": self.metadata,
         }
-        if self.requires:
-            result["requires"] = list(self.requires)
-        if self.metadata:
-            result["metadata"] = self.metadata
         return result
 
 
@@ -262,7 +262,7 @@ class Transaction:
             replica_id,
             actor,
             instant(recorded_at),
-            tuple(parents),
+            tuple(sorted(parents)),
             tuple(operations),
             "",
             idempotency_key,
@@ -286,9 +286,10 @@ class Transaction:
                 "recorded_at",
                 "parents",
                 "operations",
+                "metadata",
                 "digest",
             },
-            {"idempotency_key", "metadata"},
+            {"idempotency_key"},
         )
         try:
             operations = tuple(Operation.from_dict(item) for item in document["operations"])
@@ -345,6 +346,8 @@ class Transaction:
             raise EpiqError("empty_transaction", "Ledger transaction requires an operation")
         if len(self.parents) != len(set(self.parents)):
             raise EpiqError("duplicate_parent", "Transaction parents must be unique")
+        if tuple(sorted(self.parents)) != self.parents:
+            raise EpiqError("noncanonical_parents", "Transaction parents must be sorted")
         if self.transaction_id in self.parents:
             raise EpiqError("self_parent", "Transaction cannot name itself as a parent")
         operation_ids = [operation.operation_id for operation in self.operations]
@@ -371,11 +374,10 @@ class Transaction:
             "recorded_at": self.recorded_at,
             "parents": list(self.parents),
             "operations": [operation.as_dict() for operation in self.operations],
+            "metadata": self.metadata,
         }
         if self.idempotency_key is not None:
             result["idempotency_key"] = self.idempotency_key
-        if self.metadata:
-            result["metadata"] = self.metadata
         if include_digest:
             result["digest"] = self.digest
         return result

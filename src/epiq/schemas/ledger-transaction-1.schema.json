@@ -13,6 +13,7 @@
     "recorded_at",
     "parents",
     "operations",
+    "metadata",
     "digest"
   ],
   "properties": {
