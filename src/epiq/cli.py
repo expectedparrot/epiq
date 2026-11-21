@@ -812,6 +812,28 @@ def parser() -> argparse.ArgumentParser:
     ledger_not_found.add_argument("--question-id", required=True)
     ledger_not_found.add_argument("--query", required=True)
     ledger_not_found.add_argument("--notes", required=True)
+    ledger_alias = ledger_mutation("alias-entity", "Add an immutable entity alias")
+    ledger_alias.add_argument("entity_id")
+    ledger_alias.add_argument("alias")
+    ledger_merge = ledger_mutation("merge-entities", "Merge an entity into a canonical entity")
+    ledger_merge.add_argument("source_entity_id")
+    ledger_merge.add_argument("destination_entity_id")
+    ledger_merge.add_argument("--reason", required=True)
+    ledger_evolve = ledger_mutation(
+        "evolve-question", "Atomically define successors and evolve a question"
+    )
+    ledger_evolve.add_argument("predecessor_question_id")
+    ledger_evolve.add_argument(
+        "--replacement",
+        action="append",
+        required=True,
+        help="JSON object with name, subject_kind, value_type, and optional definition/question_id",
+    )
+    ledger_evolve.add_argument(
+        "--relationship", choices=["replaces", "splits", "refines"], required=True
+    )
+    ledger_evolve.add_argument("--reason", required=True)
+    ledger_evolve.add_argument("--keep-predecessor", action="store_true")
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1364,6 +1386,9 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "question-challenges",
             "resolve-challenge",
             "not-found",
+            "alias-entity",
+            "merge-entities",
+            "evolve-question",
         }:
             database = LedgerDatabase(root)
             if args.ledger_command == "kind":
@@ -1503,6 +1528,35 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     args.challenge_id,
                     args.status,
                     args.resolution,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "alias-entity":
+                return database.add_entity_alias(
+                    args.entity_id,
+                    args.alias,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "merge-entities":
+                return database.merge_entities(
+                    args.source_entity_id,
+                    args.destination_entity_id,
+                    args.reason,
+                    actor=args.actor,
+                    recorded_at=args.recorded_at,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "evolve-question":
+                replacements = [_attributes(item) for item in args.replacement]
+                return database.evolve_question(
+                    args.predecessor_question_id,
+                    replacements,
+                    args.relationship,
+                    args.reason,
+                    retire_predecessor=not args.keep_predecessor,
                     actor=args.actor,
                     recorded_at=args.recorded_at,
                     idempotency_key=args.idempotency_key,

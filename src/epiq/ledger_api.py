@@ -320,6 +320,50 @@ class LedgerDatabase:
         )
         return {"entity_id": entity_id, "visible": visible, **result}
 
+    def add_entity_alias(
+        self,
+        entity_id: str,
+        alias: str,
+        *,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        result = self.transact(
+            [{"type": "entity.alias", "payload": {"entity_id": entity_id, "alias": alias}}],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"entity_id": entity_id, "alias": alias, **result}
+
+    def merge_entities(
+        self,
+        source_entity_id: str,
+        destination_entity_id: str,
+        reason: str,
+        *,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        result = self.transact(
+            [
+                {
+                    "type": "entity.merge",
+                    "payload": {
+                        "source_entity_id": source_entity_id,
+                        "destination_entity_id": destination_entity_id,
+                        "reason": reason,
+                    },
+                }
+            ],
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"entity_id": destination_entity_id, "status": "merged", **result}
+
     def set_question_visibility(
         self,
         question_id: str,
@@ -342,6 +386,76 @@ class LedgerDatabase:
             idempotency_key=idempotency_key,
         )
         return {"question_id": question_id, "visible": visible, **result}
+
+    def evolve_question(
+        self,
+        predecessor_question_id: str,
+        replacements: list[dict[str, Any]],
+        relationship: str,
+        reason: str,
+        *,
+        retire_predecessor: bool = True,
+        actor: str = "human:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        if not replacements:
+            raise ValueError("question evolution requires at least one replacement")
+        operations: list[dict[str, Any]] = []
+        successor_ids: list[str] = []
+        for index, replacement in enumerate(replacements):
+            required = {"name", "subject_kind", "value_type"}
+            unknown = set(replacement) - required - {"question_id", "definition"}
+            missing = required - set(replacement)
+            if missing or unknown:
+                raise ValueError(
+                    f"replacement {index} missing={sorted(missing)} unknown={sorted(unknown)}"
+                )
+            successor_id = self._domain_id(
+                "q",
+                replacement.get("question_id"),
+                actor,
+                idempotency_key,
+                f"question-successor-{index}",
+            )
+            successor_ids.append(successor_id)
+            operations.append(
+                {
+                    "type": "question.define",
+                    "payload": {
+                        "question_id": successor_id,
+                        "name": replacement["name"],
+                        "subject_kind": replacement["subject_kind"],
+                        "value_type": replacement["value_type"],
+                        "definition": replacement.get("definition", {}),
+                    },
+                }
+            )
+        operations.append(
+            {
+                "type": "question.evolve",
+                "payload": {
+                    "predecessor_question_id": predecessor_question_id,
+                    "successor_question_ids": successor_ids,
+                    "relationship": relationship,
+                    "reason": reason,
+                },
+            }
+        )
+        if retire_predecessor:
+            operations.append(
+                {
+                    "type": "question.retire",
+                    "payload": {"question_id": predecessor_question_id, "reason": reason},
+                }
+            )
+        result = self.transact(
+            operations,
+            actor=actor,
+            recorded_at=recorded_at,
+            idempotency_key=idempotency_key,
+        )
+        return {"successor_question_ids": successor_ids, **result}
 
     def assess_evidence(
         self,

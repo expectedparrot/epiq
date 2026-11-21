@@ -357,3 +357,106 @@ def test_ledger_cli_runs_complete_research_workflow(tmp_path: Path, capsys) -> N
     assert data(capsys)["verified"] is True
     main(["ledger", "claims", "--path", str(root), "--include-closed"])
     assert data(capsys)["claims"][0]["reviews"][0]["decision"] == "accepted"
+
+
+def test_ledger_cli_merges_entities_and_evolves_questions_atomically(
+    tmp_path: Path, capsys
+) -> None:
+    root = tmp_path / "research"
+    main(
+        [
+            "ledger",
+            "init",
+            "--path",
+            str(root),
+            "--name",
+            "Research",
+            "--recorded-at",
+            "2026-11-21T12:00:00Z",
+        ]
+    )
+    data(capsys)
+    main(["ledger", "kind", "--path", str(root), "Company"])
+    data(capsys)
+    entity_ids = []
+    for name in ("Acme", "ACME"):
+        main(["ledger", "entity", "--path", str(root), "Company", name])
+        entity_ids.append(data(capsys)["entity_id"])
+    main(
+        [
+            "ledger",
+            "alias-entity",
+            "--path",
+            str(root),
+            entity_ids[1],
+            "Acme Corporation",
+        ]
+    )
+    data(capsys)
+    main(
+        [
+            "ledger",
+            "merge-entities",
+            "--path",
+            str(root),
+            entity_ids[1],
+            entity_ids[0],
+            "--reason",
+            "Duplicate",
+        ]
+    )
+    assert data(capsys)["entity_id"] == entity_ids[0]
+
+    main(
+        [
+            "ledger",
+            "question",
+            "--path",
+            str(root),
+            "headcount",
+            "--for",
+            "Company",
+            "--type",
+            "Int",
+        ]
+    )
+    predecessor = data(capsys)["question_id"]
+    replacement = json.dumps(
+        {
+            "name": "employees",
+            "subject_kind": "Company",
+            "value_type": "Int",
+            "definition": {"label": "Employees"},
+        }
+    )
+    evolve_args = [
+        "ledger",
+        "evolve-question",
+        "--path",
+        str(root),
+        predecessor,
+        "--replacement",
+        replacement,
+        "--relationship",
+        "refines",
+        "--reason",
+        "Clarified semantics",
+        "--idempotency-key",
+        "evolve-headcount",
+    ]
+    main(evolve_args)
+    evolved = data(capsys)
+    main(evolve_args)
+    assert data(capsys)["created"] is False
+
+    main(["ledger", "matrix", "--path", str(root), "--kind", "Company"])
+    matrix = data(capsys)
+    assert [item["question_id"] for item in matrix["questions"]] == evolved[
+        "successor_question_ids"
+    ]
+    main(["ledger", "log", "--path", str(root)])
+    assert data(capsys)["transactions"][-1]["operations"] == [
+        "question.define",
+        "question.evolve",
+        "question.retire",
+    ]
