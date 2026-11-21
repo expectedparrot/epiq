@@ -105,3 +105,21 @@ def test_matrix_json_is_lossless_claim_projection(tmp_path: Path) -> None:
         item["question_id"] for item in document["questions"] if item["name"] == "employees"
     )
     assert document["cells"][company_id][employees_id][0]["value"] == 42
+
+
+def test_ledger_html_is_self_contained_deterministic_and_evidence_backed(
+    tmp_path: Path,
+) -> None:
+    database = populated(tmp_path)
+    first = export_ledger(database, tmp_path / "first.html", "html", kind="Company")
+    content = first.read_text()
+
+    assert "<!doctype html>" in content
+    assert "Acme" in content
+    assert "Acme has 42 employees and was founded by Ada." in content
+    assert "https://example.test" in content
+    assert "ledger-1.0" in content
+
+    (database.path / ".epiq" / "projection.sqlite").unlink()
+    rebuilt = export_ledger(database, tmp_path / "rebuilt.html", "html", kind="Company")
+    assert rebuilt.read_bytes() == first.read_bytes()

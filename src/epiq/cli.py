@@ -101,6 +101,7 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "report-record",
         "reports",
         "export",
+        "export-html",
     }
 )
 
@@ -1068,11 +1069,12 @@ def parser() -> argparse.ArgumentParser:
             "claims-csv",
             "scenario-list",
             "agent-list",
+            "html",
         ],
         required=True,
     )
     ledger_export.add_argument("--kind")
-    ledger_export.add_argument("--output", required=True)
+    ledger_export.add_argument("--output", "--output-path", dest="output", required=True)
     ledger_export.add_argument("--include-closed", action="store_true")
     ledger_export.add_argument("--record-manifest", action="store_true")
     ledger_export.add_argument(
@@ -2995,6 +2997,17 @@ def _promote_ledger_arguments(arguments: list[str]) -> list[str]:
             "--path",
             project,
             *values[command_index + 2 :],
+        ]
+    if command == "export-html":
+        return [
+            *values[:command_index],
+            "ledger",
+            "export",
+            "--path",
+            project,
+            "--format",
+            "html",
+            *values[command_index + 1 :],
         ]
     return [
         *values[:command_index],

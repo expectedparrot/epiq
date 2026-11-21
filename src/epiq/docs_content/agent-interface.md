@@ -8,6 +8,14 @@ The authoritative store is a Git-versioned directory of immutable transaction fi
 `.epiq/` is a disposable projection; never edit it or commit it. Start with:
 
 ```bash
+uv tool install git+https://github.com/expectedparrot/epiq.git  # first install
+uv tool upgrade epiq                                           # existing install
+epiq version
+```
+
+Then orient with:
+
+```bash
 epiq version
 epiq capabilities
 epiq guide

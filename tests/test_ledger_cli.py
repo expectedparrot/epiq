@@ -112,6 +112,12 @@ def test_project_option_promotes_ledger_commands_to_top_level(
     main(["matrix", "--kind", "Company"])
     assert data(capsys)["entities"][0]["entity_id"] == entity_id
 
+    html = tmp_path / "matrix.html"
+    main(["--project", str(root), "export-html", "--kind", "Company", "--output", str(html)])
+    exported = data(capsys)
+    assert exported["format"] == "html"
+    assert html.read_text().startswith("<!doctype html>")
+
 
 def test_remote_status_is_available_through_promoted_cli(tmp_path: Path, capsys) -> None:
     root = tmp_path / "research"

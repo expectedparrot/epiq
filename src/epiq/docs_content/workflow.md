@@ -3,6 +3,14 @@
 Select or initialize one Git-ledger project, define its entity kinds and typed questions, then append
 evidence-backed claims without bypassing provenance.
 
+Upgrade and inspect the installed CLI before relying on current commands:
+
+```bash
+uv tool upgrade epiq
+epiq version
+epiq guide
+```
+
 ```bash
 epiq --project research init --name "Research project"
 epiq --project research kind Company

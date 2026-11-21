@@ -25,7 +25,11 @@ is disposable. Never edit transaction files or SQLite directly, and never commit
 
 First, make sure `uv` is installed. Install Epiq as an isolated CLI with:
   uv tool install git+https://github.com/expectedparrot/epiq.git
-If working in an Epiq source checkout, run `uv sync --extra test` and use `uv run epiq` instead.
+If Epiq is already installed, update it before starting:
+  uv tool upgrade epiq
+  epiq version
+If working in an Epiq source checkout, run `git pull --ff-only`, then `uv sync --extra test`, and
+use `uv run epiq` instead. Stale installations may not expose current ledger commands.
 
 Before acting, inspect Epiq's built-in JSON guidance:
   epiq version
@@ -172,6 +176,7 @@ epiq --project research export --format scenario-list --kind Company \
   --output companies.scenario-list.ep
 epiq --project research export --format agent-list --kind Company \
   --output companies.agent-list.ep --record-manifest
+epiq --project research export-html --kind Company --output companies.html
 ```
 
 EDSL exports are loadable `ScenarioList` or `AgentList` `.ep` packages. Reference-valued Epiq

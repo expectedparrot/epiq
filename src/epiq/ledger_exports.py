@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from pathlib import Path
 from typing import Any
 
 from .edsl_export import write_edsl
 from .errors import EpiqError
+from .html import HTML
 from .ledger import canonical_bytes
 from .ledger_api import LedgerDatabase
 
@@ -34,7 +36,9 @@ def export_ledger(
             destination,
             export_format,
         )
-    if export_format == "matrix-json":
+    if export_format == "html":
+        content = _html(database, kind).encode()
+    elif export_format == "matrix-json":
         _require_kind(kind)
         content = canonical_bytes(database.matrix(kind)) + b"\n"
     elif export_format == "matrix-csv":
@@ -51,6 +55,117 @@ def export_ledger(
         raise EpiqError("invalid_export_format", f"Unknown ledger export format: {export_format}")
     destination.write_bytes(content)
     return destination
+
+
+def _html(database: LedgerDatabase, kind: str | None) -> str:
+    transactions = database.repository.ordered()
+    kinds = database.kinds()
+    if kind is not None and kind not in kinds:
+        raise EpiqError(
+            "entity_kind_not_found",
+            f"Unknown entity kind {kind!r}; choose from: {', '.join(kinds) or 'none'}",
+        )
+    selected = [kind] if kind else kinds
+    evidence = {item["evidence_id"]: item for item in database.evidence()}
+    outcomes = database.research_outcomes(kind=kind)
+    outcome_cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for outcome in outcomes:
+        outcome_cells.setdefault(
+            (str(outcome["subject_id"]), str(outcome["question_id"])), []
+        ).append(outcome)
+    tables = [
+        _html_table(database, selected_kind, evidence, outcome_cells)
+        for selected_kind in selected
+    ]
+    events = []
+    sequence = 0
+    for transaction in transactions:
+        for operation in transaction.operations:
+            sequence += 1
+            events.append(
+                {
+                    "seq": sequence,
+                    "event_type": operation.type,
+                    "actor": transaction.actor,
+                    "recorded_at": transaction.recorded_at,
+                    "transaction_id": transaction.transaction_id,
+                    "operation_id": operation.operation_id,
+                    "payload": operation.payload,
+                }
+            )
+    conflicts = database.conflicts()
+    data = {
+        "snapshot_version": "ledger-1.0",
+        "generated_at": transactions[-1].recorded_at if transactions else None,
+        "overview": {
+            "project": database.project(),
+            "entity_kinds": [
+                {
+                    "kind": selected_kind,
+                    "entities": len(database.entities(kind=selected_kind)),
+                    "questions": len(database.questions(kind=selected_kind)),
+                }
+                for selected_kind in selected
+            ],
+        },
+        "tables": tables,
+        "events": events,
+        "review": {
+            "claim_proposals": database.proposals(),
+            "question_challenges": database.question_challenges(status=None),
+            "agent_jobs": [],
+        },
+        "integrity": {
+            "ok": True,
+            "findings": conflicts,
+            "transaction_set_digest": database.repository.transaction_set_digest(transactions),
+        },
+    }
+    encoded = json.dumps(data, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
+    return HTML.replace("__DATA__", encoded)
+
+
+def _html_table(
+    database: LedgerDatabase,
+    kind: str,
+    evidence: dict[str, dict[str, Any]],
+    outcome_cells: dict[tuple[str, str], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    projection = database.matrix(kind)
+    table = legacy_matrix(database, kind)
+    rows = {item["entity_id"]: item for item in table["rows"]}
+    questions = {item["question_id"]: item for item in projection["questions"]}
+    for entity_id, cells in projection["cells"].items():
+        for question_id, claims in cells.items():
+            question = questions[question_id]
+            cell = rows[entity_id]["cells"][question["name"]]
+            cell["lineage"] = [
+                _html_lineage(claim, evidence_item)
+                for claim in claims
+                for evidence_id in claim["evidence_ids"] or [None]
+                for evidence_item in ([evidence.get(evidence_id)] if evidence_id else [None])
+            ]
+            outcomes = outcome_cells.get((entity_id, question_id), [])
+            if not claims and outcomes:
+                cell["state"] = "NotFound"
+                cell["research"] = outcomes
+    return table
+
+
+def _html_lineage(
+    claim: dict[str, Any], evidence: dict[str, Any] | None
+) -> dict[str, Any]:
+    return {
+        **claim,
+        "evidence_id": evidence["evidence_id"] if evidence else None,
+        "excerpt": evidence["excerpt"] if evidence else None,
+        "source": (
+            {"title": evidence["title"], "url": evidence["url"]} if evidence else None
+        ),
+        "provenance": evidence.get("capture", {}) if evidence else {},
+        "support": claim["evidence_ids"],
+        "review": {"status": "reviewed" if claim["reviews"] else "unreviewed"},
+    }
 
 
 def legacy_matrix(database: LedgerDatabase, kind: str) -> dict[str, Any]:

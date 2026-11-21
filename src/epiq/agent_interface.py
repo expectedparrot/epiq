@@ -138,6 +138,8 @@ GUIDE_TOPICS: dict[str, dict[str, Any]] = {
             ["epiq", "--project", "research", "doctor"],
         ],
         "notes": [
+            "Install with `uv tool install git+https://github.com/expectedparrot/epiq.git`.",
+            "Before work, run `uv tool upgrade epiq` and `epiq version` to avoid stale commands.",
             "Use IDs returned by entity and question commands; do not invent them.",
             "Use --actor and --idempotency-key on automated writes.",
             "Run `epiq guide evidence` for the complete record contract.",
@@ -164,10 +166,27 @@ GUIDE_TOPICS: dict[str, dict[str, Any]] = {
     "schema-design": {
         "purpose": "Design a collection schema before creating kinds and questions.",
         "checklist": SCHEMA_DESIGN_CHECKLIST,
+        "agent_behavior": [
+            "Do not merely translate nouns in the request into one flat table.",
+            (
+                "Inventory the surrounding domain: people, organizations, outputs, events, topics, "
+                "and media."
+            ),
+            (
+                "Present a minimal core, recommended extensions, and optional enrichments with "
+                "tradeoffs."
+            ),
+            "Explain which future questions each proposed entity or relationship makes answerable.",
+            "Ask the user to review scope before emitting or executing creation commands.",
+        ],
         "principles": [
             "Entities have stable identity and independent evidence-backed history.",
             "Relationships use Ref[Kind], not embedded names or comma-separated strings.",
             "Repeated events become observation entities instead of overwritten fields.",
+            (
+                "Propose a minimal core and natural extensions for outputs, events, and public "
+                "context."
+            ),
             "Every question declares a type, cardinality, temporal policy, and evidence rule.",
             "Pilot typical and adversarial cases before scaling collection.",
         ],
@@ -234,6 +253,14 @@ GUIDE_TOPICS: dict[str, dict[str, Any]] = {
             ["epiq", "export", "--format", "claims-jsonl", "--output", "<file>"],
             [
                 "epiq",
+                "export-html",
+                "--kind",
+                "<kind>",
+                "--output",
+                "<file.html>",
+            ],
+            [
+                "epiq",
                 "export",
                 "--format",
                 "scenario-list",
@@ -261,6 +288,18 @@ def guide_data(topic: str = "quickstart") -> dict[str, Any]:
             "authority": "Git-versioned immutable transaction files",
             "projection": ".epiq/projection.sqlite is disposable and must not be committed",
             "selection": ["--project <directory>", "EPIQ_PROJECT", "epiq use-project <directory>"],
+        },
+        "installation": {
+            "install": [
+                "uv",
+                "tool",
+                "install",
+                "git+https://github.com/expectedparrot/epiq.git",
+            ],
+            "upgrade": ["uv", "tool", "upgrade", "epiq"],
+            "verify": ["epiq", "version"],
+            "source_checkout": ["git", "pull", "--ff-only"],
+            "source_sync": ["uv", "sync", "--extra", "test"],
         },
         "topic": topic,
         "available_topics": sorted(GUIDE_TOPICS),

@@ -16,6 +16,7 @@ def test_builtin_guide_is_ledger_native_and_topic_addressable(capsys) -> None:
     assert envelope["command"] == "epiq guide"
     assert envelope["data"]["topic"] == "git"
     assert envelope["data"]["architecture"]["authority"].startswith("Git-versioned")
+    assert envelope["data"]["installation"]["upgrade"] == ["uv", "tool", "upgrade", "epiq"]
     assert "quickstart" in envelope["data"]["available_topics"]
     assert "schema-design" in envelope["data"]["available_topics"]
     assert ["epiq", "merge-check"] in envelope["data"]["guidance"]["commands"]
@@ -68,3 +69,13 @@ def test_schema_plan_models_relationships_and_repeated_events(capsys) -> None:
     assert questions[("Company", "founders")]["value_type"] == "Ref[Founder]"
     assert questions[("FundingRound", "amount")]["value_type"] == "Quantity[USD]"
     assert "FundingRound" in plan["kinds"]
+
+
+def test_faculty_plan_covers_research_outputs_and_public_context() -> None:
+    plan = schema_plan("faculty")
+    questions = {(item["kind"], item["name"]): item for item in plan["questions"]}
+
+    assert {"Appointment", "Paper", "Grant", "NewsArticle"} <= set(plan["kinds"])
+    assert questions[("Paper", "in_scope_authors")]["value_type"] == "Ref[Faculty]"
+    assert questions[("NewsArticle", "mentioned_faculty")]["value_type"] == "Ref[Faculty]"
+    assert plan["layers"]["public_context"] == ["NewsArticle"]

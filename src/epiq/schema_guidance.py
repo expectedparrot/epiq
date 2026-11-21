@@ -34,6 +34,17 @@ SCHEMA_DESIGN_CHECKLIST = [
         ],
     },
     {
+        "step": "domain-coverage",
+        "questions": [
+            "What natural adjacent objects make the primary entities useful in practice?",
+            (
+                "Which outputs, events, organizations, people, topics, and media records deserve "
+                "history?"
+            ),
+            "What belongs in a minimal core versus a richer optional layer?",
+        ],
+    },
+    {
         "step": "identity",
         "questions": [
             "Which durable identifiers prevent duplicates?",
@@ -72,31 +83,76 @@ _PATTERNS: dict[str, dict[str, Any]] = {
             "Include people listed as current faculty by the target department at the collection "
             "cutoff; record affiliated, emeritus, visiting, and joint appointments explicitly."
         ),
-        "kinds": ["Institution", "Department", "Faculty"],
+        "kinds": [
+            "Institution",
+            "Department",
+            "Faculty",
+            "Appointment",
+            "Paper",
+            "Venue",
+            "ResearchTopic",
+            "Grant",
+            "NewsArticle",
+        ],
+        "layers": {
+            "core": ["Institution", "Department", "Faculty", "Appointment"],
+            "research_outputs": ["Paper", "Venue", "ResearchTopic", "Grant"],
+            "public_context": ["NewsArticle"],
+        },
         "identity": {
             "Institution": ["ror_id", "official_domain"],
             "Department": ["institution_id", "official_department_url"],
             "Faculty": ["orcid", "fallback: department_id + official_profile_url"],
+            "Appointment": ["faculty_id", "department_id", "start_date", "title"],
+            "Paper": ["doi", "fallback: normalized title + year + first_author"],
+            "Venue": ["issn_or_registry_id", "official_name"],
+            "ResearchTopic": ["project_defined_topic_code"],
+            "Grant": ["sponsor_award_id", "fallback: title + sponsor + start_date"],
+            "NewsArticle": ["canonical_url", "fallback: publisher + headline + published_at"],
         },
         "questions": [
             _q("Department", "institution", "Ref[Institution]", "one", "stable"),
             _q("Department", "official_url", "URL", "one", "stable"),
-            _q("Faculty", "department", "Ref[Department]", "many", "dynamic"),
-            _q("Faculty", "appointment_title", "String", "many", "dynamic"),
+            _q("Faculty", "official_profile_url", "URL", "one", "stable"),
+            _q("Faculty", "orcid", "String", "one", "stable"),
+            _q("Faculty", "research_topics", "Ref[ResearchTopic]", "many", "dynamic"),
+            _q("Appointment", "faculty", "Ref[Faculty]", "one", "stable"),
+            _q("Appointment", "department", "Ref[Department]", "one", "stable"),
+            _q("Appointment", "title", "String", "one", "dynamic"),
             _q(
-                "Faculty",
-                "appointment_status",
-                "Enum[current,emeritus,visiting,affiliate,joint,unknown]",
+                "Appointment",
+                "status",
+                "Enum[current,emeritus,visiting,affiliate,joint,ended,unknown]",
                 "one",
                 "dynamic",
             ),
-            _q("Faculty", "official_profile_url", "URL", "one", "stable"),
-            _q("Faculty", "orcid", "String", "one", "stable"),
-            _q("Faculty", "research_interests", "Json", "many", "dynamic"),
+            _q("Appointment", "start_date", "Date", "one", "stable"),
+            _q("Appointment", "end_date", "Date", "one", "dynamic"),
+            _q("Paper", "doi", "String", "one", "stable"),
+            _q("Paper", "title", "String", "one", "stable"),
+            _q("Paper", "publication_date", "Date", "one", "stable"),
+            _q("Paper", "in_scope_authors", "Ref[Faculty]", "many", "stable"),
+            _q("Paper", "venue", "Ref[Venue]", "one", "stable"),
+            _q("Paper", "topics", "Ref[ResearchTopic]", "many", "stable"),
+            _q("Grant", "title", "String", "one", "stable"),
+            _q("Grant", "sponsor", "String", "one", "stable"),
+            _q("Grant", "principal_investigators", "Ref[Faculty]", "many", "stable"),
+            _q("Grant", "amount", "Quantity[USD]", "one", "stable"),
+            _q("Grant", "start_date", "Date", "one", "stable"),
+            _q("Grant", "end_date", "Date", "one", "stable"),
+            _q("NewsArticle", "headline", "String", "one", "stable"),
+            _q("NewsArticle", "canonical_url", "URL", "one", "stable"),
+            _q("NewsArticle", "publisher", "String", "one", "stable"),
+            _q("NewsArticle", "published_at", "DateTime", "one", "stable"),
+            _q("NewsArticle", "mentioned_faculty", "Ref[Faculty]", "many", "stable"),
+            _q("NewsArticle", "topics", "Ref[ResearchTopic]", "many", "stable"),
         ],
         "evidence_policy": [
             "Roster membership and title should cite an official department or institution page.",
             "Research interests may cite official profiles, ORCID, or recent publication records.",
+            "Paper metadata should cite DOI, publisher, or trusted repository records.",
+            "Grant facts should cite sponsor records or official institutional announcements.",
+            "News records preserve headline, publisher, date, URL, and the passage naming faculty.",
             "Do not infer employment status solely from publication affiliation.",
         ],
         "pilot_cases": [
@@ -105,6 +161,10 @@ _PATTERNS: dict[str, dict[str, Any]] = {
             "emeritus member still shown on the roster",
             "person without ORCID",
             "duplicate name shared by two people",
+            "paper with external coauthors who are outside the faculty collection",
+            "preprint later published under a DOI",
+            "news article mentioning several faculty members",
+            "grant with conflicting reported amounts",
         ],
     },
     "literature": {
@@ -117,6 +177,11 @@ _PATTERNS: dict[str, dict[str, Any]] = {
             "relevance for review rather than silently excluding it."
         ),
         "kinds": ["Paper", "Author", "Venue", "ResearchTopic"],
+        "layers": {
+            "core": ["Paper", "ResearchTopic"],
+            "recommended": ["Author", "Venue"],
+            "optional_enrichments": ["Dataset", "Institution", "Citation"],
+        },
         "identity": {
             "Paper": ["doi", "fallback: normalized title + year + first_author_id"],
             "Author": ["orcid", "fallback: normalized name + affiliation"],
@@ -154,6 +219,11 @@ _PATTERNS: dict[str, dict[str, Any]] = {
             "specified date; keep adjacent and uncertain companies reviewable."
         ),
         "kinds": ["Company", "Founder", "Investor", "MarketSegment", "FundingRound"],
+        "layers": {
+            "core": ["Company", "MarketSegment"],
+            "recommended": ["Founder", "FundingRound", "Investor"],
+            "optional_enrichments": ["Product", "Customer", "Acquisition", "NewsArticle"],
+        },
         "identity": {
             "Company": ["official_domain", "fallback: jurisdiction + legal_name"],
             "Founder": ["stable_profile_url", "fallback: normalized name + company_id"],
@@ -223,6 +293,8 @@ def schema_plan(pattern: str) -> dict[str, Any]:
         "review_before_apply": True,
         "recommended_process": [
             "Write project-specific inclusion and exclusion rules.",
+            "Map the surrounding domain and label core, recommended, and optional layers.",
+            "Explain what useful analyses each extension enables and what collection cost it adds.",
             "Review identities and relationship cardinalities with domain experts.",
             "Create a five-case pilot including ambiguity, duplication, and missing data.",
             "Challenge or evolve questions that fail the pilot; do not force bad values.",
