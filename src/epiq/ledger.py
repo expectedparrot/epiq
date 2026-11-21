@@ -199,6 +199,8 @@ class Operation:
         return operation
 
     def validate(self) -> None:
+        from .ledger_domain import validate_payload
+
         if not self.operation_id.startswith("op_") or len(self.operation_id) != 29:
             raise EpiqError("invalid_operation_id", f"Invalid operation ID: {self.operation_id}")
         if self.type not in _OPERATION_TYPES:
@@ -214,6 +216,7 @@ class Operation:
             raise EpiqError("noncanonical_requirements", "Operation requirements must be sorted")
         _validate_json(self.payload, "$.payload")
         _validate_json(self.metadata, "$.metadata")
+        validate_payload(self.type, self.payload)
 
     def as_dict(self) -> dict[str, Any]:
         self.validate()
@@ -291,6 +294,14 @@ class Transaction:
             },
             {"idempotency_key"},
         )
+        if verify:
+            expected = document_digest(document)
+            supplied = str(document["digest"])
+            if not secrets.compare_digest(supplied, expected):
+                raise EpiqError(
+                    "ledger_digest_mismatch",
+                    f"Transaction digest does not match content: {document['transaction_id']}",
+                )
         try:
             operations = tuple(Operation.from_dict(item) for item in document["operations"])
             transaction = cls(
@@ -314,7 +325,7 @@ class Transaction:
             raise EpiqError(
                 "invalid_ledger_transaction", f"Malformed transaction: {error}"
             ) from error
-        transaction.validate(verify=verify)
+        transaction.validate(verify=False)
         return transaction
 
     @classmethod

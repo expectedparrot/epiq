@@ -71,7 +71,9 @@ def test_unknown_operations_and_duplicate_operation_ids_are_rejected() -> None:
     assert unknown.value.code == "unknown_operation_type"
 
     operation = Operation.create(
-        "entity.create", {}, operation_id="op_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        "entity.create",
+        {"entity_id": "ent_a", "kind": "Item", "name": "A"},
+        operation_id="op_01ARZ3NDEKTSV4RRFFQ69G5FAV",
     )
     with pytest.raises(EpiqError) as duplicate:
         Transaction.create(

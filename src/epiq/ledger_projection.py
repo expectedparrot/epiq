@@ -11,9 +11,11 @@ from typing import Any
 
 from .errors import EpiqError
 from .ledger import LedgerRepository, Transaction, _atomic_write, canonical_bytes
+from .ledger_domain import DOMAIN_SCHEMA
+from .ledger_domain import apply as apply_domain_operation
 
 REDUCER_VERSION = "1"
-PROJECTION_SCHEMA_VERSION = "1"
+PROJECTION_SCHEMA_VERSION = "2"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -54,7 +56,7 @@ CREATE TABLE ledger_operations (
 );
 
 CREATE INDEX idx_ledger_operation_type ON ledger_operations(operation_type, transaction_id);
-"""
+""" + DOMAIN_SCHEMA
 
 
 class LedgerProjector:
@@ -173,6 +175,7 @@ class LedgerProjector:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
@@ -233,6 +236,7 @@ class LedgerProjector:
         try:
             connection = sqlite3.connect(temporary)
             try:
+                connection.row_factory = sqlite3.Row
                 connection.execute("PRAGMA foreign_keys = ON")
                 connection.executescript(SCHEMA)
                 connection.execute("BEGIN IMMEDIATE")
@@ -276,6 +280,14 @@ class LedgerProjector:
                 for index, parent in enumerate(transaction.parents)
             ],
         )
+        for operation in transaction.operations:
+            apply_domain_operation(
+                connection,
+                transaction.transaction_id,
+                operation.operation_id,
+                operation.type,
+                operation.payload,
+            )
         connection.executemany(
             "INSERT INTO ledger_operations VALUES(?,?,?,?,?,?,?,?)",
             [
