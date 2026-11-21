@@ -723,17 +723,31 @@ The supported Python surface is deliberately small:
 ```python
 import epiq
 
-db = epiq.open("project.sqlite", create=True, name="Judge results")
-db.batch_write(operations, actor="model:judge")
+db = epiq.open("judge-results", create=True, name="Judge results")
+db.define_kind("Observation")
+entity = db.create_entity("Observation", "Example")["entity_id"]
+question = db.define_question("verdict", "Observation", "Bool")["question_id"]
+db.record(
+    entity,
+    question,
+    True,
+    valid_from="2026-11-21",
+    source_title="Judge result",
+    source_type="model",
+    url="urn:epiq:model",
+    retrieved_at="2026-11-21",
+    excerpt="The verdict is true.",
+)
 claims = db.claims(kind="Observation", question="verdict")
 ```
 
-`Database.batch_write`, `Database.upsert_entity`, `Database.define_question`, `Database.claims`,
-`Database.matrix`, `Database.propose`, `Database.proposals`, `Database.review_proposal`, and
-`Database.import_document`, `Database.review_claim`, `Database.provenance`, and
-`Database.source_bundles` are covered by package semantic versioning. Other methods in `epiq.store.Store`
-remain internal implementation details. Without `create=True`, a missing or non-Epiq path raises a
-typed `EpiqError` instead of creating a file implicitly.
+`epiq.open` and `epiq.Database` now refer to Git-ledger projects. The primary surface includes
+typed transactions, entities, questions, evidence, claims, derivations, proposals, source bundles,
+reports, matrices, and conflicts. Without `create=True`, a missing or non-Epiq path raises a typed
+`EpiqError` instead of creating a project implicitly.
+
+During removal of the old SQLite implementation, it remains available only through the explicit
+`epiq.open_legacy_database` and `epiq.LegacyDatabase` names.
 
 For atomic proposal bundles, retry keys, historical imports, and fixture clocks, see
 [Historical imports and atomic proposal bundles](docs/historical-imports-and-proposals.md).

@@ -17,7 +17,7 @@ def main():
     args = parser.parse_args()
     with TemporaryDirectory() as temporary:
         path = Path(temporary) / "smoke.sqlite"
-        database = epiq.open(path, create=True, name="Installed wheel")
+        database = epiq.open_legacy_database(path, create=True, name="Installed wheel")
         database.upsert_entity("Item", "Example")
         database.define_question("score", "Item", "Int")
         database.batch_write(
@@ -70,7 +70,7 @@ def main():
             check=True,
         )
         assert json.loads(initialized.stdout)["status"] == "ok"
-        ledger = epiq.open_ledger(project)
+        ledger = epiq.open(project)
         ledger.define_kind("Item")
         entity = ledger.create_entity("Item", "Example")["entity_id"]
         question = ledger.define_question("score", "Item", "Int")["question_id"]
@@ -94,7 +94,7 @@ def main():
         )
         assert json.loads(status.stdout)["data"]["healthy"] is True
         (project / ".epiq" / "projection.sqlite").unlink()
-        assert epiq.open_ledger(project).matrix("Item")["cells"][entity][question][0][
+        assert epiq.open(project).matrix("Item")["cells"][entity][question][0][
             "value"
         ] == 5
     if args.web:

@@ -142,7 +142,7 @@ def test_exports_include_procedural_provenance(store):
 
 
 def test_staged_capture_does_not_retain_artifacts_until_approval(store):
-    db = epiq.open(store.path)
+    db = epiq.open_legacy_database(store.path)
     proposal = db.propose({"operations": operations(retain=True)})
     with store.connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM source_artifacts").fetchone()[0] == 0
@@ -167,7 +167,7 @@ def test_malformed_support_returns_domain_error_and_rolls_back(store, supports):
 def test_staging_requires_explicit_retention_of_full_capture(store):
     before = store.history()
     with pytest.raises(EpiqError, match="retain_content=True"):
-        epiq.open(store.path).propose({"operations": operations(retain=False)})
+        epiq.open_legacy_database(store.path).propose({"operations": operations(retain=False)})
     assert store.history() == before
     ops = operations()
     ops[0]["provenance"]["retain_content"] = "false"

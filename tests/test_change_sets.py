@@ -36,12 +36,12 @@ def document():
 
 @pytest.fixture
 def database(tmp_path: Path):
-    return epiq.open(tmp_path / "proposals.sqlite", create=True)
+    return epiq.open_legacy_database(tmp_path / "proposals.sqlite", create=True)
 
 
 def test_staged_document_concurrent_retries_and_atomic_acceptance(database):
     def submit(_):
-        return epiq.open(database.path).propose(
+        return epiq.open_legacy_database(database.path).propose(
             document(), actor="agent:a", idempotency_key="run-1"
         )
 
@@ -196,7 +196,7 @@ def test_historical_import_failure_and_invalid_clock_roll_back(database):
         database.import_document(invalid, recorded_at="2018-01-13", idempotency_key="first")
     assert Store(database.path).history() == []
     database.import_document(document(), recorded_at="2018-01-13", idempotency_key="first")
-    clock = epiq.open(database.path, clock=lambda: "2017-01-01")
+    clock = epiq.open_legacy_database(database.path, clock=lambda: "2017-01-01")
     before = Store(database.path).history()
     with pytest.raises(EpiqError) as error:
         clock.upsert_entity("X", "Backwards")
@@ -205,7 +205,9 @@ def test_historical_import_failure_and_invalid_clock_roll_back(database):
 
 
 def test_public_clock_controls_all_fixture_creation(tmp_path):
-    db = epiq.open(tmp_path / "fixture.sqlite", create=True, clock=lambda: "2018-01-13T23:00:00Z")
+    db = epiq.open_legacy_database(
+        tmp_path / "fixture.sqlite", create=True, clock=lambda: "2018-01-13T23:00:00Z"
+    )
     db.upsert_entity("X", "A")
     db.define_question("q", "X", "Int")
     db.batch_write(document()["operations"])
