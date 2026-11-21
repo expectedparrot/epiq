@@ -989,6 +989,18 @@ button:hover {
   padding-right: 40px;
   font-size: 13px;
 }
+.data-cell.type-image .cell-value {
+  padding-right: 0;
+}
+.cell-thumbnail {
+  background: #eef0ed;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: block;
+  height: 44px;
+  object-fit: cover;
+  width: 44px;
+}
 .data-cell.has-provisional {
   background: #fff9e8;
 }

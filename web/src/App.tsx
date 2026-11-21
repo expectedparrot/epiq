@@ -318,7 +318,7 @@ export default function App() {
     missing: number;
   } | null>(null);
   const [showActivity, setShowActivity] = useState(false);
-  const [showWorkspaceAgent, setShowWorkspaceAgent] = useState(false);
+  const [showWorkspaceAgent, setShowWorkspaceAgent] = useState(true);
   const [showReview, setShowReview] = useState(false);
   const [reviewItems, setReviewItems] = useState<{
     stale: DiagnosticCell[];
@@ -1691,7 +1691,7 @@ export default function App() {
           </button>
           <div className="sidebar-foot">
             <span className="pulse" />
-            SQLite connected
+            Git ledger connected
           </div>
         </aside>
         <main>
@@ -2484,7 +2484,22 @@ export default function App() {
                                 row.entity_id,
                                 question.question_id,
                               ) && <span className="cell-spinner" />}
-                              {question.value_type === "URL" &&
+                              {question.value_type === "Image" &&
+                              cell.state === "Answered" &&
+                              typeof cell.value === "string" ? (
+                                <img
+                                  className="cell-thumbnail"
+                                  src={cell.value}
+                                  alt={`${row.name} · ${question.definition.label ?? question.name}`}
+                                  title={cell.value}
+                                  loading="lazy"
+                                  referrerPolicy="no-referrer"
+                                  onClick={(event) => event.stopPropagation()}
+                                  onDoubleClick={(event) =>
+                                    event.stopPropagation()
+                                  }
+                                />
+                              ) : question.value_type === "URL" &&
                               cell.state === "Answered" &&
                               typeof cell.value === "string" ? (
                                 <a
