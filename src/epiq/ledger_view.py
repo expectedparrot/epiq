@@ -31,18 +31,10 @@ class LedgerView:
     def entities(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         query = """
             SELECT e.entity_id,e.kind,e.name,e.attributes_json,e.role,e.identity_json,
-                   NOT EXISTS (
-                       SELECT 1 FROM projected_entity_visibility_events visibility
-                       WHERE visibility.entity_id=e.entity_id AND visibility.visible=0
-                       AND NOT EXISTS (
-                           SELECT 1 FROM projected_entity_visibility_events later
-                           JOIN ledger_transactions lt ON lt.transaction_id=later.transaction_id
-                           JOIN ledger_transactions current
-                             ON current.transaction_id=visibility.transaction_id
-                           WHERE later.entity_id=e.entity_id AND lt.ordinal>current.ordinal
-                       )
-                   ) AS visible
+                   CASE WHEN state.entity_id IS NULL THEN 1 ELSE state.visible END AS visible,
+                   COALESCE(state.conflicted,0) AS visibility_conflicted
             FROM projected_entities e
+            LEFT JOIN projected_entity_visibility_state state USING(entity_id)
         """
         parameters: tuple[str, ...] = ()
         if kind is not None:
@@ -59,15 +51,19 @@ class LedgerView:
                 "attributes": _decode(row["attributes_json"]),
                 "role": row["role"],
                 "identity": _decode(row["identity_json"]),
-                "visible": bool(row["visible"]),
+                "visible": None if row["visible"] is None else bool(row["visible"]),
+                "visibility_conflicted": bool(row["visibility_conflicted"]),
             }
             for row in rows
         ]
 
     def questions(self, *, kind: str | None = None) -> list[dict[str, Any]]:
         query = """
-            SELECT q.question_id,q.name,q.subject_kind,q.value_type,q.definition_json
+            SELECT q.question_id,q.name,q.subject_kind,q.value_type,q.definition_json,
+                   CASE WHEN state.question_id IS NULL THEN 1 ELSE state.visible END AS visible,
+                   COALESCE(state.conflicted,0) AS visibility_conflicted
             FROM projected_questions q
+            LEFT JOIN projected_question_visibility_state state USING(question_id)
         """
         parameters: tuple[str, ...] = ()
         if kind is not None:
@@ -83,6 +79,8 @@ class LedgerView:
                 "subject_kind": row["subject_kind"],
                 "value_type": row["value_type"],
                 "definition": _decode(row["definition_json"]),
+                "visible": None if row["visible"] is None else bool(row["visible"]),
+                "visibility_conflicted": bool(row["visibility_conflicted"]),
             }
             for row in rows
         ]
@@ -173,8 +171,8 @@ class LedgerView:
         ]
 
     def matrix(self, kind: str) -> dict[str, Any]:
-        entities = [item for item in self.entities(kind=kind) if item["visible"]]
-        questions = self.questions(kind=kind)
+        entities = [item for item in self.entities(kind=kind) if item["visible"] is True]
+        questions = [item for item in self.questions(kind=kind) if item["visible"] is True]
         claims = self.claims(kind=kind)
         cells: dict[str, dict[str, list[dict[str, Any]]]] = {
             item["entity_id"]: {question["question_id"]: [] for question in questions}

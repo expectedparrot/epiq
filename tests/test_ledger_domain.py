@@ -221,6 +221,91 @@ def test_typed_payloads_reject_unknown_or_malformed_fields() -> None:
     assert duplicate.value.code == "invalid_operation_payload"
 
 
+def test_concurrent_visibility_disagreement_is_explicit_and_causally_resolved(
+    tmp_path: Path,
+) -> None:
+    repository, projector = project(tmp_path)
+    base = commit(
+        repository,
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        [
+            Operation.create("entity_kind.define", {"kind": "Item"}),
+            Operation.create(
+                "entity.create", {"entity_id": "ent_a", "kind": "Item", "name": "A"}
+            ),
+            Operation.create(
+                "question.define",
+                {
+                    "question_id": "q_a",
+                    "name": "value",
+                    "subject_kind": "Item",
+                    "value_type": "String",
+                },
+            ),
+        ],
+    )
+    branches = []
+    for transaction_id, operation_type in (
+        ("txn_01ARZ3NDEKTSV4RRFFQ69G5FAX", "entity.retire"),
+        ("txn_01ARZ3NDEKTSV4RRFFQ69G5FAY", "entity.restore"),
+    ):
+        branches.append(
+            commit(
+                repository,
+                transaction_id,
+                [
+                    Operation.create(
+                        operation_type,
+                        {"entity_id": "ent_a", "reason": "concurrent choice"},
+                    ),
+                    Operation.create(
+                        operation_type.replace("entity.", "question."),
+                        {"question_id": "q_a", "reason": "concurrent choice"},
+                    ),
+                ],
+                parents=(base.transaction_id,),
+            )
+        )
+
+    projector.build()
+    assert rows(
+        projector,
+        "SELECT visible,conflicted FROM projected_entity_visibility_state",
+    ) == [(None, 1)]
+    assert rows(projector, "SELECT conflict_type FROM projected_conflicts") == [
+        ("entity_visibility",),
+        ("question_visibility",),
+    ]
+    assert rows(
+        projector,
+        "SELECT visible,conflicted FROM projected_question_visibility_state",
+    ) == [(None, 1)]
+
+    commit(
+        repository,
+        "txn_01ARZ3NDEKTSV4RRFFQ69G5FAZ",
+        [
+            Operation.create(
+                "entity.restore", {"entity_id": "ent_a", "reason": "merge resolution"}
+            ),
+            Operation.create(
+                "question.restore", {"question_id": "q_a", "reason": "merge resolution"}
+            ),
+        ],
+        parents=tuple(item.transaction_id for item in branches),
+    )
+    projector.build()
+    assert rows(
+        projector,
+        "SELECT visible,conflicted FROM projected_entity_visibility_state",
+    ) == [(1, 0)]
+    assert rows(
+        projector,
+        "SELECT visible,conflicted FROM projected_question_visibility_state",
+    ) == [(1, 0)]
+    assert rows(projector, "SELECT conflict_type FROM projected_conflicts") == []
+
+
 def test_explicit_merge_and_evolution_resolve_pair_conflicts(tmp_path: Path) -> None:
     repository, projector = project(tmp_path)
     commit(

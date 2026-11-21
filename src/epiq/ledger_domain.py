@@ -63,6 +63,13 @@ CREATE TABLE projected_entity_visibility_events (
     operation_id TEXT PRIMARY KEY
 );
 
+CREATE TABLE projected_entity_visibility_state (
+    entity_id TEXT PRIMARY KEY REFERENCES projected_entities(entity_id),
+    visible INTEGER CHECK(visible IN (0,1) OR visible IS NULL),
+    conflicted INTEGER NOT NULL CHECK(conflicted IN (0,1)),
+    maximal_operation_ids_json TEXT NOT NULL
+);
+
 CREATE TABLE projected_questions (
     question_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -88,6 +95,13 @@ CREATE TABLE projected_question_visibility_events (
     reason TEXT NOT NULL,
     transaction_id TEXT NOT NULL REFERENCES ledger_transactions(transaction_id),
     operation_id TEXT PRIMARY KEY
+);
+
+CREATE TABLE projected_question_visibility_state (
+    question_id TEXT PRIMARY KEY REFERENCES projected_questions(question_id),
+    visible INTEGER CHECK(visible IN (0,1) OR visible IS NULL),
+    conflicted INTEGER NOT NULL CHECK(conflicted IN (0,1)),
+    maximal_operation_ids_json TEXT NOT NULL
 );
 
 CREATE TABLE projected_conflicts (
@@ -427,6 +441,14 @@ def _entity_visibility(
         "INSERT INTO projected_entity_visibility_events VALUES(?,?,?,?,?)",
         (payload["entity_id"], int(visible), payload["reason"], transaction_id, operation_id),
     )
+    _refresh_visibility(
+        connection,
+        event_table="projected_entity_visibility_events",
+        state_table="projected_entity_visibility_state",
+        identifier_column="entity_id",
+        identifier=payload["entity_id"],
+        conflict_type="entity_visibility",
+    )
 
 
 def _define_question(
@@ -489,6 +511,77 @@ def _question_visibility(
         "INSERT INTO projected_question_visibility_events VALUES(?,?,?,?,?)",
         (payload["question_id"], int(visible), payload["reason"], transaction_id, operation_id),
     )
+    _refresh_visibility(
+        connection,
+        event_table="projected_question_visibility_events",
+        state_table="projected_question_visibility_state",
+        identifier_column="question_id",
+        identifier=payload["question_id"],
+        conflict_type="question_visibility",
+    )
+
+
+def _refresh_visibility(
+    connection: sqlite3.Connection,
+    *,
+    event_table: str,
+    state_table: str,
+    identifier_column: str,
+    identifier: str,
+    conflict_type: str,
+) -> None:
+    """Reduce causal-maximal visibility events without imposing a total order."""
+    maximal = connection.execute(
+        f"""
+        WITH RECURSIVE ancestry(descendant_id,ancestor_id) AS (
+            SELECT transaction_id,parent_id FROM ledger_parents
+            UNION
+            SELECT ancestry.descendant_id,parents.parent_id
+            FROM ancestry
+            JOIN ledger_parents parents
+              ON parents.transaction_id=ancestry.ancestor_id
+        )
+        SELECT event.visible,event.operation_id,event.transaction_id
+        FROM {event_table} event
+        WHERE event.{identifier_column}=?
+          AND NOT EXISTS (
+              SELECT 1
+              FROM {event_table} later
+              JOIN ancestry
+                ON ancestry.descendant_id=later.transaction_id
+               AND ancestry.ancestor_id=event.transaction_id
+              WHERE later.{identifier_column}=event.{identifier_column}
+          )
+        ORDER BY event.operation_id
+        """,
+        (identifier,),
+    ).fetchall()
+    values = {int(row["visible"]) for row in maximal}
+    operations = [str(row["operation_id"]) for row in maximal]
+    conflicted = len(values) > 1
+    visible = next(iter(values)) if len(values) == 1 else None
+    connection.execute(
+        f"""INSERT INTO {state_table} VALUES(?,?,?,?)
+            ON CONFLICT({identifier_column}) DO UPDATE SET
+                visible=excluded.visible,
+                conflicted=excluded.conflicted,
+                maximal_operation_ids_json=excluded.maximal_operation_ids_json""",
+        (identifier, visible, int(conflicted), _json(operations)),
+    )
+    connection.execute(
+        "DELETE FROM projected_conflicts WHERE conflict_type=? AND object_ids_json=?",
+        (conflict_type, _json([identifier])),
+    )
+    if conflicted:
+        _conflict(
+            connection,
+            conflict_type,
+            [identifier],
+            {
+                "maximal_operation_ids": operations,
+                "states": ["retired", "visible"],
+            },
+        )
 
 
 _HANDLERS = {

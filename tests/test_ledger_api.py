@@ -40,6 +40,7 @@ def test_open_create_transact_and_read(tmp_path: Path) -> None:
             "role": "entity",
             "identity": None,
             "visible": True,
+            "visibility_conflicted": False,
         }
     ]
     assert database.status()["state"] == "ready"
