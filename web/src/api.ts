@@ -1,4 +1,4 @@
-export type CellState = "Answered" | "Contested" | "NotFound" | "Unasked";
+export type CellState = "Answered" | "Contested" | "Inconclusive" | "NotFound" | "Unasked";
 
 export interface Lineage {
   token: string;
@@ -115,7 +115,13 @@ export interface ResearchJob {
   created_at?: string;
   entity_kind: string;
   question_id: string;
-  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  status:
+    | "queued"
+    | "running"
+    | "waiting_for_user"
+    | "completed"
+    | "failed"
+    | "cancelled";
   total: number;
   completed: number;
   target_entity_ids: string[];
@@ -153,6 +159,18 @@ export interface ResearchJob {
   deduplicated?: boolean;
   user_message?: string;
   assistant_summary?: string;
+  active_targets?: Array<{
+    kind: string;
+    field: string;
+    rows: string[];
+    phase: "queued" | "searching" | "reviewing" | "writing" | "verifying";
+  }>;
+  agent_plan?: {
+    objective: string;
+    primary_kind: string;
+    target_rows: number;
+    priority_fields: string[];
+  };
   workspace_plan?: {
     entity_kinds: string[];
     entities: Array<{ kind: string; name: string }>;
@@ -165,13 +183,43 @@ export interface ResearchJob {
       entity_names: string[];
       allow_estimates?: boolean;
     }>;
+    decisions?: Array<{
+      decision_id: string;
+      question: string;
+      context: string;
+      options: Array<{ value: string; label: string; consequence: string }>;
+      recommended_option: string;
+    }>;
   };
   child_job_ids?: string[];
-  approval_status?: "pending" | "applying" | "approved" | "rejected";
+  approval_status?:
+    | "pending"
+    | "applying"
+    | "approved"
+    | "rejected"
+    | "pending_action"
+    | "awaiting_input"
+    | "input_received";
   auto_approve?: boolean;
   estimated_research_cells?: number;
   command_transcript?: Array<{ argv: string[]; status: "proposed" }>;
   command_results?: Array<{ argv: string[]; result: Record<string, unknown> }>;
+  events?: Array<{
+    event_id: string;
+    job_id: string;
+    type: string;
+    at: string;
+    actor: string;
+    message: string;
+    data: Record<string, unknown>;
+  }>;
+  pending_decision?: {
+    decision_id: string;
+    question: string;
+    context: string;
+    options: Array<{ value: string; label: string; consequence: string }>;
+    recommended_option: string;
+  };
 }
 
 export interface CuratorState {
@@ -194,6 +242,17 @@ export interface CuratorState {
   completed_cycles: number;
   research_cells_used: number;
   active_job_id?: string | null;
+  current_phase?: "breadth" | "depth" | "follow_up" | "expansion";
+  metrics?: {
+    total_rows: number;
+    answered_cells: number;
+    unasked_cells: number;
+    not_found_cells: number;
+    unresolved_leads: number;
+    primary_kind: string;
+    primary_rows: number;
+    target_primary_rows: number;
+  };
   message: string;
   strategy?: {
     summary: string;
@@ -214,8 +273,16 @@ export interface CuratorState {
     job_id: string;
     status: string;
     summary: string;
+    phase?: string;
     written: number;
     research_cells: number;
+    delta?: {
+      total_rows: number;
+      answered_cells: number;
+      unasked_cells: number;
+      not_found_cells: number;
+      unresolved_leads: number;
+    };
     estimated_cost_usd?: number;
     finished_at: string;
   }>;

@@ -1976,6 +1976,24 @@ def create_app(
                 entity_id = str(finding["entity_id"])
                 if entity_id not in target_ids or entity_id in completed_ids:
                     continue
+                if finding.get("status") == "error":
+                    with app.state.research_lock:
+                        jobs[job_id].setdefault("finding_failures", []).append(
+                            {
+                                "entity_id": entity_id,
+                                "entity_name": targets_by_id[entity_id]["name"],
+                                "error": finding.get("error"),
+                                "notes": finding.get("notes", ""),
+                            }
+                        )
+                        jobs[job_id]["completed"] = int(jobs[job_id]["completed"]) + 1
+                        jobs[job_id]["no_result"] = int(jobs[job_id]["no_result"]) + 1
+                        completed_ids.add(entity_id)
+                    progress(
+                        f"Could not validate a finding for "
+                        f"{targets_by_id[entity_id]['name']}; retained the failure for retry"
+                    )
+                    continue
                 operations, not_found, counts, message = prepare_finding(
                     finding, targets_by_id[entity_id], question, body.mode,
                 )

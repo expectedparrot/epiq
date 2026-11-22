@@ -1,11 +1,101 @@
 import time
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from epiq.ledger_api import LedgerDatabase
-from epiq.ledger_web import _web_reference, create_ledger_app
+from epiq.ledger_web import (
+    _web_reference,
+    compact_command_observation,
+    create_ledger_app,
+    execute_bounded_command_batch,
+)
+
+
+def test_compact_command_observation_keeps_source_receipts_not_page_bodies() -> None:
+    observation = compact_command_observation(
+        ["epiq", "--project", "/tmp/project", "source-search", "--query", "Ada"],
+        {
+            "status": "ok",
+            "command": "source-search",
+            "data": {
+                "query": "Ada   Lovelace\nGoogle Scholar",
+                "sources": [
+                    {
+                        "title": "Ada Lovelace - Google Scholar",
+                        "url": "https://example.test/ada",
+                        "excerpt": "support " * 1_000,
+                        "content": "full captured page " * 10000,
+                    }
+                ],
+            },
+            "errors": [],
+            "warnings": [],
+            "next_steps": [],
+        },
+    )
+
+    receipt = observation["result"]["data"]
+    assert receipt["query"] == "Ada Lovelace Google Scholar"
+    assert receipt["sources_count"] == 1
+    source = receipt["sources_preview"][0]
+    assert source["title"] == "Ada Lovelace - Google Scholar"
+    assert source["url"] == "https://example.test/ada"
+    assert len(source["excerpt"]) == 4_000
+    assert len(source["content"]) == 6_000
+    assert len(str(observation)) < 11_000
+
+    second = compact_command_observation(
+        ["epiq", "--project", "/tmp/project", "source-search", "--query", "Ada"],
+        {
+            "status": "ok",
+            "command": "source-search",
+            "data": {
+                "sources": [
+                    {"title": "One", "url": "https://example.test/1", "content": "a" * 10_000},
+                    {"title": "Two", "url": "https://example.test/2", "content": "b" * 10_000},
+                ]
+            },
+        },
+    )
+    assert all(
+        "content" not in item
+        for item in second["result"]["data"]["sources_preview"]
+    )
+
+
+def test_bounded_command_batch_parallelizes_only_consecutive_source_searches() -> None:
+    barrier = threading.Barrier(3, timeout=1)
+    completed: list[str] = []
+    lock = threading.Lock()
+
+    def execute(command: list[str]) -> dict[str, object]:
+        name = command[-1]
+        if command[3] == "source-search":
+            barrier.wait()
+        with lock:
+            completed.append(name)
+        return {"type": "command_result", "name": name}
+
+    prefix = ["epiq", "--project", "/tmp/project"]
+    result = execute_bounded_command_batch(
+        [
+            [*prefix, "question", "before"],
+            [*prefix, "source-search", "one"],
+            [*prefix, "source-search", "two"],
+            [*prefix, "source-search", "three"],
+            [*prefix, "record", "after"],
+        ],
+        execute,
+        source_search_workers=3,
+    )
+
+    assert result["type"] == "command_batch_result"
+    assert completed[0] == "before"
+    assert completed[-1] == "after"
+    assert {item["name"] for item in result["results"][1:4]} == {"one", "two", "three"}
 
 
 def workspace_plan(_goal, _context, progress=None):
@@ -55,6 +145,27 @@ def photo_research(_kind, _question, entities, progress=None):
             "observed_as_of": "2026-11-21",
         }
     ]
+
+
+def action_plan(kind: str, target_rows: int) -> dict:
+    return {
+        "objective": f"Build a useful {kind} dataset.",
+        "intended_use": "Compare collected rows.",
+        "primary_kind": kind,
+        "target_rows": target_rows,
+        "coverage_categories": ["general"],
+        "priority_fields": [],
+        "completion_criteria": ["Target row count reached."],
+    }
+
+
+def action_completion() -> dict:
+    return {
+        "completed_categories": ["general"],
+        "unresolved_leads": 0,
+        "stop_reason": "completed",
+        "blockers": [],
+    }
 
 
 def test_ledger_web_runs_core_spreadsheet_workflow_and_rebuilds(tmp_path: Path) -> None:
@@ -417,6 +528,459 @@ def test_workspace_agent_console_plans_then_applies_to_ledger(tmp_path: Path) ->
     assert history[0]["command_transcript"][-1]["argv"][3] == "research"
 
 
+def test_workspace_agent_action_loop_streams_and_executes_cli(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+
+    class ActionRunner:
+        def __init__(self) -> None:
+            self.actions = iter(
+                [
+                    {
+                        "action": "message",
+                        "message": "I found the first company to add.",
+                        "argv": [],
+                        "decision": None,
+                        "plan": action_plan("Company", 1),
+                        "completion": None,
+                    },
+                    {
+                        "action": "command",
+                        "message": "Create the Company row type.",
+                        "argv": [
+                            "epiq",
+                            "--project",
+                            "PROJECT_PATH",
+                            "kind",
+                            "Company",
+                        ],
+                        "decision": None,
+                        "plan": None,
+                        "completion": None,
+                    },
+                    {
+                        "action": "command",
+                        "message": "Add Acme as a Company row.",
+                        "argv": [
+                            "epiq",
+                            "--project",
+                            "PROJECT_PATH",
+                            "entity",
+                            "Company",
+                            "Acme",
+                        ],
+                        "decision": None,
+                        "plan": None,
+                        "completion": None,
+                    },
+                    {
+                        "action": "finish",
+                        "message": "Added Acme and verified the command result.",
+                        "argv": [],
+                        "decision": None,
+                        "plan": None,
+                        "completion": action_completion(),
+                    },
+                ]
+            )
+            self.observations = []
+
+        def next_action(self, _goal, _context, observation, _progress=None):
+            self.observations.append(observation)
+            return next(self.actions)
+
+    runner = ActionRunner()
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=runner))
+    client.post("/api/project", json={"name": "Action loop"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Add useful companies", "auto_approve": True},
+    ).json()
+
+    for _ in range(200):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["status"] == "completed", job.get("error")
+    assert [event["type"] for event in job["events"]] == [
+        "user_message",
+        "research_plan",
+        "agent_message",
+        "command_proposed",
+        "command_started",
+        "ledger_transaction",
+        "command_result",
+        "command_proposed",
+        "command_started",
+        "ledger_transaction",
+        "command_result",
+        "run_completed",
+    ]
+    assert runner.observations[-1]["type"] == "command_result"
+    assert runner.observations[-1]["result"]["data"]["entity_id"].startswith("ent_")
+    assert "projection" not in runner.observations[-1]["result"]["data"]
+    assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
+    ledger_events = [event for event in job["events"] if event["type"] == "ledger_transaction"]
+    assert all(event["data"]["transaction_id"].startswith("txn_") for event in ledger_events)
+    assert ledger_events[-1]["data"]["operations"][0]["type"] == "entity.create"
+    assert ledger_events[-1]["data"]["affected_kinds"] == ["Company"]
+    assert ledger_events[-1]["data"]["affected_rows"][0]["entity_name"] == "Acme"
+
+    restarted = TestClient(create_ledger_app(root, workspace_agent_runner=runner))
+    restored = next(
+        item
+        for item in restarted.get("/api/research/jobs").json()
+        if item["job_id"] == job["job_id"]
+    )
+    assert restored["historical"] is True
+    assert restored["user_message"] == "Add useful companies"
+    assert any(event["type"] == "ledger_transaction" for event in restored["events"])
+
+
+def test_workspace_agent_action_loop_waits_for_command_approval(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+
+    class ActionRunner:
+        def __init__(self) -> None:
+            self.actions = iter(
+                [
+                    {
+                        "action": "command",
+                        "message": "Create the Company row type.",
+                        "argv": [
+                            "epiq",
+                            "--project",
+                            "PROJECT_PATH",
+                            "kind",
+                            "Company",
+                        ],
+                        "decision": None,
+                        "plan": action_plan("Company", 0),
+                        "completion": None,
+                    },
+                    {
+                        "action": "finish",
+                        "message": "The approved command completed.",
+                        "argv": [],
+                        "decision": None,
+                        "plan": None,
+                        "completion": action_completion(),
+                    },
+                ]
+            )
+
+        def next_action(self, _goal, _context, _observation, _progress=None):
+            return next(self.actions)
+
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=ActionRunner()))
+    client.post("/api/project", json={"name": "Approval loop"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Add useful companies", "auto_approve": False},
+    ).json()
+
+    for _ in range(200):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job.get("approval_status") == "pending_action":
+            break
+        time.sleep(0.01)
+    assert job["status"] == "waiting_for_user"
+    assert client.get("/api/project").json()["entity_kinds"] == []
+
+    approved = client.post(f"/api/workspace-agent/jobs/{job['job_id']}/approve")
+    assert approved.status_code == 202
+    for _ in range(200):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+    assert job["status"] == "completed", job.get("error")
+    assert client.get("/api/project").json()["entity_kinds"] == [
+        {"kind": "Company", "entities": 0, "questions": 0}
+    ]
+
+
+def test_workspace_agent_executes_command_batch_in_one_turn(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+
+    class BatchRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.observations = []
+
+        def next_action(self, _goal, _context, observation, _progress=None):
+            self.calls += 1
+            self.observations.append(observation)
+            if self.calls == 1:
+                return {
+                    "action": "command",
+                    "message": "Create the table and its first rows as one batch.",
+                    "argv": [],
+                    "commands": [
+                        ["epiq", "--project", "PROJECT_PATH", "kind", "Company"],
+                        [
+                            "epiq",
+                            "--project",
+                            "PROJECT_PATH",
+                            "entity-batch",
+                            "Company",
+                            "--names-json",
+                            '["Acme", "Beta"]',
+                        ],
+                    ],
+                    "decision": None,
+                    "plan": action_plan("Company", 2),
+                    "completion": None,
+                }
+            return {
+                "action": "finish",
+                "message": "Created both rows.",
+                "argv": [],
+                "commands": [],
+                "decision": None,
+                "plan": None,
+                "completion": action_completion(),
+            }
+
+    runner = BatchRunner()
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=runner))
+    client.post("/api/project", json={"name": "Batch action loop"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Add two companies", "auto_approve": True},
+    ).json()
+    for _ in range(200):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["status"] == "completed", job.get("error")
+    assert runner.calls == 2
+    assert runner.observations[1]["type"] == "command_batch_result"
+    assert runner.observations[1]["completed_count"] == 2
+    assert [row["name"] for row in client.get("/api/matrix/Company").json()["rows"]] == [
+        "Acme",
+        "Beta",
+    ]
+    proposed = [event for event in job["events"] if event["type"] == "command_proposed"]
+    assert [event["data"]["batch_index"] for event in proposed] == [0, 1]
+
+
+def test_workspace_agent_action_loop_recovers_from_rejected_command(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+
+    class ActionRunner:
+        def __init__(self) -> None:
+            self.observations = []
+            self.actions = iter(
+                [
+                    {
+                        "action": "command",
+                        "message": "Try a command outside the agent contract.",
+                        "argv": ["epiq", "--project", "PROJECT_PATH", "init"],
+                        "decision": None,
+                        "plan": action_plan("Company", 0),
+                        "completion": None,
+                    },
+                    {
+                        "action": "command",
+                        "message": "Inspect the supported project commands.",
+                        "argv": ["epiq", "--project", "PROJECT_PATH", "--help"],
+                        "decision": None,
+                        "plan": None,
+                        "completion": None,
+                    },
+                    {
+                        "action": "finish",
+                        "message": "Recovered from the rejected command.",
+                        "argv": [],
+                        "decision": None,
+                        "plan": None,
+                        "completion": action_completion(),
+                    },
+                ]
+            )
+
+        def next_action(self, _goal, _context, observation, _progress=None):
+            self.observations.append(observation)
+            return next(self.actions)
+
+    runner = ActionRunner()
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=runner))
+    client.post("/api/project", json={"name": "Recovery loop"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Inspect the project", "auto_approve": True},
+    ).json()
+
+    for _ in range(200):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["status"] == "completed", job.get("error")
+    assert runner.observations[1]["type"] == "command_rejected"
+    assert runner.observations[2]["type"] == "command_result"
+    assert "command_rejected" in [event["type"] for event in job["events"]]
+
+
+def test_control_center_rejects_opaque_research_commands(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    observations = []
+    actions = iter(
+        [
+            {
+                "action": "command",
+                "message": "Try opaque research.",
+                "argv": [
+                    "epiq",
+                    "--project",
+                    "PROJECT_PATH",
+                    "research",
+                    "--kind",
+                    "Company",
+                    "--question",
+                    "website",
+                ],
+                "decision": None,
+                "plan": action_plan("Company", 0),
+                "completion": None,
+            },
+            {
+                "action": "finish",
+                "message": "The opaque path is unavailable.",
+                "argv": [],
+                "decision": None,
+                "plan": None,
+                "completion": {
+                    **action_completion(),
+                    "stop_reason": "tool_blocked",
+                    "blockers": ["Opaque research is deliberately unavailable."],
+                },
+            },
+        ]
+    )
+
+    class Runner:
+        def next_action(self, _goal, _context, observation, _progress=None):
+            observations.append(observation)
+            return next(actions)
+
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=Runner()))
+    client.post("/api/project", json={"name": "Opaque research guard"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Research companies", "auto_approve": True},
+    ).json()
+    for _ in range(200):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["status"] == "completed", job.get("error")
+    assert observations[1]["type"] == "command_rejected"
+    assert "source-search" in observations[1]["error"]
+    assert not any(event["type"] == "command_started" for event in job["events"])
+
+
+def test_workspace_agent_finish_gate_enforces_declared_target(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    observations = []
+    actions = iter(
+        [
+            {
+                "action": "command",
+                "message": "Add the first company.",
+                "argv": ["epiq", "--project", "PROJECT_PATH", "entity", "Company", "Acme"],
+                "decision": None,
+                "plan": action_plan("Company", 2),
+                "completion": None,
+            },
+            {
+                "action": "finish",
+                "message": "One company is enough.",
+                "argv": [],
+                "decision": None,
+                "plan": None,
+                "completion": action_completion(),
+            },
+            {
+                "action": "command",
+                "message": "The gate is right; add the second company.",
+                "argv": ["epiq", "--project", "PROJECT_PATH", "entity", "Company", "Beta"],
+                "decision": None,
+                "plan": None,
+                "completion": None,
+            },
+            {
+                "action": "finish",
+                "message": "The declared target is now satisfied.",
+                "argv": [],
+                "decision": None,
+                "plan": None,
+                "completion": action_completion(),
+            },
+        ]
+    )
+
+    class ActionRunner:
+        def next_action(self, _goal, _context, observation, _progress=None):
+            observations.append(observation)
+            return next(actions)
+
+    LedgerDatabase(root, create=True, name="Finish gate").define_kind("Company")
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=ActionRunner()))
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Collect two companies", "auto_approve": True},
+    ).json()
+    for _ in range(200):
+        job = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if job["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert job["status"] == "completed", job.get("error")
+    rejected = next(item for item in observations if item and item["type"] == "finish_rejected")
+    assert "has 1 rows; the plan targets 2" in rejected["reasons"][0]
+    assert [item["name"] for item in LedgerDatabase(root).entities(kind="Company")] == [
+        "Acme",
+        "Beta",
+    ]
+
+
 def test_workspace_agent_can_retract_an_exact_claim(tmp_path: Path) -> None:
     root = tmp_path / "project"
     claim_id = ""
@@ -492,6 +1056,111 @@ def test_workspace_agent_can_retract_an_exact_claim(tmp_path: Path) -> None:
     assert client.get("/api/matrix/Restaurant").json()["rows"][0]["cells"]["address"][
         "state"
     ] == "Unasked"
+
+
+def test_workspace_agent_records_user_decision_and_continues_same_pi_session(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    calls = []
+
+    def decision_plan(goal, _context, progress=None):
+        calls.append(goal)
+        if len(calls) == 1:
+            progress("Found a useful edge-case candidate")
+            return {
+                "summary": "One candidate is useful but falls just outside the stated scope.",
+                "entity_kinds": [],
+                "entities": [],
+                "questions": [],
+                "retractions": [],
+                "replacements": [],
+                "research": [],
+                "decisions": [
+                    {
+                        "decision_id": "include_acme",
+                        "question": "Add Acme despite the scope mismatch?",
+                        "context": "Acme has strong evidence but is adjacent to the niche.",
+                        "options": [
+                            {
+                                "value": "yes",
+                                "label": "Yes, include it",
+                                "consequence": "Acme becomes part of the comparison set.",
+                            },
+                            {
+                                "value": "no",
+                                "label": "No, keep scope strict",
+                                "consequence": "Acme remains only a notebook lead.",
+                            },
+                        ],
+                        "recommended_option": "no",
+                    }
+                ],
+            }
+        return {
+            "summary": "Apply the user's explicit inclusion decision.",
+            "entity_kinds": ["Company"],
+            "entities": [{"kind": "Company", "name": "Acme"}],
+            "questions": [],
+            "retractions": [],
+            "replacements": [],
+            "research": [],
+            "decisions": [],
+        }
+
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=decision_plan))
+    client.post("/api/project", json={"name": "Decisions"})
+    launched = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Find niche companies", "auto_approve": True},
+    ).json()
+    for _ in range(200):
+        first = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == launched["job_id"]
+        )
+        if first["status"] == "waiting_for_user":
+            break
+        time.sleep(0.01)
+
+    assert first["approval_status"] == "awaiting_input"
+    assert [event["type"] for event in first["events"]] == [
+        "user_message",
+        "agent_started",
+        "platform_update",
+        "platform_update",
+        "agent_message",
+        "decision_requested",
+    ]
+    continued = client.post(
+        f"/api/workspace-agent/jobs/{first['job_id']}/decisions/include_acme",
+        json={"option": "yes", "reason": "Include adjacent firms for recall."},
+    )
+    assert continued.status_code == 202
+    next_job_id = continued.json()["job_id"]
+    for _ in range(200):
+        second = next(
+            item
+            for item in client.get("/api/research/jobs").json()
+            if item["job_id"] == next_job_id
+        )
+        if second["status"] == "completed" and second.get("approval_status") == "approved":
+            break
+        time.sleep(0.01)
+
+    assert "The user selected: Yes, include it (yes)." in calls[1]
+    assert "Include adjacent firms for recall." in calls[1]
+    assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
+    refreshed_first = next(
+        item
+        for item in client.get("/api/research/jobs").json()
+        if item["job_id"] == first["job_id"]
+    )
+    assert refreshed_first["decision_response"]["reason"] == (
+        "Include adjacent firms for recall."
+    )
+    assert refreshed_first["events"][-1]["type"] == "decision_answered"
 
 
 def test_workspace_agent_can_replace_an_answered_claim_preserving_evidence(
@@ -869,15 +1538,19 @@ def test_curator_repeatedly_enriches_until_two_cycles_have_no_changes(tmp_path: 
         time.sleep(0.01)
 
     assert state["status"] == "completed"
-    assert state["completed_cycles"] == 3
+    assert state["completed_cycles"] == 5
     assert state["cycles"][0]["written"] == 2
     assert state["cycles"][1]["written"] == 0
     assert state["cycles"][2]["written"] == 0
-    assert "no useful changes" in state["message"]
-    assert state["estimated_spend_usd"] == 3.0
+    assert state["cycles"][0]["phase"] == "breadth"
+    assert state["cycles"][0]["delta"]["total_rows"] == 1
+    assert "four escalating discovery strategies" in state["message"]
+    assert state["estimated_spend_usd"] == 4.5
     assert state["budget_usd"] == 10
-    assert len(goals) == 3
+    assert len(goals) == 5
     assert "Previous cycle outcome" in goals[1]
+    assert "substantial bounded work package" in goals[0]
+    assert "Mine unresolved notebook leads" in goals[3]
     assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
 
     extended = client.post(
@@ -891,14 +1564,63 @@ def test_curator_repeatedly_enriches_until_two_cycles_have_no_changes(tmp_path: 
         if state["status"] in {"completed", "failed", "stopped"}:
             break
         time.sleep(0.01)
-    assert state["completed_cycles"] == 5
-    assert state["estimated_spend_usd"] == 4.5
+    assert state["completed_cycles"] == 9
+    assert state["estimated_spend_usd"] == 7.5
     assert "Focus next on funding" in goals[-1]
 
     restarted = TestClient(create_ledger_app(root, workspace_agent_runner=curator_plan))
     persisted = restarted.get("/api/curator").json()
     assert persisted["status"] == "completed"
     assert persisted["objective"] == "Build a useful company comparison dataset"
+
+
+def test_curator_recovers_from_one_failed_cycle_instead_of_pausing(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    goals = []
+
+    def curator_plan(goal, _context, progress=None):
+        goals.append(goal)
+        if len(goals) == 1:
+            raise RuntimeError("temporary source provider failure")
+        return {
+            "summary": "Recover by adding the verified company row.",
+            "entity_kinds": ["Company"],
+            "entities": [{"kind": "Company", "name": "Acme"}],
+            "questions": [],
+            "research": [],
+        }
+
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=curator_plan))
+    client.post("/api/project", json={"name": "Resilient curator"})
+    client.post(
+        "/api/curator",
+        json={
+            "objective": "Build a company dataset",
+            "budget_usd": 5,
+            "max_cycles": 2,
+            "max_research_cells": 10,
+        },
+    )
+    for _ in range(300):
+        state = client.get("/api/curator").json()
+        if state["status"] == "awaiting_approval":
+            break
+        time.sleep(0.01)
+    client.post("/api/curator/approve")
+    for _ in range(300):
+        state = client.get("/api/curator").json()
+        if state["status"] in {"completed", "paused", "stopped"}:
+            break
+        time.sleep(0.01)
+
+    assert state["status"] == "completed"
+    assert state["completed_cycles"] == 2
+    assert state["cycles"][0]["status"] == "failed"
+    assert state["cycles"][0]["error"] == "temporary source provider failure"
+    assert state["cycles"][1]["written"] == 2
+    assert "recoverable execution error" in goals[1]
+    assert "temporary source provider failure" in goals[1]
+    assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
 
 
 def test_web_matrix_resolves_references_and_preserves_derivations(tmp_path: Path) -> None:

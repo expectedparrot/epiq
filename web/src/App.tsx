@@ -6,6 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   ApiError,
   Cell,
@@ -35,6 +37,30 @@ type Selection = {
   question: Question;
   cell: Cell;
 };
+
+function MarkdownMessage({ children }: { children: string }) {
+  // Agents occasionally emit a GFM table as one long line after a paragraph.
+  // Restore the row breaks that GFM requires before handing it to the renderer.
+  const markdown = /\|\s*:?-{3,}:?\s*\|/.test(children)
+    ? children
+        .replace(/([^\n])\s+(\|[^\n|]+(?:\|[^\n|]+)+\|)\s+(\|\s*:?-{3,}:?)/, "$1\n\n$2\n$3")
+        .replace(/\|\s+\|/g, "|\n|")
+    : children;
+  return (
+    <div className="markdown-message">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ href, children: label }) => (
+            <a href={href} target="_blank" rel="noreferrer">{label}</a>
+          ),
+        }}
+      >
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  );
+}
 type ProvisionalRelationship = RelationshipSuggestion & { jobId: string };
 type EntitySelection = {
   entityId: string;
@@ -71,6 +97,22 @@ type PastedClaim = {
   value?: unknown;
   error?: string;
 };
+type DocumentRecord = {
+  report_id: string;
+  report_type: string;
+  parameters: Record<string, unknown>;
+  content_digest: string;
+};
+type PipelineRecord = DocumentRecord;
+type PipelineJob = {
+  job_id: string;
+  run_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  chunks_completed: number;
+  findings_written: number;
+  error?: string | null;
+  result?: Record<string, unknown>;
+};
 
 function mergeJobs(current: ResearchJob[], incoming: ResearchJob[]) {
   const byId = new Map(current.map((job) => [job.job_id, job]));
@@ -94,6 +136,7 @@ function jobRevision(jobs: ResearchJob[]) {
       job.completed,
       job.written,
       job.messages.at(-1)?.at,
+      job.events?.at(-1)?.event_id,
       job.child_job_ids?.length ?? 0,
       job.relationship_suggestions?.filter((item) => item.status === "pending")
         .length ?? 0,
@@ -192,6 +235,8 @@ const formattedValue = (
 ) => {
   const valueType =
     typeof question === "string" ? question : question?.value_type;
+  const questionName =
+    typeof question === "string" ? "" : (question?.name ?? "");
   const definition =
     typeof question === "string" ? {} : (question?.definition ?? {});
   const format = (override ?? definition.display_format ?? {}) as Record<
@@ -237,7 +282,10 @@ const formattedValue = (
   if (valueType === "Int" && typeof value === "number") {
     return new Intl.NumberFormat("en-US", {
       maximumFractionDigits: 0,
-      useGrouping: format.use_grouping !== false,
+      // Preserve old projects that modeled a calendar year as Int without
+      // presenting the value like a grouped count (for example, "2,025").
+      useGrouping:
+        !/(?:^|_)year$/.test(questionName) && format.use_grouping !== false,
     }).format(value);
   }
   if (
@@ -272,6 +320,7 @@ const cellDisplay = (
   if (cell.state === "Contested")
     return `${cell.values.length} competing answers`;
   if (cell.state === "NotFound") return "No evidence found";
+  if (cell.state === "Inconclusive") return "Search inconclusive";
   return "";
 };
 const cellStateLabel = (cell: Cell) =>
@@ -331,6 +380,7 @@ export default function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [kind, setKind] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [fieldSelection, setFieldSelection] = useState<Question | null>(null);
   const [entitySelection, setEntitySelection] =
     useState<EntitySelection | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -339,6 +389,9 @@ export default function App() {
   const [needsInit, setNeedsInit] = useState(false);
   const [jobs, setJobs] = useState<ResearchJob[]>([]);
   const [notebooks, setNotebooks] = useState<NotebookSession[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [pipelines, setPipelines] = useState<PipelineRecord[]>([]);
+  const [pipelineJobs, setPipelineJobs] = useState<PipelineJob[]>([]);
   const [curator, setCurator] = useState<CuratorState | null>(null);
   const [researchQuestion, setResearchQuestion] = useState<Question | null>(
     null,
@@ -356,7 +409,7 @@ export default function App() {
     missing: number;
   } | null>(null);
   const [rightPane, setRightPane] = useState<
-    "agent" | "inspect" | "activity" | "review" | null
+    "agent" | "documents" | "notebook" | "inspect" | "activity" | "review" | null
   >("agent");
   const [chatDraft, setChatDraft] = useState("");
   const [centerView, setCenterView] = useState<"table" | "row">("table");
@@ -403,7 +456,22 @@ export default function App() {
   } | null>(null);
   const [, setClipboardNotice] = useState("");
   const jobsRef = useRef<ResearchJob[]>([]);
+  const pipelineJobsRef = useRef<PipelineJob[]>([]);
   const jobsRevisionRef = useRef("");
+  const seenLedgerTransactionIdsRef = useRef<Set<string>>(new Set());
+  const ledgerEventsInitializedRef = useRef(false);
+  const matrixScopeRef = useRef("");
+  const knownRowIdsRef = useRef<Set<string>>(new Set());
+  const knownCellSignaturesRef = useRef<Map<string, string>>(new Map());
+  const rowHighlightTimersRef = useRef<Map<string, number>>(new Map());
+  const cellHighlightTimersRef = useRef<Map<string, number>>(new Map());
+  const newRowNoticeTimerRef = useRef<number | null>(null);
+  const updatedCellNoticeTimerRef = useRef<number | null>(null);
+  const [newRowIds, setNewRowIds] = useState<Set<string>>(new Set());
+  const [newRowCount, setNewRowCount] = useState(0);
+  const [updatedCellKeys, setUpdatedCellKeys] = useState<Set<string>>(new Set());
+  const [updatedCellCount, setUpdatedCellCount] = useState(0);
+  const [sheetUpdateCounts, setSheetUpdateCounts] = useState<Record<string, number>>({});
   const { matrix, staleDerivations, loadMatrix, clearMatrix } = useTableData(
     overview?.project.project_id, kind, !needsInit && !projectClosed, setError,
   );
@@ -444,6 +512,9 @@ export default function App() {
         setJobs([]);
         jobsRef.current = [];
         jobsRevisionRef.current = "";
+        seenLedgerTransactionIdsRef.current = new Set();
+        ledgerEventsInitializedRef.current = false;
+        setSheetUpdateCounts({});
         setSelection(null);
         setEntitySelection(null);
         setChatDraft("");
@@ -575,6 +646,106 @@ export default function App() {
     });
   }, [matrix]);
   useEffect(() => {
+    if (!matrix || !overview?.project.project_id || !kind) return;
+    const scope = `${overview.project.project_id}:${kind}`;
+    const currentIds = new Set(matrix.rows.map((row) => row.entity_id));
+    const currentCellSignatures = new Map<string, string>();
+    for (const row of matrix.rows) {
+      for (const question of matrix.questions) {
+        const cell = row.cells[question.name];
+        currentCellSignatures.set(
+          `${row.entity_id}:${question.question_id}`,
+          JSON.stringify({
+            state: cell.state,
+            value: cell.value,
+            values: cell.values,
+            claims: cell.lineage.map((item) => item.claim_id),
+          }),
+        );
+      }
+    }
+    if (matrixScopeRef.current !== scope) {
+      matrixScopeRef.current = scope;
+      knownRowIdsRef.current = currentIds;
+      knownCellSignaturesRef.current = currentCellSignatures;
+      rowHighlightTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      rowHighlightTimersRef.current.clear();
+      cellHighlightTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      cellHighlightTimersRef.current.clear();
+      if (newRowNoticeTimerRef.current !== null)
+        window.clearTimeout(newRowNoticeTimerRef.current);
+      if (updatedCellNoticeTimerRef.current !== null)
+        window.clearTimeout(updatedCellNoticeTimerRef.current);
+      setNewRowIds(new Set());
+      setNewRowCount(0);
+      setUpdatedCellKeys(new Set());
+      setUpdatedCellCount(0);
+      return;
+    }
+    const updatedCells = [...currentCellSignatures].flatMap(([key, signature]) => {
+      const previous = knownCellSignaturesRef.current.get(key);
+      return previous !== undefined && previous !== signature ? [key] : [];
+    });
+    knownCellSignaturesRef.current = currentCellSignatures;
+    if (updatedCells.length) {
+      setUpdatedCellKeys((current) => new Set([...current, ...updatedCells]));
+      setUpdatedCellCount((current) => current + updatedCells.length);
+      for (const key of updatedCells) {
+        const previous = cellHighlightTimersRef.current.get(key);
+        if (previous !== undefined) window.clearTimeout(previous);
+        const timer = window.setTimeout(() => {
+          setUpdatedCellKeys((current) => {
+            const next = new Set(current);
+            next.delete(key);
+            return next;
+          });
+          cellHighlightTimersRef.current.delete(key);
+        }, 12000);
+        cellHighlightTimersRef.current.set(key, timer);
+      }
+      if (updatedCellNoticeTimerRef.current !== null)
+        window.clearTimeout(updatedCellNoticeTimerRef.current);
+      updatedCellNoticeTimerRef.current = window.setTimeout(
+        () => setUpdatedCellCount(0),
+        12000,
+      );
+    }
+    const added = matrix.rows
+      .map((row) => row.entity_id)
+      .filter((entityId) => !knownRowIdsRef.current.has(entityId));
+    knownRowIdsRef.current = currentIds;
+    if (!added.length) return;
+    setNewRowIds((current) => new Set([...current, ...added]));
+    setNewRowCount((current) => current + added.length);
+    for (const entityId of added) {
+      const previous = rowHighlightTimersRef.current.get(entityId);
+      if (previous !== undefined) window.clearTimeout(previous);
+      const timer = window.setTimeout(() => {
+        setNewRowIds((current) => {
+          const next = new Set(current);
+          next.delete(entityId);
+          return next;
+        });
+        rowHighlightTimersRef.current.delete(entityId);
+      }, 12000);
+      rowHighlightTimersRef.current.set(entityId, timer);
+    }
+    if (newRowNoticeTimerRef.current !== null)
+      window.clearTimeout(newRowNoticeTimerRef.current);
+    newRowNoticeTimerRef.current = window.setTimeout(() => setNewRowCount(0), 12000);
+  }, [matrix, overview?.project.project_id, kind]);
+  useEffect(
+    () => () => {
+      rowHighlightTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      cellHighlightTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      if (newRowNoticeTimerRef.current !== null)
+        window.clearTimeout(newRowNoticeTimerRef.current);
+      if (updatedCellNoticeTimerRef.current !== null)
+        window.clearTimeout(updatedCellNoticeTimerRef.current);
+    },
+    [],
+  );
+  useEffect(() => {
     if (needsInit || projectClosed) return;
     let cancelled = false;
     let polling = false;
@@ -592,6 +763,37 @@ export default function App() {
               ["queued", "running"].includes(previous.get(job.job_id) ?? "") &&
               ["completed", "failed", "cancelled"].includes(job.status),
           );
+          const ledgerEvents = next.flatMap((job) =>
+            (job.events ?? []).filter((event) => event.type === "ledger_transaction"),
+          );
+          if (!ledgerEventsInitializedRef.current) {
+            seenLedgerTransactionIdsRef.current = new Set(
+              ledgerEvents.map((event) =>
+                String(event.data.transaction_id ?? event.event_id),
+              ),
+            );
+            ledgerEventsInitializedRef.current = true;
+          } else {
+            const unseen = ledgerEvents.filter((event) => {
+              const key = String(event.data.transaction_id ?? event.event_id);
+              if (seenLedgerTransactionIdsRef.current.has(key)) return false;
+              seenLedgerTransactionIdsRef.current.add(key);
+              return true;
+            });
+            if (unseen.length) {
+              setSheetUpdateCounts((current) => {
+                const updated = { ...current };
+                for (const event of unseen) {
+                  const kinds = Array.isArray(event.data.affected_kinds)
+                    ? event.data.affected_kinds.map(String)
+                    : [];
+                  for (const affectedKind of new Set(kinds))
+                    updated[affectedKind] = (updated[affectedKind] ?? 0) + 1;
+                }
+                return updated;
+              });
+            }
+          }
           if (justFinished) {
             if (justFinished.job_type === "workspace_agent") {
               void loadOverview();
@@ -650,6 +852,41 @@ export default function App() {
   }, [needsInit, projectClosed]);
   useEffect(() => {
     if (needsInit || projectClosed) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const [nextDocuments, nextPipelines, nextJobs] = await Promise.all([
+          api<DocumentRecord[]>("/api/documents"),
+          api<PipelineRecord[]>("/api/pipelines"),
+          api<PipelineJob[]>("/api/pipeline-jobs"),
+        ]);
+        if (cancelled) return;
+        const prior = pipelineJobsRef.current;
+        setDocuments(nextDocuments);
+        setPipelines(nextPipelines);
+        setPipelineJobs(nextJobs);
+        pipelineJobsRef.current = nextJobs;
+        const changed = nextJobs.some((job) => {
+          const before = prior.find((item) => item.job_id === job.job_id);
+          return !before || before.chunks_completed !== job.chunks_completed || before.status !== job.status;
+        });
+        if (changed) {
+          void loadMatrix(false);
+          void loadOverview();
+        }
+      } catch {
+        /* Document pipelines are supplementary to the main table. */
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [needsInit, projectClosed, loadMatrix, loadOverview]);
+  useEffect(() => {
+    if (needsInit || projectClosed) return;
     const refreshVisibleProject = () => {
       if (document.visibilityState !== "visible") return;
       void loadOverview();
@@ -673,6 +910,19 @@ export default function App() {
     setJobs((current) => mergeJobs(current, [job]));
     jobsRef.current = mergeJobs(jobsRef.current, [job]);
     setRightPane("agent");
+  };
+  const answerWorkspaceDecision = async (
+    jobId: string,
+    decisionId: string,
+    option: string,
+    reason: string,
+  ) => {
+    const next = await post<ResearchJob>(
+      `/api/workspace-agent/jobs/${encodeURIComponent(jobId)}/decisions/${encodeURIComponent(decisionId)}`,
+      { option, reason: reason.trim() || null },
+    );
+    setJobs((current) => mergeJobs(current, [next]));
+    jobsRef.current = mergeJobs(jobsRef.current, [next]);
   };
   const startCurator = async (
     objective: string,
@@ -738,6 +988,8 @@ export default function App() {
   };
   const projectReady = async () => {
     ++overviewGeneration.current;
+    setLoading(true);
+    setError("");
     setKind("");
     clearMatrix();
     setOverview(null);
@@ -750,7 +1002,13 @@ export default function App() {
     setChatDraft("");
     setProjectClosed(false);
     setShowProjects(false);
-    await loadOverview();
+    try {
+      await loadOverview();
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not finish opening project",
+      );
+    }
   };
   const closeProject = async () => {
     try {
@@ -893,6 +1151,24 @@ export default function App() {
       ),
     [jobs],
   );
+  const activeAgentTargets = useMemo(
+    () =>
+      jobs
+        .filter(
+          (job) =>
+            (job.status === "queued" || job.status === "running") &&
+            job.job_type === "workspace_agent",
+        )
+        .flatMap((job) => job.active_targets ?? [])
+        .filter((target) => target.kind === kind),
+    [jobs, kind],
+  );
+  const agentTargetForCell = (rowName: string, questionName: string) =>
+    activeAgentTargets.find(
+      (target) =>
+        target.field === questionName &&
+        (target.rows.length === 0 || target.rows.includes(rowName)),
+    );
   const isCellResearching = (entityId: string, questionId: string) =>
     jobs.some(
       (job) =>
@@ -1154,6 +1430,7 @@ export default function App() {
           (cells.some(
             (cell) =>
               cell.state === "Contested" ||
+              cell.state === "Inconclusive" ||
               cell.state === "NotFound" ||
               cell.temporal?.freshness === "stale",
           ) ||
@@ -1711,13 +1988,26 @@ export default function App() {
               className={
                 kind === item.kind ? "table-link active" : "table-link"
               }
-              onClick={() => setKind(item.kind)}
+              onClick={() => {
+                setKind(item.kind);
+                setSheetUpdateCounts((current) => {
+                  if (!current[item.kind]) return current;
+                  const next = { ...current };
+                  delete next[item.kind];
+                  return next;
+                });
+              }}
             >
               <span className="table-icon">▦</span>
               {item.kind}
               <small>
                 {item.entities} × {item.questions}
               </small>
+              {(sheetUpdateCounts[item.kind] ?? 0) > 0 && (
+                <span className="sheet-update-badge">
+                  +{sheetUpdateCounts[item.kind]} new
+                </span>
+              )}
             </button>
           ))}
           <div className="sidebar-foot">
@@ -1748,12 +2038,23 @@ export default function App() {
                   ? ` of ${matrix?.rows.length ?? 0}`
                   : ""}{" "}
                 rows · {matrix?.questions.length ?? 0} research fields
+                {newRowCount > 0 && (
+                  <span className="new-row-notice">
+                    +{newRowCount} new row{newRowCount === 1 ? "" : "s"}
+                  </span>
+                )}
+                {updatedCellCount > 0 && (
+                  <span className="updated-cell-notice">
+                    +{updatedCellCount} updated cell{updatedCellCount === 1 ? "" : "s"}
+                  </span>
+                )}
               </p>
             </div>
             <button className="ghost" onClick={() => setRightPane("agent")}>
               ✦ Request a change
             </button>
           </div>
+          {centerView === "table" && <>
           <div
             className="sheet-format-toolbar"
             aria-label="Spreadsheet formatting"
@@ -1856,7 +2157,8 @@ export default function App() {
               onClick={toggleRows}
               title="Toggle text wrapping"
             >
-              ↵ Wrap
+              <span aria-hidden="true">↵</span>
+              <span>Wrap</span>
             </button>
             <span className="toolbar-selection-hint">
               {activeSelection
@@ -2000,6 +2302,7 @@ export default function App() {
                 )}
             </div>
           )}
+          </>}
           <div className="center-view-switch" aria-label="Data view">
             <button
               className={centerView === "table" ? "active" : ""}
@@ -2071,6 +2374,9 @@ export default function App() {
                     />
                   </th>
                   {displayedQuestions.map((question, questionIndex) => {
+                    const questionLabel = String(
+                      question.definition.label ?? question.name,
+                    );
                     const pendingProvisional =
                       tableProvisionalRelationships.filter(
                         (suggestion) =>
@@ -2079,6 +2385,21 @@ export default function App() {
                     const activeColumnJobs = activeResearchJobs.filter(
                       (job) => job.question_id === question.question_id,
                     );
+                    const activeFieldTargets = activeAgentTargets.filter(
+                      (target) => target.field === question.name,
+                    );
+                    const activeTargetRows = new Set(
+                      activeFieldTargets.flatMap((target) =>
+                        target.rows.length
+                          ? target.rows
+                          : (matrix?.rows ?? []).map((row) => row.name),
+                      ),
+                    );
+                    const unresolvedTargetCount = (matrix?.rows ?? []).filter(
+                      (row) =>
+                        activeTargetRows.has(row.name) &&
+                        row.cells[question.name].state !== "Answered",
+                    ).length;
                     return (
                       <th
                         key={question.question_id}
@@ -2111,26 +2432,45 @@ export default function App() {
                         <div className="column-header-title">
                           <button
                             className="column-sort-button"
-                            onClick={() => toggleSort(question.name)}
-                            title={`Sort by ${String(question.definition.label ?? question.name)}`}
+                            onClick={() => {
+                              setSelection(null);
+                              setEntitySelection(null);
+                              setFieldSelection(question);
+                              setRightPane("inspect");
+                            }}
+                            title={`Inspect field ${questionLabel}`}
                           >
-                            {String(question.definition.label ?? question.name)}
+                            {questionLabel}
                             {sort.key === question.name && (
                               <i>{sort.direction === "asc" ? "↑" : "↓"}</i>
                             )}
                           </button>
-                          <small>
+                          <small className="field-type-label">
                             {question.value_type}
                             {question.definition.volatility &&
                             question.definition.volatility !== "stable"
                               ? ` · ${question.definition.volatility}`
                               : ""}
                           </small>
+                          {activeFieldTargets.length > 0 && (
+                            <small className="field-work-status">
+                              <span className="row-spinner" />
+                              <span>{activeFieldTargets[0].phase}</span>
+                              <b>{unresolvedTargetCount} pending</b>
+                            </small>
+                          )}
                         </div>
                         <div className="column-actions">
                           <details className="column-menu">
                             <summary title="Field actions">•••</summary>
-                            <div>
+                            <div
+                              onClick={(event) => {
+                                if (!(event.target as HTMLElement).closest("button")) return;
+                                event.currentTarget
+                                  .closest("details")
+                                  ?.removeAttribute("open");
+                              }}
+                            >
                               {Boolean(question.definition.formula) && (
                                 <button
                                   onClick={() =>
@@ -2223,7 +2563,7 @@ export default function App() {
                   return (
                     <tr
                       key={row.entity_id}
-                      className={isResearching ? "row-is-researching" : ""}
+                      className={`${isResearching ? "row-is-researching" : ""} ${newRowIds.has(row.entity_id) ? "newly-added-row" : ""}`}
                     >
                       <td className="row-action-cell">
                         <small className="row-index">{index + 1}</small>
@@ -2245,6 +2585,9 @@ export default function App() {
                       >
                         <div className="entity-inner">
                           <span>{row.name}</span>
+                          {newRowIds.has(row.entity_id) && (
+                            <small className="new-row-pill">New</small>
+                          )}
                           <small className="backref-affordance">↩ refs</small>
                         </div>
                       </td>
@@ -2252,6 +2595,8 @@ export default function App() {
                         const columnIndex =
                           displayedQuestions.indexOf(question);
                         const cell = row.cells[question.name];
+                        const cellKey = `${row.entity_id}:${question.question_id}`;
+                        const agentTarget = agentTargetForCell(row.name, question.name);
                         const provisional =
                           tableProvisionalRelationships.filter(
                             (suggestion) =>
@@ -2283,7 +2628,7 @@ export default function App() {
                                 ? 0
                                 : -1
                             }
-                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${provisional.length ? "has-provisional" : ""} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) ? "cell-is-researching" : ""} ${formulaDragQuestion?.question_id === question.question_id ? "formula-drop-target" : ""} ${isInSelectedRange ? "selected-cell" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
+                            className={`data-cell type-${question.value_type.toLowerCase()} state-${cell.state.toLowerCase()} ${provisional.length ? "has-provisional" : ""} ${derivedClaims.length ? "derived-cell" : ""} ${derivedIsStale ? "derived-cell-stale" : ""} ${isCellResearching(row.entity_id, question.question_id) || agentTarget?.phase === "searching" ? "cell-is-researching" : ""} ${agentTarget && agentTarget.phase !== "searching" ? `cell-agent-${agentTarget.phase}` : ""} ${updatedCellKeys.has(cellKey) ? "newly-updated-cell" : ""} ${formulaDragQuestion?.question_id === question.question_id ? "formula-drop-target" : ""} ${isInSelectedRange ? "selected-cell" : ""} ${activeGridCell?.entityId === row.entity_id && activeGridCell?.questionId === question.question_id ? "active-cell" : ""}`}
                             onDragOver={(event) => {
                               if (
                                 formulaDragQuestion?.question_id ===
@@ -2335,6 +2680,7 @@ export default function App() {
                               if (!event.shiftKey || !selectionAnchor)
                                 setSelectionAnchor(clicked);
                               setActiveGridCell(clicked);
+                              setFieldSelection(null);
                               setEntitySelection(null);
                               setSelection({
                                 entityId: row.entity_id,
@@ -2349,7 +2695,9 @@ export default function App() {
                               {isCellResearching(
                                 row.entity_id,
                                 question.question_id,
-                              ) && <span className="cell-spinner" />}
+                              ) || agentTarget?.phase === "searching" ? (
+                                <span className="cell-spinner" />
+                              ) : null}
                               {cell.references?.length ? (
                                 <div className="reference-cell">
                                   <strong>
@@ -2420,6 +2768,9 @@ export default function App() {
                               <span className="source-count">
                                 {cell.lineage.length} src
                               </span>
+                            )}
+                            {updatedCellKeys.has(cellKey) && (
+                              <span className="new-cell-pill">Updated</span>
                             )}
                             {derivedClaims.length > 0 && (
                               <span
@@ -2502,7 +2853,7 @@ export default function App() {
         {rightPane && (
           <aside className="workspace-pane">
             <nav className="workspace-pane-tabs">
-              {(["agent", "inspect", "activity", "review"] as const).map((pane) => (
+              {(["agent", "documents", "notebook", "inspect", "activity", "review"] as const).map((pane) => (
                 <button
                   key={pane}
                   className={rightPane === pane ? "active" : ""}
@@ -2614,6 +2965,54 @@ export default function App() {
             }}
           />
         )}
+        {rightPane === "inspect" && !selection && fieldSelection && (
+          <section className="field-inspector">
+            <div className="inspector-kicker">Inspector · Field</div>
+            <h2>{fieldSelection.name}</h2>
+            <p className="field-inspector-type">{fieldSelection.value_type}</p>
+            <dl>
+              <div>
+                <dt>Prompt</dt>
+                <dd>{String(fieldSelection.definition.prompt ?? "No prompt recorded")}</dd>
+              </div>
+              <div>
+                <dt>Research guidance</dt>
+                <dd>
+                  {String(
+                    fieldSelection.definition.research_guidance ??
+                      "No research guidance recorded",
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Cardinality</dt>
+                <dd>{String(fieldSelection.definition.cardinality ?? "one")}</dd>
+              </div>
+              <div>
+                <dt>Volatility</dt>
+                <dd>{String(fieldSelection.definition.volatility ?? "stable")}</dd>
+              </div>
+              <div>
+                <dt>Coverage</dt>
+                <dd>
+                  {(matrix?.rows ?? []).filter(
+                    (row) => row.cells[fieldSelection.name]?.state === "Answered",
+                  ).length}
+                  /{matrix?.rows.length ?? 0} answered
+                </dd>
+              </div>
+            </dl>
+            <button
+              className="ghost"
+              onClick={() => {
+                setSchemaChallengeQuestion(fieldSelection);
+                setDialog("schemaChallenge");
+              }}
+            >
+              Challenge field schema
+            </button>
+          </section>
+        )}
         {rightPane === "inspect" && !selection && entitySelection && matrix && (
           <EntityRelationshipsDrawer
             selection={entitySelection}
@@ -2657,7 +3056,6 @@ export default function App() {
         {rightPane === "agent" && (
           <WorkspaceAgentPanel
             jobs={jobs}
-            notebooks={notebooks}
             curator={curator}
             draft={chatDraft}
             onDraftConsumed={() => setChatDraft("")}
@@ -2666,9 +3064,34 @@ export default function App() {
             onCancel={cancelResearch}
             onApprove={approveWorkspacePlan}
             onReject={rejectWorkspacePlan}
+            onDecision={answerWorkspaceDecision}
             onStartCurator={startCurator}
             onControlCurator={controlCurator}
             onAddCuratorBudget={addCuratorBudget}
+          />
+        )}
+        {rightPane === "notebook" && (
+          <NotebookPanel notebooks={notebooks} onClose={() => setRightPane(null)} />
+        )}
+        {rightPane === "documents" && (
+          <DocumentsPanel
+            documents={documents}
+            pipelines={pipelines}
+            jobs={pipelineJobs}
+            onRequestPipeline={(document) => {
+              const title = String(document.parameters.title ?? document.report_id);
+              setChatDraft(
+                `Design and run a high-value extraction pipeline for the retained document “${title}” (${document.report_id}). ` +
+                "Inspect the current schema and prioritize structured fields and relationships by expected analytical value per time and cost. " +
+                "Use pipeline-define --spec-json, pipeline-prepare, and pipeline-extract. Keep the raw document as an artifact; do not copy its full text into a cell.",
+              );
+              setRightPane("agent");
+            }}
+            onChanged={async () => {
+              setDocuments(await api<DocumentRecord[]>("/api/documents"));
+              setPipelines(await api<PipelineRecord[]>("/api/pipelines"));
+              setPipelineJobs(await api<PipelineJob[]>("/api/pipeline-jobs"));
+            }}
           />
         )}
         {rightPane === "review" && (
@@ -2955,6 +3378,7 @@ function ProjectList({ onReady }: { onReady: () => Promise<void> }) {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
+  const [openingProjectId, setOpeningProjectId] = useState("");
   useEffect(() => {
     void api<ProjectInfo[]>("/api/projects")
       .then(setProjects)
@@ -2976,6 +3400,9 @@ function ProjectList({ onReady }: { onReady: () => Promise<void> }) {
     }
   };
   const open = async (projectId: string) => {
+    if (openingProjectId) return;
+    setOpeningProjectId(projectId);
+    setError("");
     try {
       await post("/api/projects/open", { project_id: projectId });
       await onReady();
@@ -2983,6 +3410,8 @@ function ProjectList({ onReady }: { onReady: () => Promise<void> }) {
       setError(
         caught instanceof Error ? caught.message : "Could not open project",
       );
+    } finally {
+      setOpeningProjectId("");
     }
   };
   const importProject = async (file: File | undefined) => {
@@ -3013,16 +3442,23 @@ function ProjectList({ onReady }: { onReady: () => Promise<void> }) {
       {projects.length === 0 && <p>No saved projects yet.</p>}
       {projects.map((project) => (
         <button
+          type="button"
           className="project-option"
           key={project.project_id}
-          disabled={project.active}
+          disabled={Boolean(openingProjectId)}
           onClick={() => void open(project.project_id)}
         >
           <span>
             <b>{project.name}</b>
             <small>{project.path}</small>
           </span>
-          <i>{project.active ? "Open now" : "Open →"}</i>
+          <i>
+            {openingProjectId === project.project_id
+              ? "Opening…"
+              : project.active
+                ? "Return →"
+                : "Open →"}
+          </i>
         </button>
       ))}
       <form
@@ -5057,9 +5493,476 @@ function ReviewPanel({
   );
 }
 
+function NotebookPanel({
+  notebooks,
+  onClose,
+}: {
+  notebooks: NotebookSession[];
+  onClose: () => void;
+}) {
+  return (
+    <aside className="notebook-panel">
+      <div className="drawer-head">
+        <button className="close" onClick={onClose}>×</button>
+        <h2>Lab Notebook</h2>
+        <p>Plans, searches, leads, rejected sources, and findings from research runs.</p>
+      </div>
+      <div className="lab-notebooks">
+        {notebooks.length === 0 && (
+          <p className="notebook-empty">
+            No sessions yet. The next research command will start a notebook.
+          </p>
+        )}
+        {[...notebooks].reverse().map((notebook, index) => (
+          <details key={notebook.session_id} open={index === 0}>
+            <summary>
+              <span className={`job-status ${notebook.status}`}>{notebook.status}</span>
+              {notebook.objective}
+              <small>{notebook.entries.length} entries</small>
+            </summary>
+            <div className="notebook-entry-list">
+              {notebook.entries.map((entry) => (
+                <NotebookEntry key={entry.entry_id} entry={entry} />
+              ))}
+            </div>
+            {notebook.summary && <p>{notebook.summary}</p>}
+          </details>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function DocumentsPanel({
+  documents,
+  pipelines,
+  jobs,
+  onChanged,
+  onRequestPipeline,
+}: {
+  documents: DocumentRecord[];
+  pipelines: PipelineRecord[];
+  jobs: PipelineJob[];
+  onChanged: () => Promise<void>;
+  onRequestPipeline: (document: DocumentRecord) => void;
+}) {
+  const definitions = pipelines.filter((item) => item.report_type === "extraction-pipeline");
+  const runs = pipelines.filter((item) => item.report_type === "extraction-run");
+  const [file, setFile] = useState<File | null>(null);
+  const [documentId, setDocumentId] = useState("");
+  const [pipelineId, setPipelineId] = useState("");
+  const [runId, setRunId] = useState("");
+  const [workers, setWorkers] = useState(4);
+  const [spec, setSpec] = useState(
+    JSON.stringify(
+      {
+        name: "document-facts",
+        version: 1,
+        chunking: { chunk_chars: 12000, overlap_chars: 500 },
+        outputs: [
+          {
+            kind: "EarningsCall",
+            question: "call_date",
+            instructions: "Extract only an explicitly stated call date.",
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  const [busy, setBusy] = useState("");
+  const [error, setLocalError] = useState("");
+  useEffect(() => {
+    if (!documentId && documents[0]) setDocumentId(documents[0].report_id);
+    if (!pipelineId && definitions[0]) setPipelineId(definitions[0].report_id);
+    if (!runId && runs[0]) setRunId(runs.at(-1)!.report_id);
+  }, [documents, definitions, runs, documentId, pipelineId, runId]);
+  const upload = async () => {
+    if (!file) return;
+    setBusy("upload");
+    setLocalError("");
+    try {
+      const query = new URLSearchParams({ filename: file.name, title: file.name });
+      const response = await fetch(`/api/documents?${query}`, {
+        method: "POST",
+        headers: { "content-type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message ?? "Upload failed");
+      setDocumentId(payload.document_id);
+      setFile(null);
+      await onChanged();
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "Upload failed");
+    } finally {
+      setBusy("");
+    }
+  };
+  const define = async () => {
+    setBusy("define");
+    setLocalError("");
+    try {
+      const payload = await post<{ pipeline_id: string }>("/api/pipelines", {
+        spec: JSON.parse(spec),
+        retention: "git",
+      });
+      setPipelineId(payload.pipeline_id);
+      await onChanged();
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "Could not define pipeline");
+    } finally {
+      setBusy("");
+    }
+  };
+  const prepare = async () => {
+    if (!documentId || !pipelineId) return;
+    setBusy("prepare");
+    setLocalError("");
+    try {
+      const payload = await post<{ run_id: string }>("/api/pipelines/prepare", {
+        document_id: documentId,
+        pipeline_id: pipelineId,
+        retention: "git",
+      });
+      setRunId(payload.run_id);
+      await onChanged();
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "Could not prepare document");
+    } finally {
+      setBusy("");
+    }
+  };
+  const extract = async () => {
+    if (!runId) return;
+    setBusy("extract");
+    setLocalError("");
+    try {
+      await post("/api/pipeline-jobs", { run_id: runId, workers });
+      await onChanged();
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "Could not start extraction");
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <aside className="documents-panel">
+      <div className="drawer-head">
+        <h2>Documents</h2>
+        <p>Retain files once, then extract bounded, quote-verified structured facts.</p>
+      </div>
+      <div className="documents-panel-body">
+        {error && <div className="form-error">{error}</div>}
+        <section>
+          <h3>1 · Add a source file</h3>
+          <input type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+          <button className="primary" disabled={!file || Boolean(busy)} onClick={() => void upload()}>
+            {busy === "upload" ? "Uploading…" : "Retain document"}
+          </button>
+          <select value={documentId} onChange={(event) => setDocumentId(event.target.value)}>
+            <option value="">Choose document</option>
+            {documents.map((item) => (
+              <option key={item.report_id} value={item.report_id}>
+                {String(item.parameters.title ?? item.parameters.filename ?? item.report_id)}
+              </option>
+            ))}
+          </select>
+          <button
+            disabled={!documentId}
+            onClick={() => {
+              const document = documents.find((item) => item.report_id === documentId);
+              if (document) onRequestPipeline(document);
+            }}
+          >
+            Plan extraction in Control Center →
+          </button>
+        </section>
+        <section>
+          <h3>2 · Define extraction</h3>
+          <textarea value={spec} onChange={(event) => setSpec(event.target.value)} rows={12} />
+          <button disabled={Boolean(busy)} onClick={() => void define()}>
+            {busy === "define" ? "Saving…" : "Save versioned pipeline"}
+          </button>
+          <select value={pipelineId} onChange={(event) => setPipelineId(event.target.value)}>
+            <option value="">Choose pipeline</option>
+            {definitions.map((item) => (
+              <option key={item.report_id} value={item.report_id}>
+                {String(item.parameters.name ?? item.report_id)} · v{String(item.parameters.version ?? "?")}
+              </option>
+            ))}
+          </select>
+        </section>
+        <section>
+          <h3>3 · Prepare and extract</h3>
+          <button disabled={!documentId || !pipelineId || Boolean(busy)} onClick={() => void prepare()}>
+            {busy === "prepare" ? "Preparing…" : "Prepare bounded chunks"}
+          </button>
+          <select value={runId} onChange={(event) => setRunId(event.target.value)}>
+            <option value="">Choose prepared run</option>
+            {runs.map((item) => (
+              <option key={item.report_id} value={item.report_id}>
+                {item.report_id} · {String(item.parameters.chunk_count ?? 0)} chunks
+              </option>
+            ))}
+          </select>
+          <label>
+            Parallel workers
+            <input type="number" min={1} max={8} value={workers} onChange={(event) => setWorkers(Number(event.target.value))} />
+          </label>
+          <button className="primary" disabled={!runId || Boolean(busy)} onClick={() => void extract()}>
+            {busy === "extract" ? "Starting…" : "Extract structured facts"}
+          </button>
+        </section>
+        <section>
+          <h3>Runs</h3>
+          {jobs.length === 0 && <p className="notebook-empty">No extraction runs yet.</p>}
+          {[...jobs].reverse().map((job) => (
+            <div className={`pipeline-job ${job.status}`} key={job.job_id}>
+              <span className={`job-status ${job.status}`}>{job.status}</span>
+              <b>{job.chunks_completed} chunks · {job.findings_written} findings</b>
+              {job.status === "running" && <i className="agent-spinner" />}
+              {job.error && <small>{job.error}</small>}
+            </div>
+          ))}
+        </section>
+      </div>
+    </aside>
+  );
+}
+
+function NotebookEntry({
+  entry,
+}: {
+  entry: NotebookSession["entries"][number];
+}) {
+  const content = entry.content;
+  const title: Record<string, string> = {
+    plan: "Research plan",
+    query: "Search run",
+    lead: "Lead to follow",
+    note: "Research note",
+    source_candidate: "Candidate source",
+    rejection: "Source rejected",
+    follow_up: "Next step",
+    finding: "Finding",
+    checkpoint: "Progress checkpoint",
+  };
+  const attempts = Array.isArray(content.attempts)
+    ? content.attempts.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object",
+      )
+    : [];
+  const sources = Array.isArray(content.sources) ? content.sources : [];
+  const targetNames = Array.isArray(content.target_names)
+    ? content.target_names.map(String)
+    : [];
+  const mainText = ["summary", "finding", "note", "reason", "detail", "next"]
+    .map((key) => content[key])
+    .find((value) => typeof value === "string" && value.trim());
+  const url = ["url", "source_url", "canonical_url"]
+    .map((key) => content[key])
+    .find((value) => typeof value === "string" && /^https?:\/\//.test(value));
+  return (
+    <article className={`notebook-entry notebook-entry-${entry.entry_type}`}>
+      <header>
+        <span className="notebook-entry-icon" aria-hidden="true">
+          {entry.entry_type === "plan" ? "◎" : entry.entry_type === "query" ? "⌕" : entry.entry_type === "finding" ? "✓" : "·"}
+        </span>
+        <div>
+          <b>{title[entry.entry_type]}</b>
+          {entry.entry_type === "plan" && (
+            <small>{String(content.target_count ?? targetNames.length)} target{Number(content.target_count ?? targetNames.length) === 1 ? "" : "s"}</small>
+          )}
+          {entry.entry_type === "query" && (
+            <small>{attempts.length} search{attempts.length === 1 ? "" : "es"} · {sources.length} source{sources.length === 1 ? "" : "s"}</small>
+          )}
+        </div>
+      </header>
+      {entry.entry_type === "plan" && targetNames.length > 0 && (
+        <div className="notebook-targets">
+          {targetNames.map((name) => <span key={name}>{name}</span>)}
+        </div>
+      )}
+      {entry.entry_type === "query" && typeof content.query === "string" && (
+        <p className="notebook-query">“{content.query}”</p>
+      )}
+      {Boolean(mainText) && <p>{String(mainText)}</p>}
+      {typeof url === "string" && <a href={url} target="_blank" rel="noreferrer">Open source ↗</a>}
+      {attempts.length > 0 && (
+        <details className="notebook-searches">
+          <summary>Search trail</summary>
+          <ol>
+            {attempts.map((attempt, index) => (
+              <li key={`${String(attempt.query ?? "search")}-${index}`}>
+                <span>{String(attempt.query ?? "Untitled search")}</span>
+                <small>{String(attempt.status ?? "recorded")}</small>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+      <details className="notebook-raw">
+        <summary>Technical details</summary>
+        <pre><code>{JSON.stringify(content, null, 2)}</code></pre>
+      </details>
+    </article>
+  );
+}
+
+function AgentEventTimeline({ job }: { job: ResearchJob }) {
+  const events = job.events ?? [];
+  if (events.length === 0) return null;
+  const seenTransactions = new Set<string>();
+  const ledgerEvents = events.filter((event) => {
+    if (event.type !== "ledger_transaction") return false;
+    const key = String(event.data.transaction_id ?? event.message);
+    if (seenTransactions.has(key)) return false;
+    seenTransactions.add(key);
+    return true;
+  });
+  const searches = ledgerEvents.filter((event) => event.message.startsWith("Searched "));
+  const rowsAdded = ledgerEvents.filter((event) => /^Added .+ row:/.test(event.message));
+  const evidenceCaptured = ledgerEvents.filter((event) => event.message.startsWith("Captured evidence:"));
+  const fieldsAdded = ledgerEvents.filter((event) => event.message.startsWith("Added research field:"));
+  const importantEvents = events.filter((event) =>
+    ["agent_message", "decision_requested", "run_failed", "command_failed", "run_completed"].includes(event.type),
+  );
+  const activity = [...ledgerEvents, ...importantEvents]
+    .sort((left, right) => left.at.localeCompare(right.at))
+    .slice(-12);
+  const targets = (job.active_targets ?? []).filter((target) => target.phase !== "queued");
+  const technicalEvents = events.filter((event) => event.type !== "ledger_transaction");
+  return (
+    <div className="agent-progress-digest">
+      <div className="agent-progress-metrics">
+        <span><b>{job.written ?? 0}</b> writes</span>
+        <span><b>{rowsAdded.length}</b> rows</span>
+        <span><b>{evidenceCaptured.length}</b> evidence</span>
+        <span><b>{searches.length}</b> searches</span>
+        {fieldsAdded.length > 0 && <span><b>{fieldsAdded.length}</b> fields</span>}
+      </div>
+      {targets.length > 0 && (
+        <div className="agent-active-work">
+          <small>Working now</small>
+          {targets.slice(0, 5).map((target, index) => (
+            <span key={`${target.kind}-${target.field}-${target.phase}-${index}`}>
+              <i className={`phase-${target.phase}`} />
+              {target.phase} {target.kind}.{target.field}
+              {target.rows.length > 0 && ` · ${target.rows.length} row${target.rows.length === 1 ? "" : "s"}`}
+            </span>
+          ))}
+          {targets.length > 5 && <span>+ {targets.length - 5} more active targets</span>}
+        </div>
+      )}
+      {activity.length > 0 && (
+        <div className="agent-activity-feed">
+          <small>Recent progress</small>
+          {activity.map((event) => (
+            <div className={`agent-activity-item ${event.type}`} key={event.event_id}>
+              <i aria-hidden="true" />
+              <span>{event.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <details className="agent-technical-trail">
+        <summary>Commands and platform trail · {technicalEvents.length}</summary>
+        <div className="agent-event-timeline">
+          {technicalEvents.map((event) => {
+            const argv = Array.isArray(event.data.argv)
+              ? event.data.argv.map(String)
+              : null;
+            const isCommand = event.type.startsWith("command_");
+            return (
+              <div className={`agent-event ${event.type}`} key={event.event_id}>
+                <i aria-hidden="true" />
+                <div>
+                  <small>{event.type.replaceAll("_", " ")}</small>
+                  <p>{event.message}</p>
+                  {argv && <pre><code>$ {argv.map((part) => JSON.stringify(part)).join(" ")}</code></pre>}
+                  {isCommand && event.data.result != null && (
+                    <details>
+                      <summary>JSON result</summary>
+                      <pre><code>{JSON.stringify(event.data.result, null, 2)}</code></pre>
+                    </details>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function AgentDecisionCard({
+  jobId,
+  decision,
+  onDecision,
+}: {
+  jobId: string;
+  decision: {
+    decision_id: string;
+    question: string;
+    context: string;
+    options: Array<{ value: string; label: string; consequence: string }>;
+    recommended_option: string;
+  };
+  onDecision: (jobId: string, decisionId: string, option: string, reason: string) => Promise<void>;
+}) {
+  const [selected, setSelected] = useState(decision.recommended_option);
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <div className="agent-decision-card">
+      <b>{decision.question}</b>
+      <p>{decision.context}</p>
+      <div className="agent-decision-options">
+        {decision.options.map((option) => (
+          <label key={option.value} className={selected === option.value ? "selected" : ""}>
+            <input
+              type="radio"
+              name={`${jobId}:${decision.decision_id}`}
+              value={option.value}
+              checked={selected === option.value}
+              onChange={() => setSelected(option.value)}
+            />
+            <span>
+              <b>{option.label}{option.value === decision.recommended_option ? " · Recommended" : ""}</b>
+              <small>{option.consequence}</small>
+            </span>
+          </label>
+        ))}
+      </div>
+      <textarea
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="Optional reason or guidance for future decisions"
+      />
+      {error && <div className="form-error">{error}</div>}
+      <button
+        className="primary"
+        disabled={!selected || submitting}
+        onClick={() => {
+          setSubmitting(true);
+          setError("");
+          void onDecision(jobId, decision.decision_id, selected, reason)
+            .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not record decision"))
+            .finally(() => setSubmitting(false));
+        }}
+      >
+        {submitting ? "Recording…" : "Record decision and continue"}
+      </button>
+    </div>
+  );
+}
+
 function WorkspaceAgentPanel({
   jobs,
-  notebooks,
   curator,
   draft,
   onDraftConsumed,
@@ -5068,12 +5971,12 @@ function WorkspaceAgentPanel({
   onCancel,
   onApprove,
   onReject,
+  onDecision,
   onStartCurator,
   onControlCurator,
   onAddCuratorBudget,
 }: {
   jobs: ResearchJob[];
-  notebooks: NotebookSession[];
   curator: CuratorState | null;
   draft: string;
   onDraftConsumed: () => void;
@@ -5082,6 +5985,12 @@ function WorkspaceAgentPanel({
   onCancel: (jobId: string) => Promise<void>;
   onApprove: (jobId: string) => Promise<void>;
   onReject: (jobId: string) => Promise<void>;
+  onDecision: (
+    jobId: string,
+    decisionId: string,
+    option: string,
+    reason: string,
+  ) => Promise<void>;
   onStartCurator: (
     objective: string,
     budgetUsd: number,
@@ -5137,6 +6046,19 @@ function WorkspaceAgentPanel({
     })
     .map(({ job }) => job);
   const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
+  const activeJob = [...ordered].reverse().find((job) =>
+    ["queued", "running"].includes(job.status),
+  );
+  const activeTarget = activeJob?.active_targets?.find((target) =>
+    ["searching", "writing", "verifying", "reviewing"].includes(target.phase),
+  );
+  const activeLedgerEvents = activeJob
+    ? (activeJob.events ?? []).filter((event) => event.type === "ledger_transaction")
+    : [];
+  const activeTransactionCount = new Set(
+    activeLedgerEvents.map((event) => String(event.data.transaction_id ?? event.event_id)),
+  ).size;
+  const latestLedgerMessage = activeLedgerEvents.at(-1)?.message;
   const canContinueCurator = Boolean(
     curator &&
       ["completed", "stopped"].includes(curator.status) &&
@@ -5183,31 +6105,6 @@ function WorkspaceAgentPanel({
         <button className="close" onClick={onClose}>×</button>
         <h2>Control Center</h2>
       </div>
-      <details className="lab-notebooks">
-          <summary>Lab notebook · {notebooks.length} session{notebooks.length === 1 ? "" : "s"}</summary>
-          {notebooks.length === 0 && (
-            <p className="notebook-empty">
-              No sessions yet. The next research command will record its plan, searches,
-              leads, rejected sources, and findings here.
-            </p>
-          )}
-          {[...notebooks].reverse().slice(0, 8).map((notebook) => (
-            <details key={notebook.session_id}>
-              <summary>
-                <span className={`job-status ${notebook.status}`}>{notebook.status}</span>
-                {notebook.objective}
-                <small>{notebook.entries.length} entries</small>
-              </summary>
-              {notebook.entries.map((entry) => (
-                <div className="notebook-entry" key={entry.entry_id}>
-                  <b>{entry.entry_type.replace("_", " ")}</b>
-                  <pre><code>{JSON.stringify(entry.content, null, 2)}</code></pre>
-                </div>
-              ))}
-              {notebook.summary && <p>{notebook.summary}</p>}
-            </details>
-          ))}
-      </details>
       <div
         className="agent-conversation"
         ref={listRef}
@@ -5242,13 +6139,30 @@ function WorkspaceAgentPanel({
                 </span>
                 {isWorking && <i className="agent-spinner" />}
               </div>
-              {job.assistant_summary ? <p>{job.assistant_summary}</p> : (
+              {job.assistant_summary ? <MarkdownMessage>{job.assistant_summary}</MarkdownMessage> : (
                 <p>{job.messages.at(-1)?.message ?? "Preparing the workspace…"}</p>
               )}
               {isWorking && job.assistant_summary && job.messages.at(-1)?.message && (
                 <small className="agent-live-status">
                   {job.messages.at(-1)?.message}
                 </small>
+              )}
+              <AgentEventTimeline job={job} />
+              {job.approval_status === "awaiting_input" &&
+                job.workspace_plan?.decisions?.map((decision) => (
+                  <AgentDecisionCard
+                    key={decision.decision_id}
+                    jobId={job.job_id}
+                    decision={decision}
+                    onDecision={onDecision}
+                  />
+                ))}
+              {job.approval_status === "awaiting_input" && job.pending_decision && (
+                <AgentDecisionCard
+                  jobId={job.job_id}
+                  decision={job.pending_decision}
+                  onDecision={onDecision}
+                />
               )}
               {job.workspace_plan && (
                 <>
@@ -5291,7 +6205,7 @@ function WorkspaceAgentPanel({
                   )}
                 </>
               )}
-              {job.command_transcript && job.command_transcript.length > 0 && (
+              {(job.events?.length ?? 0) === 0 && job.command_transcript && job.command_transcript.length > 0 && (
                 <details className="agent-command-transcript">
                   <summary>{job.command_transcript.length} proposed CLI command{job.command_transcript.length === 1 ? "" : "s"}</summary>
                   {job.command_transcript.map((command, index) => (
@@ -5305,7 +6219,13 @@ function WorkspaceAgentPanel({
                   <button onClick={() => void onReject(job.job_id)}>Dismiss</button>
                 </div>
               )}
-              {job.command_results && job.command_results.length > 0 && (
+              {job.approval_status === "pending_action" && (
+                <div className="workspace-plan-actions">
+                  <button className="primary" onClick={() => void onApprove(job.job_id)}>Run command</button>
+                  <button onClick={() => void onCancel(job.job_id)}>Stop</button>
+                </div>
+              )}
+              {(job.events?.length ?? 0) === 0 && job.command_results && job.command_results.length > 0 && (
                 <details className="agent-command-transcript">
                   <summary>{job.command_results.length} command result{job.command_results.length === 1 ? "" : "s"}</summary>
                   {job.command_results.map((command, index) => (
@@ -5358,6 +6278,15 @@ function WorkspaceAgentPanel({
                 <span>${curator.budget_usd?.toFixed(2) ?? "—"} budget</span>
                 <span>{curator.completed_cycles}/{curator.max_cycles} cycles</span>
               </div>
+              {curator.metrics && (
+                <div className="curator-coverage">
+                  <b>{(curator.current_phase ?? "campaign").replace("_", " ")} phase</b>
+                  <span>{curator.metrics.total_rows} rows</span>
+                  <span>{curator.metrics.answered_cells} answered cells</span>
+                  <span>{curator.metrics.unasked_cells} unasked</span>
+                  <span>{curator.metrics.unresolved_leads} leads</span>
+                </div>
+              )}
               {curator.strategy && (
                 <div className="curator-strategy">
                   <b>{curator.strategy.summary}</b>
@@ -5395,6 +6324,40 @@ function WorkspaceAgentPanel({
           </div>
         )}
       </div>
+      {activeJob && (
+        <div className="agent-live-strip" role="status" aria-live="polite">
+          <i className="agent-spinner" />
+          <div>
+            <b>
+              {activeTarget
+                ? `${activeTarget.phase} ${activeTarget.kind}.${activeTarget.field}`
+                : "Epiq is still working"}
+            </b>
+            <small>
+              {activeTarget && activeTarget.rows.length > 0
+                ? `${activeTarget.rows.length} row${activeTarget.rows.length === 1 ? "" : "s"} · `
+                : ""}
+              {latestLedgerMessage ?? activeJob.messages.at(-1)?.message ?? "Preparing the next action"}
+            </small>
+          </div>
+          <span>
+            {activeTransactionCount > 0
+              ? `${activeTransactionCount} live update${activeTransactionCount === 1 ? "" : "s"}`
+              : `${activeJob.written ?? 0} writes`}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const list = listRef.current;
+              if (!list) return;
+              followConversationTail.current = true;
+              list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+            }}
+          >
+            Latest ↓
+          </button>
+        </div>
+      )}
       {curator && ["planning", "running", "stopping"].includes(curator.status) && (
         <div className="curator-live-strip">
           <i className="agent-spinner" />
@@ -5402,7 +6365,7 @@ function WorkspaceAgentPanel({
             <b>
               {curator.status === "planning"
                 ? "Planning curation"
-                : `Curator cycle ${curator.completed_cycles + 1}`}
+                : `Curator cycle ${curator.completed_cycles + 1} · ${curator.current_phase ?? "campaign"}`}
             </b>
             <small>{curator.message}</small>
           </div>
@@ -6525,7 +7488,7 @@ function EntityRelationshipsDrawer({
     <aside className="drawer entity-relationships-drawer">
       <div className="drawer-head">
         <div className="eyebrow inspector-eyebrow">
-          INSPECTOR <span>ROW</span>
+          {showFields ? "INSPECTOR" : "RELATIONSHIPS"} <span>ROW</span>
         </div>
         <button className="close" onClick={onClose}>
           ×
@@ -6540,8 +7503,12 @@ function EntityRelationshipsDrawer({
             />
           )}
           <div>
-            <h2>{selection.entityName}</h2>
-            <p>{selection.entityKind} · row details</p>
+            <h2>{showFields ? selection.entityName : "Related rows"}</h2>
+            <p>
+              {showFields
+                ? `${selection.entityKind} · row details`
+                : `${selection.entityName} · ${selection.entityKind}`}
+            </p>
           </div>
         </div>
       </div>
@@ -7213,10 +8180,25 @@ function CellDrawer({
                 <div>
                   <blockquote>{item.excerpt}</blockquote>
                   <small className="source-assurance">
-                    {item.provenance?.capture_method ?? "legacy"} source · {" "}
-                    {item.provenance?.verification_status === "excerpt_matched" ? "excerpt matched" : "capture unverified"}
-                    {" · "}{item.support?.length ? "support span recorded" : "no support span"}
-                    {" · "}{item.review?.status === "accepted" ? `reviewed by ${item.review.actor}` : item.review?.status === "rejected" ? "review rejected" : "unreviewed"}
+                    {item.provenance
+                      ? `${item.provenance.capture_method} capture`
+                      : "source and excerpt recorded"}
+                    {" · "}
+                    {item.provenance?.verification_status === "excerpt_matched"
+                      ? "excerpt matched to retained capture"
+                      : item.provenance
+                        ? "capture not independently verified"
+                        : "retained capture metadata unavailable"}
+                    {" · "}
+                    {item.support?.length
+                      ? "precise support span recorded"
+                      : "excerpt attached without character offsets"}
+                    {" · "}
+                    {item.review?.status === "accepted"
+                      ? `independently reviewed by ${item.review.actor}`
+                      : item.review?.status === "rejected"
+                        ? "independent review rejected"
+                        : "not independently reviewed"}
                   </small>
                   {item.provenance?.content_hash && (
                     <details className="capture-details">

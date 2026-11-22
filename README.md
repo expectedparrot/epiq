@@ -164,6 +164,65 @@ epiq --project research reports
 digest without retaining bytes locally. `ledger doctor` verifies every retained artifact and every
 locally retained report reference.
 
+### Extract structured data from files
+
+Keep long documents as content-addressed artifacts rather than copying their bodies into database
+cells or an agent conversation. Epiq can prepare deterministic, bounded chunks and accept only
+structured findings whose quoted support occurs verbatim in the selected chunk:
+
+```bash
+epiq --project research document-add --input upwork-q3-2026.pdf \
+  --title "Upwork Q3 2026 earnings call" --type earnings-call-transcript \
+  --retention git-lfs
+
+epiq --project research pipeline-define --input transcript-facts.json
+epiq --project research pipeline-prepare \
+  --document rpt_DOCUMENT --pipeline rpt_PIPELINE
+epiq --project research pipeline-chunk --run rpt_RUN --index 0
+epiq --project research pipeline-extract --run rpt_RUN --workers 4
+epiq --project research pipeline-apply --run rpt_RUN --findings-json '[
+  {
+    "chunk_index": 0,
+    "subject_kind": "EarningsCall",
+    "subject_name": "Upwork Q3 2026",
+    "question": "call_date",
+    "value": "2026-11-07",
+    "quote": "The call took place on November 7, 2026.",
+    "valid_from": "2026-11-07"
+  }
+]'
+```
+
+A pipeline definition is versioned JSON. It declares bounded chunking plus the exact existing
+fields the extractor may populate:
+
+```json
+{
+  "name": "transcript-facts",
+  "version": 1,
+  "chunking": {"chunk_chars": 12000, "overlap_chars": 500},
+  "outputs": [
+    {
+      "kind": "EarningsCall",
+      "question": "call_date",
+      "instructions": "Extract only an explicitly stated call date."
+    }
+  ]
+}
+```
+
+The original document, extracted text, pipeline definition, chunks, and run manifest are addressed
+by SHA-256. Applying findings verifies the pipeline allow-list, row and field identities, chunk
+membership, and exact quote before appending evidence and a claim. Re-running the same finding is
+idempotent.
+
+`pipeline-extract` runs independent bounded chunks concurrently (one to eight workers) and applies
+each verified chunk's findings immediately, so visible tables update while the rest of the document
+is still processing. The web explorer exposes the same flow in its **Documents** pane: upload a
+file, save a pipeline definition, prepare chunks, and monitor extraction progress. Pipelines may
+opt into creating missing output rows with `"create_subjects": true`; a `Ref[Kind]` output may use
+`"create_refs": true` to resolve or create the named referenced row before writing the link.
+
 Ledger projections export directly to deterministic JSON, JSONL, and CSV, or to native EDSL
 packages when the `edsl` extra is installed:
 
@@ -480,7 +539,8 @@ policy metadata. The current implementation recognizes:
   clickable new-tab link.
 - `Date`: an ISO `YYYY-MM-DD` calendar date.
 - `DateTime`: a timezone-aware ISO timestamp, including timestamps ending in `Z`.
-- `Year`: an integer from 1 through 9999.
+- `Year`: a calendar year from 1 through 9999, displayed without numeric grouping (use this rather
+  than `Int` for fields such as `founded_year` or `major_census_year`).
 - `Interval[Date]`: `{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}`; `end` may be null.
 - `Enum[a,b,c]`: validated against the listed strings.
 - `Distribution[Float]`: an empirical or weighted empirical numeric distribution.

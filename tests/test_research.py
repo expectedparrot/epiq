@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 
@@ -182,12 +183,35 @@ def test_pi_workspace_agent_uses_persistent_tool_free_session(tmp_path, monkeypa
     }
     captured = {}
 
-    def fake_run(command, **kwargs):
+    class FakeProcess:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            events = [
+                {"type": "agent_start"},
+                {"type": "turn_start"},
+                {"type": "message_start", "message": {"role": "assistant"}},
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": json.dumps(plan)}],
+                    },
+                },
+                {"type": "turn_end"},
+            ]
+            self.stdout = io.StringIO("".join(json.dumps(item) + "\n" for item in events))
+            self.stderr = io.StringIO("")
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(command, **kwargs):
         captured["command"] = command
         captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(plan), stderr="")
+        return FakeProcess(command, **kwargs)
 
-    monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
+    monkeypatch.setattr("epiq.research.subprocess.Popen", fake_popen)
     progress = []
     runner = PiWorkspaceAgentRunner(tmp_path, model="openai/gpt-6.2-astra")
 
@@ -202,24 +226,70 @@ def test_pi_workspace_agent_uses_persistent_tool_free_session(tmp_path, monkeypa
     assert command[0] == "pi"
     assert command[command.index("--session-id") + 1] == "epiq-control-center"
     assert "--no-builtin-tools" in command
+    assert command[command.index("--mode") + 1] == "json"
     assert command[command.index("--model") + 1] == "openai/gpt-6.2-astra"
     assert command[command.index("--system-prompt") + 1] == EPIQ_PI_SYSTEM_PROMPT
     assert "institutional taxonomies" in EPIQ_PI_SYSTEM_PROMPT
     assert "Design for comparison and analysis" in EPIQ_PI_SYSTEM_PROMPT
     assert "unknown must remain distinct from false" in EPIQ_PI_SYSTEM_PROMPT
     assert "mini-reports in a single String cell" in EPIQ_PI_SYSTEM_PROMPT
+    assert "missing dates, authors, URLs, amounts" in EPIQ_PI_SYSTEM_PROMPT
+    assert "metadata-completeness gates" in EPIQ_PI_SYSTEM_PROMPT
+    assert "expected dataset value per unit of elapsed time and cost" in EPIQ_PI_SYSTEM_PROMPT
+    assert "Never let full-document acquisition bottleneck" in EPIQ_PI_SYSTEM_PROMPT
+    prompt = command[-1]
+    assert "Do not bundle optional enrichment fields into that acceptance test" in prompt
     assert captured["kwargs"]["cwd"] == tmp_path.resolve()
     assert any("persistent Pi agent" in item for item in progress)
+    assert any("reviewing the project" in item for item in progress)
+    assert any("long session may compact" in item for item in progress)
 
 
 def test_pi_workspace_agent_rejects_non_json_output(tmp_path, monkeypatch) -> None:
+    calls = []
+
     def fake_run(command, **kwargs):
+        calls.append(command)
         return subprocess.CompletedProcess(command, 0, stdout="I would add a field.", stderr="")
 
     monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
 
     with pytest.raises(RuntimeError, match="invalid JSON"):
         PiWorkspaceAgentRunner(tmp_path)("Add a field", {"project": {}, "tables": []})
+
+    assert len(calls) == 2
+    assert "formatting repair" in calls[1][-1]
+
+
+def test_pi_workspace_agent_repairs_malformed_json_once(tmp_path, monkeypatch) -> None:
+    calls = []
+    plan = {
+        "summary": "Add the requested field.",
+        "entity_kinds": [],
+        "entities": [],
+        "questions": [],
+        "research": [],
+    }
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        text = '{"summary":' if len(calls) == 1 else json.dumps(plan)
+        event = {
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+        }
+        return subprocess.CompletedProcess(
+            command, 0, stdout=json.dumps(event) + "\n", stderr=""
+        )
+
+    monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
+
+    result = PiWorkspaceAgentRunner(tmp_path)(
+        "Add a field", {"project": {}, "tables": []}
+    )
+
+    assert result == plan
+    assert len(calls) == 2
 
 
 def test_pi_curator_strategy_plans_scope_and_budget_before_mutations(
@@ -251,7 +321,14 @@ def test_pi_curator_strategy_plans_scope_and_budget_before_mutations(
 
     def fake_run(command, **kwargs):
         captured["command"] = command
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(strategy), stderr="")
+        event = {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": json.dumps(strategy)}],
+            },
+        }
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(event), stderr="")
 
     monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
     result = PiWorkspaceAgentRunner(tmp_path).curator_strategy(

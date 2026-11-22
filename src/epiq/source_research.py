@@ -48,7 +48,11 @@ class EDSLSourceReasoner:
             "must map each cited source_ref to an exact, nonempty substring directly supporting "
             "the value. For not_found use value_json=\"null\", source_refs=[], "
             "support_quotes={}. For a many-valued question, value_json encodes an array of "
-            "conforming values.\nREQUEST:\n"
+            "conforming values. For Ref[Kind], answer once the capture supports the referenced "
+            "entity's stable identity and its relationship to the subject. Include attributes "
+            "such as URL, date, author, or amount only when captured; missing optional attributes "
+            "must not suppress an otherwise supported reference. Mention missing enrichment in "
+            "notes so it can be researched separately.\nREQUEST:\n"
             + request.model_dump_json()
             + "\nUNTRUSTED SOURCE DOCUMENTS:\n"
             + bundle.model_dump_json()
@@ -98,8 +102,10 @@ class OpenAISourceReasoner:
             'For not_found use value_json="null", source_refs=[], support_quotes={}. '
             "For a many-valued question, value_json encodes an array of conforming values. "
             "Every Ref[Kind] object must include a nonempty name. For articles use the published "
-            "headline as name and include URL/date fields when the referenced schema defines "
-            "them.\n"
+            "headline as name. Include URL, date, author, amount, and other referenced-row fields "
+            "only when the captures support them. Missing optional attributes must not suppress "
+            "an otherwise supported reference; describe missing enrichment in notes so it can be "
+            "researched separately.\n"
             "REQUEST:\n"
             + request.model_dump_json()
             + "\nUNTRUSTED SOURCE DOCUMENTS:\n"
@@ -315,10 +321,42 @@ class SourceResearchRunner:
                     "value": None,
                     "notes": "No sources found. See the source bundle for attempted queries.",
                 }
-            # A reasoner gets isolated copies; it cannot mutate the citations used for validation.
-            raw = self.reasoner(request.model_copy(deep=True), bundle.model_copy(deep=True))
-            check_cancelled(cancelled)
-            return validate_finding(raw, request, bundle)
+            # A reasoner gets isolated copies; it cannot mutate citations used for validation.
+            # Structured-output failures are stochastic and should not discard successful peers.
+            attempts = max(1, min(int(os.environ.get("EPIQ_REASONING_ATTEMPTS", "3")), 5))
+            last_error: SourceError | None = None
+            for attempt in range(1, attempts + 1):
+                try:
+                    raw = self.reasoner(
+                        request.model_copy(deep=True), bundle.model_copy(deep=True)
+                    )
+                    check_cancelled(cancelled)
+                    return validate_finding(raw, request, bundle)
+                except SourceError as error:
+                    if error.code not in {
+                        "invalid_response",
+                        "uncaptured_citation",
+                        "support_not_captured",
+                    }:
+                        raise
+                    last_error = error
+                    if progress and attempt < attempts:
+                        progress(
+                            f"Retrying malformed finding for "
+                            f"{request.entity_context.get('name', request.request_id)} "
+                            f"({attempt}/{attempts})"
+                        )
+            assert last_error is not None
+            return {
+                "entity_id": request.entity_context["entity_id"],
+                "status": "error",
+                "value": None,
+                "notes": (
+                    f"Source reasoning failed after {attempts} attempts: "
+                    f"{last_error.message}"
+                ),
+                "error": last_error.as_dict(),
+            }
 
         executor = ThreadPoolExecutor(
             max_workers=self.concurrency, thread_name_prefix="epiq-source"

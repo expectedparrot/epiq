@@ -49,6 +49,7 @@ _BINDINGS = [
     ("refresh-plan", "GET", "/api/refresh-plan/{entity_kind}", "read"),
     ("search", "GET", "/api/search", "read"),
     ("entity", "POST", "/api/entities", "additive"),
+    ("entity-batch", "POST", "/api/entities", "additive", "composed"),
     ("entity-alias", "POST", "/api/entities/{entity_id}/aliases", "additive"),
     ("merge-entities", "POST", "/api/entities/{entity_id}/merge", "corrective"),
     ("retire-entity", "POST", "/api/entities/{entity_id}/retire", "corrective"),

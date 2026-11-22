@@ -121,6 +121,7 @@ def test_openai_source_reasoner_is_capture_bounded_and_tool_free(monkeypatch):
     assert "tools" not in seen["payload"]
     assert seen["payload"]["text"]["format"]["strict"] is False
     assert "Population 7. More text." in seen["payload"]["input"]
+    assert "Missing optional attributes must not suppress" in seen["payload"]["input"]
 
 
 def test_support_quote_reanchors_whitespace_but_rejects_paraphrases():
@@ -385,6 +386,70 @@ def test_incremental_runner_yields_ready_entity_and_passes_context_unchanged():
     finally:
         released.set()
         findings.close()
+
+
+def test_source_runner_retries_malformed_reasoning_without_refetching():
+    collections = 0
+    reasoning = 0
+
+    def collect(req):
+        nonlocal collections
+        collections += 1
+        return bundle(req)
+
+    def reasoner(req, _sources):
+        nonlocal reasoning
+        reasoning += 1
+        if reasoning == 1:
+            return {"entity_id": req.entity_context["entity_id"], "status": "answered"}
+        return {
+            "entity_id": req.entity_context["entity_id"],
+            "status": "answered",
+            "value_json": "7",
+            "source_refs": ["s"],
+            "support_quotes": {"s": "Population 7."},
+        }
+
+    runner = SourceResearchRunner(FixtureSourceProvider(collect), reasoner, concurrency=1)
+    findings = list(
+        runner.iter_findings(
+            "Town",
+            {"name": "population", "value_type": "Int", "definition": {}},
+            [{"entity_id": "a", "name": "A"}],
+        )
+    )
+    assert findings[0]["status"] == "answered"
+    assert collections == 1
+    assert reasoning == 2
+
+
+def test_source_runner_isolates_persistently_malformed_entity():
+    def reasoner(req, _sources):
+        if req.entity_context["entity_id"] == "bad":
+            return {"entity_id": "bad", "status": "answered"}
+        return {
+            "entity_id": req.entity_context["entity_id"],
+            "status": "answered",
+            "value_json": "7",
+            "source_refs": ["s"],
+            "support_quotes": {"s": "Population 7."},
+        }
+
+    runner = SourceResearchRunner(FixtureSourceProvider(bundle), reasoner, concurrency=2)
+    findings = list(
+        runner.iter_findings(
+            "Town",
+            {"name": "population", "value_type": "Int", "definition": {}},
+            [
+                {"entity_id": "bad", "name": "Bad"},
+                {"entity_id": "good", "name": "Good"},
+            ],
+        )
+    )
+    by_id = {item["entity_id"]: item for item in findings}
+    assert by_id["good"]["status"] == "answered"
+    assert by_id["bad"]["status"] == "error"
+    assert by_id["bad"]["error"]["code"] == "invalid_response"
 
 
 def test_failed_retrieval_does_not_become_not_found():

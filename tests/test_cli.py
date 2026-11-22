@@ -1,11 +1,13 @@
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from epiq.cli import main
 from epiq.ledger_api import LedgerDatabase
+from epiq.source_contracts import SourceBundle, SourceDocument
 from epiq.store import Store
 
 
@@ -114,6 +116,233 @@ def test_ledger_research_is_one_json_enveloped_cli_operation(
     assert result["target_count"] == 1
     assert result["writes"][0]["entity_id"] == entity_id
     assert database.matrix("Company")["cells"][entity_id]
+
+
+def test_ledger_entity_batch_creates_rows_and_skips_existing(
+    tmp_path: Path, capsys
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Batch CLI")
+    database.define_kind("Department")
+
+    main(
+        [
+            "--project",
+            str(root),
+            "entity-batch",
+            "Department",
+            "--names-json",
+            '["Physics", "Chemistry", "Physics"]',
+        ]
+    )
+    first = _data(capsys)
+    assert first["created_count"] == 2
+    assert first["skipped_count"] == 0
+
+    main(
+        [
+            "--project",
+            str(root),
+            "entity-batch",
+            "Department",
+            "--names-json",
+            '["Physics", "Mathematics"]',
+        ]
+    )
+    second = _data(capsys)
+    assert second["created_count"] == 1
+    assert second["skipped"] == ["Physics"]
+    assert [row["name"] for row in database.entities(kind="Department")] == [
+        "Chemistry",
+        "Mathematics",
+        "Physics",
+    ]
+
+
+def test_source_search_returns_readable_material_without_claim_reasoning(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    LedgerDatabase(root, create=True, name="Source search")
+
+    class Provider:
+        def collect(self, request):
+            assert request.query == "MIT department heads"
+            return SourceBundle(
+                request_id=request.request_id,
+                provider="fake",
+                documents=[
+                    SourceDocument(
+                        source_ref="source-1",
+                        canonical_url="https://mit.example/leaders",
+                        title="MIT leaders",
+                        excerpt="Professor Example is department head.",
+                        markdown="Professor Example is department head.",
+                        retrieved_at=datetime.now(UTC),
+                        provider="fake",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("epiq.source_providers.registry.create", lambda _name: Provider())
+    main(
+        [
+            "--project",
+            str(root),
+            "source-search",
+            "--query",
+            "MIT department heads",
+        ]
+    )
+    result = _data(capsys)
+    assert result["source_count"] == 1
+    assert result["sources"][0]["content"] == "Professor Example is department head."
+
+
+def test_ref_batch_creates_targets_and_records_supported_links(
+    tmp_path: Path, capsys
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Reference batch")
+    database.define_kind("Department")
+    database.define_kind("Person")
+    database.create_entity("Department", "Physics")
+    database.create_entity("Department", "Chemistry")
+    database.define_question("current_leader", "Department", "Ref[Person]")
+    items = [
+        {
+            "subject": "Physics",
+            "target": "Professor Physicist",
+            "source_title": "Physics leadership",
+            "url": "https://example.test/physics",
+            "excerpt": "Professor Physicist is department head.",
+            "retrieved_at": "2026-11-22",
+            "valid_from": "2026-11-22",
+        },
+        {
+            "subject": "Chemistry",
+            "target": "Professor Chemist",
+            "source_title": "Chemistry leadership",
+            "url": "https://example.test/chemistry",
+            "excerpt": "Professor Chemist is department head.",
+            "retrieved_at": "2026-11-22",
+            "valid_from": "2026-11-22",
+        },
+    ]
+
+    main(
+        [
+            "--project",
+            str(root),
+            "ref-batch",
+            "--kind",
+            "Department",
+            "--question",
+            "current_leader",
+            "--target-kind",
+            "Person",
+            "--items-json",
+            json.dumps(items),
+        ]
+    )
+    result = _data(capsys)
+    assert result["created_target_count"] == 2
+    assert result["written"] == 2
+    assert {item["name"] for item in database.entities(kind="Person")} == {
+        "Professor Chemist",
+        "Professor Physicist",
+    }
+    matrix = database.matrix("Department")
+    assert sum(len(claims) for cells in matrix["cells"].values() for claims in cells.values()) == 2
+
+
+def test_ledger_discover_creates_a_broad_provisional_roster(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Discovery CLI")
+    database.define_kind("ArmySchool")
+
+    class FakeRunner:
+        def __call__(self, _kind, question, entities):
+            assert question["task_mode"] == "discover"
+            return [
+                {
+                    "entity_id": entities[0]["entity_id"],
+                    "status": "answered",
+                    "value": [
+                        {"name": "U.S. Army War College"},
+                        {"name": "U.S. Army Engineer School"},
+                        {"name": "U.S. Army Military Police School"},
+                    ],
+                    "source_title": "Army schools directory",
+                    "source_url": "https://example.test/army-schools",
+                    "source_type": "web",
+                    "excerpt": "Army schools directory",
+                    "confidence": "low",
+                    "source_published_at": None,
+                    "observed_as_of": "2026-11-22",
+                    "notes": "Provisional discovery roster.",
+                }
+            ]
+
+    monkeypatch.setattr("epiq.cli.OpenAIResearchRunner", FakeRunner)
+    main(
+        [
+            "--project",
+            str(root),
+            "discover",
+            "--kind",
+            "ArmySchool",
+            "--query",
+            "U.S. Army teaching institutions",
+            "--target",
+            "20",
+            "--coverage",
+            "professional military education",
+        ]
+    )
+    result = _data(capsys)
+    assert result["candidate_count"] == 3
+    assert result["created_count"] == 3
+    assert result["shortfall"] == 17
+    assert [item["name"] for item in database.entities(kind="ArmySchool")] == [
+        "U.S. Army Engineer School",
+        "U.S. Army Military Police School",
+        "U.S. Army War College",
+    ]
+    notebook = database.notebooks(session_id=result["notebook_session_id"])[0]
+    assert notebook["status"] == "completed"
+    assert notebook["entries"][0]["content"]["target_count"] == 20
+
+
+def test_ledger_discover_preserves_original_error_when_cleanup_runs(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Failed discovery")
+    database.define_kind("Company")
+
+    class FailingRunner:
+        def __call__(self, _kind, _question, _entities):
+            raise RuntimeError("discovery provider exploded")
+
+    monkeypatch.setattr("epiq.cli.OpenAIResearchRunner", FailingRunner)
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--project",
+                str(root),
+                "discover",
+                "--kind",
+                "Company",
+                "--query",
+                "AI companies",
+            ]
+        )
+    error = _error(capsys)
+    assert "discovery provider exploded" in error["message"]
+    assert database.notebooks()[0]["status"] == "abandoned"
 
 
 def test_ledger_notebook_round_trip_is_append_only(tmp_path: Path, capsys) -> None:

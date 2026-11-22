@@ -29,6 +29,16 @@ from .agent_interface import (
 )
 from .artifacts import ArtifactStore
 from .demo import load_patriots
+from .document_pipeline import (
+    PiChunkExtractor,
+    add_document,
+    apply_pipeline_findings,
+    define_pipeline,
+    define_pipeline_spec,
+    extract_pipeline,
+    prepare_pipeline,
+    read_pipeline_chunk,
+)
 from .dsl import describe, parse
 from .edsl_export import write_edsl
 from .errors import EpiqError
@@ -46,6 +56,7 @@ from .ledger_writer import LedgerWriter
 from .operations import operation_catalog
 from .research import OpenAIResearchRunner
 from .schema_guidance import schema_plan
+from .source_contracts import SourceRequest
 from .store import QUESTION_CHALLENGE_PROBLEMS, Store
 from .temporal import research_instant
 from .xlsx import write_xlsx
@@ -54,7 +65,7 @@ CONFIG_PATH = Path(".epiq/config.json")
 DEFAULT_DB = Path(".epiq/epiq.sqlite")
 
 
-def configured_research_runner(*, on_bundle=None, job_id="source-research"):
+def configured_research_runner(*, on_bundle=None, job_id="source-research", stream=False):
     """Select bounded source retrieval when explicitly configured."""
     provider_name = os.environ.get("EPIQ_SOURCE_PROVIDER")
     if not provider_name:
@@ -69,11 +80,10 @@ def configured_research_runner(*, on_bundle=None, job_id="source-research"):
     )
 
     def research(kind, question, entities):
-        return list(
-            runner.iter_findings(
-                kind, question, entities, on_bundle=on_bundle, job_id=job_id
-            )
+        findings = runner.iter_findings(
+            kind, question, entities, on_bundle=on_bundle, job_id=job_id
         )
+        return findings if stream else list(findings)
 
     return research
 
@@ -92,6 +102,9 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "transact",
         "kind",
         "entity",
+        "entity-batch",
+        "entity-lookup",
+        "ref-batch",
         "question",
         "evidence",
         "assert",
@@ -99,6 +112,8 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "supersede-claim",
         "record",
         "research",
+        "discover",
+        "source-search",
         "notebook",
         "matrix",
         "claims",
@@ -124,6 +139,14 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "review-proposal",
         "artifact-add",
         "artifact-verify",
+        "document-add",
+        "documents",
+        "pipeline-define",
+        "pipelines",
+        "pipeline-prepare",
+        "pipeline-chunk",
+        "pipeline-apply",
+        "pipeline-extract",
         "bundle-record",
         "bundles",
         "report-record",
@@ -144,6 +167,7 @@ class AgentArgumentParser(argparse.ArgumentParser):
 CAPABILITY_EXAMPLES = {
     "init": "epiq init --name 'Market research'",
     "entity": 'epiq entity Company Acme --attributes \'{"domain":"acme.test"}\'',
+    "entity-batch": "epiq entity-batch Company --names-json '[\"Acme\",\"Beta\"]'",
     "question": "epiq question funding --for Company --type 'Quantity[USD]'",
     "record": (
         "epiq --actor agent:research record --subject Acme --source-type report "
@@ -166,6 +190,13 @@ CAPABILITY_EXAMPLES = {
 
 CAPABILITY_RETURNS = {
     "entity": {"ok": "bool", "entity_id": "string"},
+    "entity-batch": {
+        "kind": "string",
+        "created_count": "integer",
+        "skipped_count": "integer",
+        "created": "array",
+        "skipped": "array",
+    },
     "question": {"ok": "bool", "question_id": "string"},
     "evidence": {"ok": "bool", "source_id": "string", "evidence_id": "string"},
     "assert": {"ok": "bool", "claim_id": "string"},
@@ -305,6 +336,7 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
         "apply",
         "seed",
         "entity",
+        "entity-batch",
         "entity-alias",
         "merge-entities",
         "retire-entity",
@@ -872,6 +904,28 @@ def parser() -> argparse.ArgumentParser:
     ledger_entity.add_argument("--identity")
     ledger_entity.add_argument("--recorded-at")
     ledger_entity.add_argument("--idempotency-key")
+    ledger_entity_batch = ledger_commands.add_parser(
+        "entity-batch", help="Create several entity rows in one CLI operation"
+    )
+    ledger_entity_batch.add_argument("--path", default=".")
+    ledger_entity_batch.add_argument("kind")
+    ledger_entity_batch.add_argument("--names-json", required=True)
+    ledger_entity_batch.add_argument("--role", choices=["entity", "observation", "relation"], default="entity")
+    ledger_entity_lookup = ledger_commands.add_parser(
+        "entity-lookup", help="Resolve ledger entity names to stable IDs"
+    )
+    ledger_entity_lookup.add_argument("--path", default=".")
+    ledger_entity_lookup.add_argument("--kind")
+    ledger_entity_lookup.add_argument("--name", action="append", default=[])
+    ledger_ref_batch = ledger_commands.add_parser(
+        "ref-batch",
+        help="Create or reuse referenced rows and record evidence-backed links in one CLI operation",
+    )
+    ledger_ref_batch.add_argument("--path", default=".")
+    ledger_ref_batch.add_argument("--kind", required=True)
+    ledger_ref_batch.add_argument("--question", required=True)
+    ledger_ref_batch.add_argument("--target-kind", required=True)
+    ledger_ref_batch.add_argument("--items-json", required=True)
     ledger_question = ledger_commands.add_parser("question", help="Define a typed question")
     ledger_question.add_argument("--path", default=".")
     ledger_question.add_argument("name")
@@ -922,6 +976,25 @@ def parser() -> argparse.ArgumentParser:
     )
     ledger_research.add_argument("--instructions", default="")
     ledger_research.add_argument("--allow-estimates", action="store_true")
+    ledger_discover = ledger_commands.add_parser(
+        "discover", help="Discover and create a broad provisional entity roster"
+    )
+    ledger_discover.add_argument("--path", default=".")
+    ledger_discover.add_argument("--kind", required=True)
+    ledger_discover.add_argument("--query", required=True)
+    ledger_discover.add_argument("--target", type=int, default=25)
+    ledger_discover.add_argument("--coverage", action="append", default=[])
+    ledger_discover.add_argument("--instructions", default="")
+    ledger_source_search = ledger_commands.add_parser(
+        "source-search",
+        help="Search and capture readable source material without interpreting claims",
+    )
+    ledger_source_search.add_argument("--path", default=".")
+    ledger_source_search.add_argument("--query", required=True)
+    ledger_source_search.add_argument("--max-sources", type=int, default=5)
+    ledger_source_search.add_argument("--include-domain", action="append", default=[])
+    ledger_source_search.add_argument("--url", action="append", default=[])
+    ledger_source_search.add_argument("--session")
     ledger_record.add_argument("--recorded-at")
     ledger_record.add_argument("--idempotency-key")
     ledger_evidence = ledger_mutation("evidence", "Capture immutable evidence")
@@ -1098,6 +1171,66 @@ def parser() -> argparse.ArgumentParser:
     ledger_report.add_argument("--retention", choices=["git", "git-lfs", "external"], default="git")
     ledger_reports = ledger_commands.add_parser("reports", help="List durable report records")
     ledger_reports.add_argument("--path", default=".")
+    ledger_document_add = ledger_commands.add_parser(
+        "document-add", help="Retain a source document for bounded extraction"
+    )
+    ledger_document_add.add_argument("--path", default=".")
+    ledger_document_add.add_argument("--input", required=True)
+    ledger_document_add.add_argument("--title")
+    ledger_document_add.add_argument("--type", dest="document_type", default="source-document")
+    ledger_document_add.add_argument("--mime-type")
+    ledger_document_add.add_argument("--source-url")
+    ledger_document_add.add_argument(
+        "--retention", choices=["git", "git-lfs"], default="git"
+    )
+    ledger_document_add.add_argument("--idempotency-key")
+    ledger_documents = ledger_commands.add_parser("documents", help="List retained documents")
+    ledger_documents.add_argument("--path", default=".")
+    ledger_pipeline_define = ledger_commands.add_parser(
+        "pipeline-define", help="Retain a versioned JSON extraction pipeline"
+    )
+    ledger_pipeline_define.add_argument("--path", default=".")
+    pipeline_definition_group = ledger_pipeline_define.add_mutually_exclusive_group(required=True)
+    pipeline_definition_group.add_argument("--input")
+    pipeline_definition_group.add_argument("--spec-json")
+    ledger_pipeline_define.add_argument(
+        "--retention", choices=["git", "git-lfs"], default="git"
+    )
+    ledger_pipeline_define.add_argument("--idempotency-key")
+    ledger_pipelines = ledger_commands.add_parser("pipelines", help="List extraction pipelines")
+    ledger_pipelines.add_argument("--path", default=".")
+    ledger_pipeline_prepare = ledger_commands.add_parser(
+        "pipeline-prepare", help="Convert and chunk one document for a pipeline"
+    )
+    ledger_pipeline_prepare.add_argument("--path", default=".")
+    ledger_pipeline_prepare.add_argument("--document", required=True)
+    ledger_pipeline_prepare.add_argument("--pipeline", required=True)
+    ledger_pipeline_prepare.add_argument(
+        "--retention", choices=["git", "git-lfs"], default="git"
+    )
+    ledger_pipeline_prepare.add_argument("--idempotency-key")
+    ledger_pipeline_chunk = ledger_commands.add_parser(
+        "pipeline-chunk", help="Read one bounded extraction chunk"
+    )
+    ledger_pipeline_chunk.add_argument("--path", default=".")
+    ledger_pipeline_chunk.add_argument("--run", required=True)
+    ledger_pipeline_chunk.add_argument("--index", type=int, required=True)
+    ledger_pipeline_apply = ledger_commands.add_parser(
+        "pipeline-apply", help="Validate chunk quotes and write structured findings"
+    )
+    ledger_pipeline_apply.add_argument("--path", default=".")
+    ledger_pipeline_apply.add_argument("--run", required=True)
+    findings_group = ledger_pipeline_apply.add_mutually_exclusive_group(required=True)
+    findings_group.add_argument("--findings-json")
+    findings_group.add_argument("--input")
+    ledger_pipeline_extract = ledger_commands.add_parser(
+        "pipeline-extract",
+        help="Extract and incrementally apply bounded chunks in parallel",
+    )
+    ledger_pipeline_extract.add_argument("--path", default=".")
+    ledger_pipeline_extract.add_argument("--run", required=True)
+    ledger_pipeline_extract.add_argument("--workers", type=int, default=4)
+    ledger_pipeline_extract.add_argument("--model")
     ledger_notebook = ledger_commands.add_parser(
         "notebook", help="Use the append-only research lab notebook"
     )
@@ -1256,6 +1389,15 @@ def parser() -> argparse.ArgumentParser:
     entity.add_argument("--attributes")
     entity.add_argument("--role", choices=["entity", "observation", "relation"], default="entity")
     entity.add_argument("--identity", help="JSON compound identity; makes creation idempotent")
+
+    entity_batch = commands.add_parser(
+        "entity-batch", help="Create several entity rows in one CLI operation"
+    )
+    entity_batch.add_argument("kind")
+    entity_batch.add_argument("--names-json", required=True, help="JSON array of row names")
+    entity_batch.add_argument(
+        "--role", choices=["entity", "observation", "relation"], default="entity"
+    )
 
     entity_alias = commands.add_parser("entity-alias", help="Add an alternate entity identity")
     entity_alias.add_argument("entity")
@@ -1757,6 +1899,9 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         if args.ledger_command in {
             "kind",
             "entity",
+            "entity-batch",
+            "entity-lookup",
+            "ref-batch",
             "question",
             "evidence",
             "assert",
@@ -1764,6 +1909,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "supersede-claim",
             "record",
             "research",
+            "discover",
+            "source-search",
             "matrix",
             "claims",
             "retire-entity",
@@ -1790,6 +1937,14 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "bundles",
             "report-record",
             "reports",
+            "document-add",
+            "documents",
+            "pipeline-define",
+            "pipelines",
+            "pipeline-prepare",
+            "pipeline-chunk",
+            "pipeline-apply",
+            "pipeline-extract",
             "notebook",
             "export",
         }:
@@ -1813,6 +1968,173 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     recorded_at=args.recorded_at,
                     idempotency_key=args.idempotency_key,
                 )
+            if args.ledger_command == "entity-batch":
+                names = json.loads(args.names_json)
+                if not isinstance(names, list) or not names or not all(
+                    isinstance(name, str) and name.strip() for name in names
+                ):
+                    raise EpiqError(
+                        "invalid_entity_names",
+                        "--names-json must be a non-empty JSON array of non-empty strings",
+                    )
+                if len(names) > 500:
+                    raise EpiqError("too_many_entities", "A batch may contain at most 500 names")
+                existing = {
+                    (item["kind"], item["name"].casefold()) for item in database.entities()
+                }
+                created = []
+                skipped = []
+                for name in dict.fromkeys(name.strip() for name in names):
+                    if (args.kind, name.casefold()) in existing:
+                        skipped.append(name)
+                        continue
+                    result = database.create_entity(args.kind, name, role=args.role, actor=args.actor)
+                    created.append({"name": name, "entity_id": result["entity_id"]})
+                    existing.add((args.kind, name.casefold()))
+                return {
+                    "kind": args.kind,
+                    "created_count": len(created),
+                    "skipped_count": len(skipped),
+                    "created": created,
+                    "skipped": skipped,
+                }
+            if args.ledger_command == "entity-lookup":
+                requested = {name.casefold() for name in args.name}
+                matches = [
+                    {
+                        "entity_id": item["entity_id"],
+                        "kind": item["kind"],
+                        "name": item["name"],
+                    }
+                    for item in database.entities(kind=args.kind)
+                    if not requested or item["name"].casefold() in requested
+                ]
+                return {
+                    "kind": args.kind,
+                    "requested_count": len(args.name),
+                    "match_count": len(matches),
+                    "entities": matches,
+                    "missing": [
+                        name
+                        for name in args.name
+                        if name.casefold() not in {item["name"].casefold() for item in matches}
+                    ],
+                }
+            if args.ledger_command == "ref-batch":
+                items = json.loads(args.items_json)
+                if not isinstance(items, list) or not items or len(items) > 100:
+                    raise EpiqError(
+                        "invalid_reference_batch",
+                        "--items-json must be a JSON array containing 1–100 items",
+                    )
+                question = next(
+                    (
+                        item
+                        for item in database.questions(kind=args.kind)
+                        if item["name"] == args.question or item["question_id"] == args.question
+                    ),
+                    None,
+                )
+                if question is None:
+                    raise EpiqError("missing_domain_object", f"Missing question: {args.question}")
+                if question["value_type"] != f"Ref[{args.target_kind}]":
+                    raise EpiqError(
+                        "invalid_reference_question",
+                        f"{question['name']} is {question['value_type']}, not Ref[{args.target_kind}]",
+                    )
+                subjects = {
+                    item["entity_id"]: item for item in database.entities(kind=args.kind)
+                }
+                subjects_by_name = {item["name"].casefold(): item for item in subjects.values()}
+                targets = {
+                    item["entity_id"]: item
+                    for item in database.entities(kind=args.target_kind)
+                }
+                targets_by_name = {item["name"].casefold(): item for item in targets.values()}
+                validated = []
+                for index, item in enumerate(items):
+                    if not isinstance(item, dict):
+                        raise EpiqError(
+                            "invalid_reference_batch", f"Item {index + 1} must be an object"
+                        )
+                    subject_key = str(item.get("subject") or "").strip()
+                    target_name = str(item.get("target") or "").strip()
+                    subject = subjects.get(subject_key) or subjects_by_name.get(
+                        subject_key.casefold()
+                    )
+                    if subject is None:
+                        raise EpiqError(
+                            "missing_domain_object", f"Missing {args.kind}: {subject_key}"
+                        )
+                    required = [
+                        "source_title", "url", "excerpt", "retrieved_at", "valid_from"
+                    ]
+                    missing = [key for key in required if not str(item.get(key) or "").strip()]
+                    if not target_name or missing:
+                        raise EpiqError(
+                            "invalid_reference_batch",
+                            f"Item {index + 1} needs target and {', '.join(required)}; "
+                            f"missing: {', '.join(missing) or 'target'}",
+                        )
+                    validated.append((subject, target_name, item))
+                created_targets = []
+                writes = []
+                for index, (subject, target_name, item) in enumerate(validated):
+                    target = targets.get(target_name) or targets_by_name.get(
+                        target_name.casefold()
+                    )
+                    if target is None:
+                        created = database.create_entity(
+                            args.target_kind,
+                            target_name,
+                            actor=args.actor,
+                            idempotency_key=(
+                                f"ref-batch:{args.target_kind}:"
+                                f"{hashlib.sha256(target_name.casefold().encode()).hexdigest()[:16]}"
+                            ),
+                        )
+                        target = {"entity_id": created["entity_id"], "name": target_name}
+                        targets[target["entity_id"]] = target
+                        targets_by_name[target_name.casefold()] = target
+                        created_targets.append(target)
+                    result = database.record(
+                        subject["entity_id"],
+                        question["question_id"],
+                        target["entity_id"],
+                        valid_from=str(item["valid_from"]),
+                        source_title=str(item["source_title"]),
+                        source_type=str(item.get("source_type") or "web"),
+                        url=str(item["url"]),
+                        retrieved_at=str(item["retrieved_at"]),
+                        excerpt=str(item["excerpt"]),
+                        published_at=item.get("published_at"),
+                        confidence=str(item.get("confidence") or "high"),
+                        temporal_basis=str(item.get("temporal_basis") or "observed"),
+                        actor=args.actor,
+                        idempotency_key=(
+                            f"ref-batch:{question['question_id']}:{subject['entity_id']}:"
+                            f"{target['entity_id']}:{index}"
+                        ),
+                    )
+                    writes.append(
+                        {
+                            "status": "answered",
+                            "subject_id": subject["entity_id"],
+                            "subject_name": subject["name"],
+                            "target_id": target["entity_id"],
+                            "target_name": target["name"],
+                            **result,
+                        }
+                    )
+                return {
+                    "kind": args.kind,
+                    "question": question["name"],
+                    "target_kind": args.target_kind,
+                    "created_target_count": len(created_targets),
+                    "created_targets": created_targets,
+                    "written": len(writes),
+                    "writes": writes,
+                }
             if args.ledger_command == "question":
                 return database.define_question(
                     args.name,
@@ -1824,6 +2146,248 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     recorded_at=args.recorded_at,
                     idempotency_key=args.idempotency_key,
                 )
+            if args.ledger_command == "discover":
+                if args.target < 1 or args.target > 500:
+                    raise EpiqError(
+                        "invalid_discovery_target", "Discovery target must be between 1 and 500"
+                    )
+                if args.kind not in database.kinds():
+                    raise EpiqError("missing_domain_object", f"Missing kind: {args.kind}")
+                coverage = args.coverage or ["broad roster and major subcategories"]
+                notebook = database.start_notebook(
+                    f"Discover {args.kind} candidates",
+                    scope={
+                        "kind": args.kind,
+                        "query": args.query,
+                        "target": args.target,
+                        "coverage": coverage,
+                        "instructions": args.instructions,
+                    },
+                    actor=args.actor,
+                )
+                notebook_id = str(notebook["session_id"])
+                database.append_notebook(
+                    notebook_id,
+                    "plan",
+                    {
+                        "big_picture_query": args.query,
+                        "target_count": args.target,
+                        "coverage_categories": coverage,
+                        "policy": "high-recall provisional discovery before deep verification",
+                    },
+                    actor=args.actor,
+                )
+
+                def record_discovery_bundle(request, bundle):
+                    database.append_notebook(
+                        notebook_id,
+                        "query",
+                        {
+                            "request_id": request.request_id,
+                            "coverage": request.entity_context.get("coverage"),
+                            "query": request.query,
+                            "sources": [
+                                {
+                                    "url": item.canonical_url,
+                                    "title": item.title,
+                                    "capture_method": item.capture_method,
+                                }
+                                for item in bundle.documents
+                            ],
+                            "attempts": [item.model_dump(mode="json") for item in bundle.attempts],
+                            "usage": bundle.usage,
+                        },
+                        actor=args.actor,
+                    )
+
+                per_category = max(5, (args.target + len(coverage) - 1) // len(coverage))
+                discovery_entities = [
+                    {
+                        "entity_id": f"discovery_{index}",
+                        "name": f"{args.query} — {category}",
+                        "coverage": category,
+                    }
+                    for index, category in enumerate(coverage)
+                ]
+                discovery_question = {
+                    "name": "candidate_roster",
+                    "value_type": f"Ref[{args.kind}]",
+                    "definition": {
+                        "cardinality": "many",
+                        "research_guidance": (
+                            "Favor recall. Return every distinctly named plausible candidate "
+                            "supported by the captured sources; incomplete metadata is acceptable."
+                        ),
+                        "source_request": {"max_sources": 20},
+                    },
+                    "task_mode": "discover",
+                    "instructions": (
+                        f"Build a provisional roster for: {args.query}. This coverage pass is "
+                        f"{', '.join(coverage)}. Return up to {per_category} distinctly named "
+                        f"{args.kind} candidates per pass. Broad directories and credible "
+                        "secondary lists are acceptable for discovery. Do not require official "
+                        "homepages or complete metadata. "
+                        + args.instructions
+                    ),
+                }
+                try:
+                    findings = configured_research_runner(
+                        on_bundle=record_discovery_bundle,
+                        job_id=notebook_id,
+                    )(args.kind, discovery_question, discovery_entities)
+                    candidates: list[dict[str, Any]] = []
+                    seen: set[str] = set()
+                    existing = {
+                        str(item["name"]).casefold(): item
+                        for item in database.entities(kind=args.kind)
+                    }
+                    for finding in findings:
+                        values = finding.get("value") if finding.get("status") == "answered" else []
+                        if not isinstance(values, list):
+                            values = [values]
+                        coverage_name = next(
+                            (
+                                item["coverage"]
+                                for item in discovery_entities
+                                if item["entity_id"] == finding.get("entity_id")
+                            ),
+                            "general",
+                        )
+                        discovered: list[dict[str, Any]] = []
+                        for value in values:
+                            fields = value if isinstance(value, dict) else {"name": value}
+                            name = str(fields.get("name") or "").strip()
+                            if not name or name.casefold() in seen:
+                                continue
+                            seen.add(name.casefold())
+                            current = existing.get(name.casefold())
+                            created = False
+                            if current is None:
+                                digest = hashlib.sha256(name.casefold().encode()).hexdigest()[:16]
+                                current = database.create_entity(
+                                    args.kind,
+                                    name,
+                                    actor=args.actor,
+                                    idempotency_key=f"discover:{args.kind}:{digest}",
+                                )
+                                existing[name.casefold()] = current
+                                created = True
+                            candidate = {
+                                "name": name,
+                                "entity_id": current["entity_id"],
+                                "coverage": coverage_name,
+                                "created": created,
+                                "source_url": finding.get("source_url"),
+                                "confidence": finding.get("confidence", "low"),
+                            }
+                            candidates.append(candidate)
+                            discovered.append(candidate)
+                        database.append_notebook(
+                            notebook_id,
+                            "finding",
+                            {
+                                "coverage": coverage_name,
+                                "status": finding.get("status"),
+                                "candidates": discovered,
+                                "source_url": finding.get("source_url"),
+                                "notes": finding.get("notes", ""),
+                            },
+                            actor=args.actor,
+                        )
+                    database.close_notebook(
+                        notebook_id,
+                        "completed",
+                        f"Discovered {len(candidates)} unique candidates across "
+                        f"{len(coverage)} coverage categories.",
+                        actor=args.actor,
+                    )
+                except Exception:
+                    try:
+                        database.close_notebook(
+                            notebook_id,
+                            "abandoned",
+                            "Discovery failed; retained queries and partial leads for recovery.",
+                            actor=args.actor,
+                        )
+                    except Exception:
+                        # Never replace the actionable discovery error with cleanup failure.
+                        pass
+                    raise
+                return {
+                    "kind": args.kind,
+                    "query": args.query,
+                    "target_count": args.target,
+                    "coverage_categories": coverage,
+                    "finding_count": len(findings),
+                    "failure_count": sum(item.get("status") == "error" for item in findings),
+                    "candidate_count": len(candidates),
+                    "created_count": sum(bool(item["created"]) for item in candidates),
+                    "shortfall": max(0, args.target - len(existing)),
+                    "notebook_session_id": notebook_id,
+                    "candidates": candidates,
+                }
+            if args.ledger_command == "source-search":
+                if args.max_sources < 1 or args.max_sources > 10:
+                    raise EpiqError(
+                        "invalid_source_limit", "--max-sources must be between 1 and 10"
+                    )
+                provider_name = os.environ.get("EPIQ_SOURCE_PROVIDER", "firecrawl")
+                from .source_providers import registry
+
+                bundle = registry.create(provider_name).collect(
+                    SourceRequest(
+                        request_id=(
+                            "source-search-"
+                            + hashlib.sha256(args.query.encode()).hexdigest()[:16]
+                        ),
+                        research_task_id="control-center-exploration",
+                        query=args.query,
+                        instructions=(
+                            "Return source material for an agent to inspect; do not infer claims."
+                        ),
+                        entity_context={},
+                        question_context={},
+                        max_sources=args.max_sources,
+                        urls=args.url,
+                        include_domains=args.include_domain,
+                        capture="markdown",
+                    )
+                )
+                sources = [
+                    {
+                        "title": document.title,
+                        "url": document.canonical_url,
+                        "excerpt": document.excerpt,
+                        "content": (document.markdown or document.excerpt)[:6000],
+                        "retrieved_at": document.retrieved_at.isoformat(),
+                    }
+                    for document in bundle.documents
+                ]
+                if args.session:
+                    database.append_notebook(
+                        args.session,
+                        "query",
+                        {
+                            "query": args.query,
+                            "sources": [
+                                {key: item[key] for key in ("title", "url", "excerpt")}
+                                for item in sources
+                            ],
+                            "usage": bundle.usage,
+                        },
+                        actor=args.actor,
+                    )
+                return {
+                    "query": args.query,
+                    "provider": provider_name,
+                    "source_count": len(sources),
+                    "sources": sources,
+                    "attempts": [
+                        attempt.model_dump(mode="json") for attempt in bundle.attempts
+                    ],
+                    "usage": bundle.usage,
+                    "notebook_session_id": args.session,
+                }
             if args.ledger_command == "research":
                 projection = database.matrix(args.kind)
                 question = next(
@@ -1917,10 +2481,12 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     )
 
                 findings = configured_research_runner(
-                    on_bundle=record_bundle, job_id=notebook_id
+                    on_bundle=record_bundle, job_id=notebook_id, stream=True
                 )(args.kind, research_question, targets)
                 target_ids = {item["entity_id"] for item in targets}
                 writes: list[dict[str, Any]] = []
+                finding_count = 0
+                failure_count = 0
                 today = datetime.now(UTC).date().isoformat()
 
                 def record_finding_value(
@@ -2073,6 +2639,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     }
 
                 for index, finding in enumerate(findings):
+                    finding_count += 1
+                    failure_count += finding.get("status") == "error"
                     entity_id = str(finding.get("entity_id", ""))
                     if entity_id not in target_ids:
                         continue
@@ -2117,7 +2685,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 database.close_notebook(
                     notebook_id,
                     "completed",
-                    f"Recorded {len(writes)} outcomes from {len(findings)} findings.",
+                    f"Recorded {len(writes)} outcomes from {finding_count} findings.",
                     actor=args.actor,
                 )
                 return {
@@ -2125,7 +2693,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     "question": question["name"],
                     "mode": args.mode,
                     "target_count": len(targets),
-                    "finding_count": len(findings),
+                    "finding_count": finding_count,
+                    "failure_count": failure_count,
                     "notebook_session_id": notebook_id,
                     "writes": writes,
                 }
@@ -2394,6 +2963,79 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             if args.ledger_command == "reports":
                 reports = database.reports()
                 return {"count": len(reports), "reports": reports}
+            if args.ledger_command == "document-add":
+                return add_document(
+                    database,
+                    args.input,
+                    title=args.title,
+                    document_type=args.document_type,
+                    mime_type=args.mime_type,
+                    source_url=args.source_url,
+                    retention=args.retention,
+                    actor=args.actor,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "documents":
+                documents = [
+                    item for item in database.reports() if item["report_type"] == "source-document"
+                ]
+                return {"count": len(documents), "documents": documents}
+            if args.ledger_command == "pipeline-define":
+                if args.spec_json:
+                    spec = json.loads(args.spec_json)
+                    if not isinstance(spec, dict):
+                        raise EpiqError("invalid_pipeline", "--spec-json must be an object")
+                    return define_pipeline_spec(
+                        database,
+                        spec,
+                        retention=args.retention,
+                        actor=args.actor,
+                        idempotency_key=args.idempotency_key,
+                    )
+                return define_pipeline(
+                    database,
+                    args.input,
+                    retention=args.retention,
+                    actor=args.actor,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "pipelines":
+                pipelines = [
+                    item
+                    for item in database.reports()
+                    if item["report_type"] in {"extraction-pipeline", "extraction-run"}
+                ]
+                return {"count": len(pipelines), "pipelines": pipelines}
+            if args.ledger_command == "pipeline-prepare":
+                return prepare_pipeline(
+                    database,
+                    args.document,
+                    args.pipeline,
+                    retention=args.retention,
+                    actor=args.actor,
+                    idempotency_key=args.idempotency_key,
+                )
+            if args.ledger_command == "pipeline-chunk":
+                return read_pipeline_chunk(database, args.run, args.index)
+            if args.ledger_command == "pipeline-apply":
+                findings = (
+                    _json_file(args.input)
+                    if args.input
+                    else json.loads(args.findings_json)
+                )
+                if isinstance(findings, dict):
+                    findings = findings.get("findings")
+                if not isinstance(findings, list):
+                    raise EpiqError("invalid_pipeline_finding", "Findings must be a JSON array")
+                return apply_pipeline_findings(database, args.run, findings, actor=args.actor)
+            if args.ledger_command == "pipeline-extract":
+                return extract_pipeline(
+                    database,
+                    args.run,
+                    PiChunkExtractor(model=args.model),
+                    workers=args.workers,
+                    actor=args.actor,
+                )
             if args.ledger_command == "notebook":
                 if args.notebook_command == "start":
                     return database.start_notebook(
