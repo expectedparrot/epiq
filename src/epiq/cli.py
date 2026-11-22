@@ -53,6 +53,30 @@ from .xlsx import write_xlsx
 CONFIG_PATH = Path(".epiq/config.json")
 DEFAULT_DB = Path(".epiq/epiq.sqlite")
 
+
+def configured_research_runner(*, on_bundle=None, job_id="source-research"):
+    """Select bounded source retrieval when explicitly configured."""
+    provider_name = os.environ.get("EPIQ_SOURCE_PROVIDER")
+    if not provider_name:
+        return OpenAIResearchRunner()
+    from .source_providers import registry
+    from .source_research import OpenAISourceReasoner, SourceResearchRunner
+
+    runner = SourceResearchRunner(
+        registry.create(provider_name),
+        OpenAISourceReasoner(),
+        concurrency=int(os.environ.get("EPIQ_SOURCE_CONCURRENCY", "3")),
+    )
+
+    def research(kind, question, entities):
+        return list(
+            runner.iter_findings(
+                kind, question, entities, on_bundle=on_bundle, job_id=job_id
+            )
+        )
+
+    return research
+
 _PROMOTED_LEDGER_COMMANDS = frozenset(
     {
         "init",
@@ -75,6 +99,7 @@ _PROMOTED_LEDGER_COMMANDS = frozenset(
         "supersede-claim",
         "record",
         "research",
+        "notebook",
         "matrix",
         "claims",
         "retire-entity",
@@ -1073,6 +1098,48 @@ def parser() -> argparse.ArgumentParser:
     ledger_report.add_argument("--retention", choices=["git", "git-lfs", "external"], default="git")
     ledger_reports = ledger_commands.add_parser("reports", help="List durable report records")
     ledger_reports.add_argument("--path", default=".")
+    ledger_notebook = ledger_commands.add_parser(
+        "notebook", help="Use the append-only research lab notebook"
+    )
+    ledger_notebook.add_argument("--path", default=".")
+    notebook_commands = ledger_notebook.add_subparsers(
+        dest="notebook_command", required=True
+    )
+    notebook_start = notebook_commands.add_parser("start", help="Start a research session")
+    notebook_start.add_argument("--objective", required=True)
+    notebook_start.add_argument("--scope")
+    notebook_start.add_argument("--session-id")
+    notebook_start.add_argument("--recorded-at")
+    notebook_start.add_argument("--idempotency-key")
+    notebook_add = notebook_commands.add_parser("add", help="Append a typed notebook entry")
+    notebook_add.add_argument("session_id")
+    notebook_add.add_argument(
+        "--type",
+        dest="entry_type",
+        choices=[
+            "plan", "query", "lead", "note", "source_candidate", "rejection",
+            "follow_up", "finding", "checkpoint",
+        ],
+        required=True,
+    )
+    notebook_add.add_argument("--content", required=True)
+    notebook_add.add_argument("--entry-id")
+    notebook_add.add_argument("--recorded-at")
+    notebook_add.add_argument("--idempotency-key")
+    notebook_list = notebook_commands.add_parser("list", help="Read notebook sessions")
+    notebook_list.add_argument("--session-id")
+    notebook_close = notebook_commands.add_parser("close", help="Close or pause a session")
+    notebook_close.add_argument("session_id")
+    notebook_close.add_argument(
+        "--status", choices=["paused", "completed", "abandoned"], required=True
+    )
+    notebook_close.add_argument("--summary", required=True)
+    notebook_close.add_argument("--recorded-at")
+    notebook_close.add_argument("--idempotency-key")
+    notebook_alias = commands.add_parser(
+        "notebook", help="Use the ledger research notebook in a selected project"
+    )
+    notebook_alias.add_argument("notebook_args", nargs=argparse.REMAINDER)
     ledger_export = ledger_mutation("export", "Export ledger-backed data or native EDSL objects")
     ledger_export.add_argument(
         "--format",
@@ -1609,6 +1676,12 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         return docs_list_data() if args.docs_command == "list" else docs_show_data(args.name)
     if args.command == "agent" and args.agent_command == "schema":
         return schema_data(args.name)
+    if args.command == "notebook":
+        raise EpiqError(
+            "project_required",
+            "The lab notebook belongs to a Git-ledger project",
+            "Use --project PATH, EPIQ_PROJECT, or run inside a directory with epiq.toml.",
+        )
     if args.command == "ledger":
         root = Path(args.path).expanduser().resolve()
         if args.ledger_command == "remote" and args.remote_command == "clone":
@@ -1717,6 +1790,7 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             "bundles",
             "report-record",
             "reports",
+            "notebook",
             "export",
         }:
             database = LedgerDatabase(root)
@@ -1797,7 +1871,54 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     "instructions": args.instructions,
                     "allow_estimates": args.allow_estimates,
                 }
-                findings = OpenAIResearchRunner()(args.kind, research_question, targets)
+                notebook = database.start_notebook(
+                    f"Research {args.kind}.{question['name']}",
+                    scope={
+                        "kind": args.kind,
+                        "question": question["name"],
+                        "mode": args.mode,
+                        "target_entity_ids": [item["entity_id"] for item in targets],
+                        "instructions": args.instructions,
+                    },
+                    actor=args.actor,
+                )
+                notebook_id = str(notebook["session_id"])
+                database.append_notebook(
+                    notebook_id,
+                    "plan",
+                    {
+                        "target_count": len(targets),
+                        "target_names": [item["name"] for item in targets],
+                        "allow_estimates": args.allow_estimates,
+                    },
+                    actor=args.actor,
+                )
+
+                def record_bundle(request, bundle):
+                    database.append_notebook(
+                        notebook_id,
+                        "query",
+                        {
+                            "request_id": request.request_id,
+                            "entity_id": request.entity_context.get("entity_id"),
+                            "query": request.query,
+                            "sources": [
+                                {
+                                    "url": item.canonical_url,
+                                    "title": item.title,
+                                    "capture_method": item.capture_method,
+                                }
+                                for item in bundle.documents
+                            ],
+                            "attempts": [item.model_dump(mode="json") for item in bundle.attempts],
+                            "usage": bundle.usage,
+                        },
+                        actor=args.actor,
+                    )
+
+                findings = configured_research_runner(
+                    on_bundle=record_bundle, job_id=notebook_id
+                )(args.kind, research_question, targets)
                 target_ids = {item["entity_id"] for item in targets}
                 writes: list[dict[str, Any]] = []
                 today = datetime.now(UTC).date().isoformat()
@@ -1862,6 +1983,10 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                         str(item["name"]).casefold(): item
                         for item in database.entities(kind=related_kind)
                     }
+                    existing_by_id = {
+                        str(item["entity_id"]): item
+                        for item in database.entities(kind=related_kind)
+                    }
                     related_questions = {
                         str(item["name"]): item for item in database.questions(kind=related_kind)
                     }
@@ -1869,13 +1994,25 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     related_writes: list[dict[str, Any]] = []
                     for related_index, candidate in enumerate(supplied):
                         fields = candidate if isinstance(candidate, dict) else {"name": candidate}
-                        name = str(fields.get("name") or "").strip()
+                        supplied_id = str(fields.get("entity_id") or "").strip()
+                        name = str(
+                            fields.get("name")
+                            or fields.get("title")
+                            or fields.get("headline")
+                            or fields.get("article_title")
+                            or fields.get("article_url")
+                            or fields.get("url")
+                            or fields.get("source_url")
+                            or ""
+                        ).strip()
+                        if supplied_id in existing_by_id:
+                            name = str(existing_by_id[supplied_id]["name"])
                         if not name:
                             raise EpiqError(
                                 "invalid_reference_value",
                                 f"Research returned a {value_type} value without a name",
                             )
-                        related = existing.get(name.casefold())
+                        related = existing_by_id.get(supplied_id) or existing.get(name.casefold())
                         if related is None:
                             created = database.create_entity(
                                 related_kind,
@@ -1939,6 +2076,18 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     entity_id = str(finding.get("entity_id", ""))
                     if entity_id not in target_ids:
                         continue
+                    database.append_notebook(
+                        notebook_id,
+                        "finding",
+                        {
+                            "entity_id": entity_id,
+                            "status": finding.get("status"),
+                            "value": finding.get("value"),
+                            "source_url": finding.get("source_url"),
+                            "notes": finding.get("notes", ""),
+                        },
+                        actor=args.actor,
+                    )
                     finding_digest = hashlib.sha256(
                         json.dumps(
                             finding,
@@ -1965,12 +2114,19 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     else:
                         continue
                     writes.append({"entity_id": entity_id, "status": finding["status"], **result})
+                database.close_notebook(
+                    notebook_id,
+                    "completed",
+                    f"Recorded {len(writes)} outcomes from {len(findings)} findings.",
+                    actor=args.actor,
+                )
                 return {
                     "kind": args.kind,
                     "question": question["name"],
                     "mode": args.mode,
                     "target_count": len(targets),
                     "finding_count": len(findings),
+                    "notebook_session_id": notebook_id,
                     "writes": writes,
                 }
             if args.ledger_command == "record":
@@ -2238,6 +2394,37 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
             if args.ledger_command == "reports":
                 reports = database.reports()
                 return {"count": len(reports), "reports": reports}
+            if args.ledger_command == "notebook":
+                if args.notebook_command == "start":
+                    return database.start_notebook(
+                        args.objective,
+                        scope=_attributes(args.scope),
+                        session_id=args.session_id,
+                        actor=args.actor,
+                        recorded_at=args.recorded_at,
+                        idempotency_key=args.idempotency_key,
+                    )
+                if args.notebook_command == "add":
+                    return database.append_notebook(
+                        args.session_id,
+                        args.entry_type,
+                        _attributes(args.content),
+                        entry_id=args.entry_id,
+                        actor=args.actor,
+                        recorded_at=args.recorded_at,
+                        idempotency_key=args.idempotency_key,
+                    )
+                if args.notebook_command == "close":
+                    return database.close_notebook(
+                        args.session_id,
+                        args.status,
+                        args.summary,
+                        actor=args.actor,
+                        recorded_at=args.recorded_at,
+                        idempotency_key=args.idempotency_key,
+                    )
+                notebooks = database.notebooks(session_id=args.session_id)
+                return {"count": len(notebooks), "notebooks": notebooks}
             if args.ledger_command == "export":
                 output = export_ledger(
                     database,

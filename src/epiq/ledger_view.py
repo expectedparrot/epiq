@@ -392,6 +392,44 @@ class LedgerView:
             for row in rows
         ]
 
+    def notebooks(self, *, session_id: str | None = None) -> list[dict[str, Any]]:
+        query = """SELECT session_id,objective,scope_json,status,summary,
+                          started_transaction_id,closed_transaction_id
+                   FROM projected_notebook_sessions"""
+        parameters: tuple[str, ...] = ()
+        if session_id is not None:
+            query += " WHERE session_id=?"
+            parameters = (session_id,)
+        query += " ORDER BY session_id"
+        with self._connect() as connection:
+            sessions = connection.execute(query, parameters).fetchall()
+            entries: dict[str, list[dict[str, Any]]] = {}
+            for row in connection.execute(
+                """SELECT entry_id,session_id,entry_type,content_json,transaction_id
+                   FROM projected_notebook_entries ORDER BY session_id,entry_id"""
+            ):
+                entries.setdefault(str(row["session_id"]), []).append(
+                    {
+                        "entry_id": row["entry_id"],
+                        "entry_type": row["entry_type"],
+                        "content": _decode(row["content_json"]),
+                        "transaction_id": row["transaction_id"],
+                    }
+                )
+        return [
+            {
+                "session_id": row["session_id"],
+                "objective": row["objective"],
+                "scope": _decode(row["scope_json"]),
+                "status": row["status"],
+                "summary": row["summary"],
+                "started_transaction_id": row["started_transaction_id"],
+                "closed_transaction_id": row["closed_transaction_id"],
+                "entries": entries.get(str(row["session_id"]), []),
+            }
+            for row in sessions
+        ]
+
     def reports(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(

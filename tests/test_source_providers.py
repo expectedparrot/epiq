@@ -1,6 +1,7 @@
 import json
 import threading
 from datetime import UTC, datetime
+from io import BytesIO
 
 import pytest
 from pydantic import ValidationError
@@ -20,7 +21,12 @@ from epiq.source_providers import (
     URLSourceProvider,
     normalize_bundle,
 )
-from epiq.source_research import SourceResearchRunner, validate_finding
+from epiq.source_research import (
+    OpenAISourceReasoner,
+    SourceResearchRunner,
+    reanchor_quote,
+    validate_finding,
+)
 
 
 def request(**kwargs):
@@ -75,6 +81,71 @@ def test_contract_round_trip_limits_and_hashes():
         SourceBundle(
             request_id="req", provider="fixture", documents=[document(), document()], attempts=[]
         )
+
+
+def test_openai_source_reasoner_is_capture_bounded_and_tool_free(monkeypatch):
+    finding = {
+        "entity_id": "a",
+        "status": "answered",
+        "value_json": "7",
+        "source_refs": ["s"],
+        "support_quotes": {"s": "Population 7."},
+        "confidence": "high",
+        "observed_as_of": None,
+        "notes": "",
+    }
+    seen = {}
+
+    def urlopen(http_request, timeout):
+        seen["payload"] = json.loads(http_request.data)
+        return BytesIO(
+            json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": json.dumps(finding)}
+                            ],
+                        }
+                    ]
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr("epiq.source_research.urllib.request.urlopen", urlopen)
+    result = OpenAISourceReasoner(api_key="test", model="test-model")(request(), bundle())
+
+    assert result == finding
+    assert seen["payload"]["model"] == "test-model"
+    assert "tools" not in seen["payload"]
+    assert seen["payload"]["text"]["format"]["strict"] is False
+    assert "Population 7. More text." in seen["payload"]["input"]
+
+
+def test_support_quote_reanchors_whitespace_but_rejects_paraphrases():
+    markdown = "Population\n\n7. More text."
+    assert reanchor_quote(markdown, "Population 7.") == "Population\n\n7."
+    assert reanchor_quote(markdown, "The population is seven.") is None
+
+    captured = validate_finding(
+        {
+            "entity_id": "a",
+            "status": "answered",
+            "value_json": "7",
+            "source_refs": ["s"],
+            "support_quotes": {"s": "Population 7."},
+        },
+        request(),
+        bundle(
+            docs=[
+                document().model_copy(
+                    update={"excerpt": "Population\n\n7.", "markdown": markdown}
+                )
+            ]
+        ),
+    )
+    assert captured["excerpt"] == "Population\n\n7."
 
 
 def test_normalization_excludes_urls_and_duplicate_content():

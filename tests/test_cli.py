@@ -116,6 +116,52 @@ def test_ledger_research_is_one_json_enveloped_cli_operation(
     assert database.matrix("Company")["cells"][entity_id]
 
 
+def test_ledger_notebook_round_trip_is_append_only(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "project"
+    LedgerDatabase(root, create=True, name="Lab notebook")
+
+    main([
+        "--project", str(root), "notebook", "start",
+        "--objective", "Map the market before targeted research",
+        "--scope", '{"kind":"Company","question":"funding"}',
+        "--idempotency-key", "notebook-start",
+    ])
+    session_id = _data(capsys)["session_id"]
+
+    main([
+        "--project", str(root), "notebook", "add", session_id,
+        "--type", "lead",
+        "--content", '{"name":"Acme","url":"https://example.test/acme","next":"verify funding"}',
+        "--idempotency-key", "notebook-lead",
+    ])
+    entry_id = _data(capsys)["entry_id"]
+
+    main(["--project", str(root), "notebook", "list", "--session-id", session_id])
+    notebook = _data(capsys)["notebooks"][0]
+    assert notebook["status"] == "active"
+    assert notebook["scope"] == {"kind": "Company", "question": "funding"}
+    assert notebook["entries"] == [
+        {
+            "entry_id": entry_id,
+            "entry_type": "lead",
+            "content": {
+                "name": "Acme",
+                "url": "https://example.test/acme",
+                "next": "verify funding",
+            },
+            "transaction_id": notebook["entries"][0]["transaction_id"],
+        }
+    ]
+
+    main([
+        "--project", str(root), "notebook", "close", session_id,
+        "--status", "completed", "--summary", "Lead verified",
+        "--idempotency-key", "notebook-close",
+    ])
+    _data(capsys)
+    assert LedgerDatabase(root).notebooks(session_id=session_id)[0]["status"] == "completed"
+
+
 def test_ledger_research_resolves_reference_objects_into_related_rows(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
@@ -136,7 +182,7 @@ def test_ledger_research_resolves_reference_objects_into_related_rows(
                     "entity_id": entities[0]["entity_id"],
                     "status": "answered",
                     "value": {
-                        "name": "BA in Mathematics — University of London (1835)",
+                        "title": "BA in Mathematics — University of London (1835)",
                         "graduation_year": 1835,
                     },
                     "source_title": "University biography",

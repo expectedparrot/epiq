@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -109,6 +110,29 @@ def test_uninitialized_ledger_web_uses_frontend_compatible_error(tmp_path: Path)
     response = client.get("/api/project")
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "project_not_found"
+
+
+def test_ledger_web_exposes_read_only_lab_notebooks(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Notebook API")
+    session = database.start_notebook(
+        "Find credible competitors", scope={"kind": "Company"}
+    )["session_id"]
+    database.append_notebook(
+        session, "lead", {"name": "Acme", "next": "verify the operator"}
+    )
+    client = TestClient(create_ledger_app(root))
+
+    listed = client.get("/api/notebooks")
+    assert listed.status_code == 200
+    assert listed.json()[0]["session_id"] == session
+    assert listed.json()[0]["entries"][0]["entry_type"] == "lead"
+    assert client.get(f"/api/notebooks/{session}").json()["objective"] == (
+        "Find credible competitors"
+    )
+    missing = client.get("/api/notebooks/nbk_missing")
+    assert missing.status_code == 400
+    assert missing.json()["error"]["code"] == "notebook_not_found"
 
 
 def test_frontend_shell_is_not_cached_across_local_rebuilds(tmp_path: Path) -> None:
@@ -588,6 +612,12 @@ def test_workspace_agent_receives_cell_coverage(tmp_path: Path) -> None:
         "Missing birth year",
         "No reliable source found",
     )
+    notebook = database.start_notebook(
+        "Find birth years", scope={"kind": "Faculty"}
+    )["session_id"]
+    database.append_notebook(
+        notebook, "lead", {"name": "Missing", "next": "search an archive"}
+    )
     client = TestClient(create_ledger_app(root, workspace_agent_runner=capture_context))
     job_id = client.post(
         "/api/workspace-agent/jobs", json={"message": "What remains?"}
@@ -605,6 +635,67 @@ def test_workspace_agent_receives_cell_coverage(tmp_path: Path) -> None:
         "not_found": 1,
         "unasked": 0,
     }
+    assert observed["lab_notebooks"][0]["entries"][0]["content"]["next"] == (
+        "search an archive"
+    )
+
+
+def test_failed_cli_research_is_passed_to_pi_for_bounded_recovery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    database = LedgerDatabase(root, create=True, name="Recovery")
+    database.define_kind("Company")
+    database.create_entity("Company", "Acme")
+    database.define_question("website", "Company", "URL")
+    goals = []
+
+    def planner(goal, _context, progress=None):
+        goals.append(goal)
+        if len(goals) == 1:
+            return {
+                "summary": "Research the website.",
+                "entity_kinds": [],
+                "entities": [],
+                "questions": [],
+                "research": [{
+                    "kind": "Company", "question": "website",
+                    "entity_names": ["Acme"], "instructions": "Use the official site.",
+                }],
+            }
+        return {
+            "summary": "Stop after diagnosing the invalid value shape.",
+            "entity_kinds": [], "entities": [], "questions": [], "research": [],
+        }
+
+    def failed_command(*_args, **_kwargs):
+        return SimpleNamespace(
+            returncode=2,
+            stdout='{"status":"error","errors":[{"code":"invalid_reference_value",'
+            '"message":"missing name"}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("epiq.ledger_web.subprocess.run", failed_command)
+    client = TestClient(create_ledger_app(root, workspace_agent_runner=planner))
+    parent_id = client.post(
+        "/api/workspace-agent/jobs",
+        json={"message": "Find Acme's website", "auto_approve": True},
+    ).json()["job_id"]
+
+    for _ in range(300):
+        jobs = client.get("/api/research/jobs").json()
+        parent = next(item for item in jobs if item["job_id"] == parent_id)
+        children = [item for item in jobs if item.get("recovery_of_job_id") == parent_id]
+        if parent["status"] == "failed" and children and children[0]["status"] == "completed":
+            break
+        time.sleep(0.01)
+
+    assert parent["status"] == "failed"
+    assert len(children) == 1
+    assert children[0]["recovery_depth"] == 1
+    assert "invalid_reference_value" in goals[1]
+    assert "Do not repeat the same command unchanged" in goals[1]
 
 
 def test_workspace_plan_preserves_research_rows_beyond_seed_limit(tmp_path: Path) -> None:

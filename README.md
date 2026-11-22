@@ -747,6 +747,28 @@ See [Source providers and provenance](docs/source-providers-and-provenance.md) f
 retention controls, provider injection, and the versioned contracts. The default research backend
 remains available when `EPIQ_SOURCE_PROVIDER` is unset.
 
+### Research lab notebook
+
+Every ledger-native `epiq research` command creates an append-only lab notebook session. The
+notebook separates informal discovery work—plans, queries, leads, candidate sources, rejections,
+and follow-ups—from evidence-backed claims. Only captured evidence can support a claim, while the
+notebook preserves how the researcher got there and leaves interrupted sessions resumable.
+
+```bash
+epiq --project . notebook start --objective "Map likely competitors" \
+  --scope '{"kind":"Company"}'
+epiq --project . notebook add nbk_... --type lead \
+  --content '{"name":"Acme","next":"verify its operator and funding"}'
+epiq --project . notebook list --session-id nbk_...
+epiq --project . notebook close nbk_... --status completed \
+  --summary "Verified the strongest leads"
+```
+
+Notebook entries are immutable ledger operations. SQLite only projects their current session view.
+The FastAPI app exposes read-only notebook projections at `GET /api/notebooks` and
+`GET /api/notebooks/{session_id}`; both appear in its generated OpenAPI documentation. Notebook
+writes continue to flow through the Epiq CLI so the Control Center can display the exact commands.
+
 ### Repeated measurements and actor-aware reads
 
 Model each repeated measurement as an `observation` entity. Its compound identity should contain

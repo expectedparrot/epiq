@@ -360,6 +360,13 @@ def create_ledger_app(
             "project": current.project(),
             "storage": "git-ledger",
             "tables": [table_context(kind) for kind in current.kinds()],
+            "lab_notebooks": [
+                {
+                    **{key: value for key, value in notebook.items() if key != "entries"},
+                    "entries": notebook.get("entries", [])[-12:],
+                }
+                for notebook in current.notebooks()[-5:]
+            ],
         }
 
     def update_job(job_id: str, **changes: Any) -> None:
@@ -869,6 +876,64 @@ def create_ledger_app(
                 app.state.research_jobs[job_id]["messages"].append({"at": now(), "message": text})
 
         update_job(job_id, status="running", started_at=now())
+
+        def queue_pi_recovery(argv: list[str], error: Exception) -> str | None:
+            with app.state.research_lock:
+                parent = app.state.research_jobs[job_id]
+                depth = int(parent.get("recovery_depth", 0))
+                if depth >= 2:
+                    parent["messages"].append(
+                        {"at": now(), "message": "Recovery limit reached; human review required"}
+                    )
+                    return None
+                recovery_id = f"recovery_{uuid.uuid4().hex[:16]}"
+                command = " ".join(json.dumps(part) for part in argv)
+                recovery_message = (
+                    "A previous Epiq CLI command failed. Inspect the current schema and the active "
+                    "lab notebook, classify the failure, and propose the safest useful next step. "
+                    "Do not repeat the same command unchanged. You may repair a value shape, "
+                    "refine research instructions, evolve the schema, run a more targeted search, "
+                    "reject a "
+                    "bad lead, or stop when human judgment is required. Preserve captured evidence "
+                    "and existing claims.\n\n"
+                    f"Failed command: {command}\n"
+                    f"Structured failure: {error}\n"
+                    "Original objective: "
+                    f"{parent.get('user_message', parent.get('instructions', ''))}"
+                )
+                recovery = {
+                    "job_id": recovery_id,
+                    "job_type": "workspace_agent",
+                    "entity_kind": "Workspace",
+                    "question_id": "",
+                    "mode": "workspace_agent",
+                    "instructions": recovery_message,
+                    "user_message": "Recover from failed research command",
+                    "auto_approve": bool(parent.get("auto_approve")),
+                    "recovery_depth": depth + 1,
+                    "recovery_of_job_id": job_id,
+                    "failed_command": argv,
+                    "status": "queued",
+                    "total": 0,
+                    "completed": 0,
+                    "target_entity_ids": [],
+                    "created_at": now(),
+                    "error": None,
+                    "messages": [{"at": now(), "message": "Pi recovery queued"}],
+                }
+                app.state.research_jobs[recovery_id] = recovery
+                parent.setdefault("child_job_ids", []).append(recovery_id)
+                parent["messages"].append(
+                    {"at": now(), "message": f"Passed failure to Pi as {recovery_id}"}
+                )
+            threading.Thread(
+                target=plan_workspace,
+                args=(recovery_id, recovery_message),
+                daemon=True,
+                name=f"epiq-{recovery_id}",
+            ).start()
+            return recovery_id
+
         try:
             current = database()
             with app.state.research_lock:
@@ -905,7 +970,19 @@ def create_ledger_app(
                         f"Researching {question_name}"
                         + (f" across {named_targets} rows" if named_targets else "")
                     )
-                    result = execute_cli(argv)
+                    try:
+                        result = execute_cli(argv)
+                    except Exception as error:
+                        recovery_id = queue_pi_recovery(argv, error)
+                        if recovery_id is None:
+                            raise
+                        update_job(
+                            job_id,
+                            status="failed",
+                            error=f"{error} · Pi recovery queued as {recovery_id}",
+                            finished_at=now(),
+                        )
+                        return
                     data = result.get("data", {})
                     writes = data.get("writes", []) if isinstance(data, dict) else []
                     target_count = int(data.get("target_count", len(writes)))
@@ -1796,6 +1873,19 @@ def create_ledger_app(
     def research_jobs() -> list[dict[str, Any]]:
         with app.state.research_lock:
             return list(app.state.research_jobs.values())
+
+    @app.get("/api/notebooks")
+    def notebooks() -> list[dict[str, Any]]:
+        return database().notebooks()
+
+    @app.get("/api/notebooks/{session_id}")
+    def notebook(session_id: str) -> dict[str, Any]:
+        matches = database().notebooks(session_id=session_id)
+        if not matches:
+            raise EpiqError(
+                "notebook_not_found", f"Research notebook session not found: {session_id}"
+            )
+        return matches[0]
 
     @app.get("/api/curator")
     def curator_status() -> dict[str, Any] | None:

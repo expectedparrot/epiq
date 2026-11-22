@@ -13,6 +13,7 @@ import {
   DiagnosticCell,
   DiagnosticResult,
   Matrix,
+  NotebookSession,
   Overview,
   ProjectInfo,
   QuestionChallenge,
@@ -337,6 +338,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [needsInit, setNeedsInit] = useState(false);
   const [jobs, setJobs] = useState<ResearchJob[]>([]);
+  const [notebooks, setNotebooks] = useState<NotebookSession[]>([]);
   const [curator, setCurator] = useState<CuratorState | null>(null);
   const [researchQuestion, setResearchQuestion] = useState<Question | null>(
     null,
@@ -609,6 +611,11 @@ export default function App() {
           if (progressChanged && next.some((job) => job.job_type === "workspace_agent"))
             void loadOverview();
           setJobs(next);
+          try {
+            setNotebooks(await api<NotebookSession[]>("/api/notebooks"));
+          } catch {
+            /* Notebook history is supplementary to the conversation. */
+          }
         }
       } catch {
         /* The table remains usable if job polling is unavailable. */
@@ -2650,6 +2657,7 @@ export default function App() {
         {rightPane === "agent" && (
           <WorkspaceAgentPanel
             jobs={jobs}
+            notebooks={notebooks}
             curator={curator}
             draft={chatDraft}
             onDraftConsumed={() => setChatDraft("")}
@@ -5051,6 +5059,7 @@ function ReviewPanel({
 
 function WorkspaceAgentPanel({
   jobs,
+  notebooks,
   curator,
   draft,
   onDraftConsumed,
@@ -5064,6 +5073,7 @@ function WorkspaceAgentPanel({
   onAddCuratorBudget,
 }: {
   jobs: ResearchJob[];
+  notebooks: NotebookSession[];
   curator: CuratorState | null;
   draft: string;
   onDraftConsumed: () => void;
@@ -5173,6 +5183,31 @@ function WorkspaceAgentPanel({
         <button className="close" onClick={onClose}>×</button>
         <h2>Control Center</h2>
       </div>
+      <details className="lab-notebooks">
+          <summary>Lab notebook · {notebooks.length} session{notebooks.length === 1 ? "" : "s"}</summary>
+          {notebooks.length === 0 && (
+            <p className="notebook-empty">
+              No sessions yet. The next research command will record its plan, searches,
+              leads, rejected sources, and findings here.
+            </p>
+          )}
+          {[...notebooks].reverse().slice(0, 8).map((notebook) => (
+            <details key={notebook.session_id}>
+              <summary>
+                <span className={`job-status ${notebook.status}`}>{notebook.status}</span>
+                {notebook.objective}
+                <small>{notebook.entries.length} entries</small>
+              </summary>
+              {notebook.entries.map((entry) => (
+                <div className="notebook-entry" key={entry.entry_id}>
+                  <b>{entry.entry_type.replace("_", " ")}</b>
+                  <pre><code>{JSON.stringify(entry.content, null, 2)}</code></pre>
+                </div>
+              ))}
+              {notebook.summary && <p>{notebook.summary}</p>}
+            </details>
+          ))}
+      </details>
       <div
         className="agent-conversation"
         ref={listRef}

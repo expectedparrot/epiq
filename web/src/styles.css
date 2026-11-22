@@ -2573,11 +2573,32 @@ button:hover {
   margin-left: auto;
   white-space: nowrap;
 }
+.lab-notebooks {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px;
+}
+.lab-notebooks > summary { color: var(--muted); cursor: pointer; font-size: 11px; }
+.lab-notebooks > details { margin-top: 8px; }
+.lab-notebooks > details > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 7px;
+  font-size: 11px;
+}
+.lab-notebooks > details > summary small { color: var(--muted); margin-left: auto; }
+.notebook-empty { color: var(--muted); font-size: 11px; margin: 9px 0 2px; }
+.notebook-entry { border-left: 2px solid var(--line); margin: 8px 0; padding-left: 9px; }
+.notebook-entry b { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+.notebook-entry pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }
 .agent-conversation {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   overflow-y: auto;
   padding: 20px;
 }
+.curator-exchange { order: -1; }
 .agent-empty {
   margin: 8px 0;
   color: var(--muted);

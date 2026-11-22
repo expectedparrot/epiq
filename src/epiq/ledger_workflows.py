@@ -96,6 +96,28 @@ CREATE TABLE projected_reports (
     transaction_id TEXT NOT NULL REFERENCES ledger_transactions(transaction_id),
     operation_id TEXT NOT NULL UNIQUE
 );
+
+CREATE TABLE projected_notebook_sessions (
+    session_id TEXT PRIMARY KEY,
+    objective TEXT NOT NULL,
+    scope_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active','paused','completed','abandoned')),
+    summary TEXT,
+    started_transaction_id TEXT NOT NULL REFERENCES ledger_transactions(transaction_id),
+    closed_transaction_id TEXT REFERENCES ledger_transactions(transaction_id),
+    operation_id TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE projected_notebook_entries (
+    entry_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES projected_notebook_sessions(session_id),
+    entry_type TEXT NOT NULL CHECK(entry_type IN (
+        'plan','query','lead','note','source_candidate','rejection','follow_up','finding','checkpoint'
+    )),
+    content_json TEXT NOT NULL,
+    transaction_id TEXT NOT NULL REFERENCES ledger_transactions(transaction_id),
+    operation_id TEXT NOT NULL UNIQUE
+);
 """
 
 _SPECS: dict[str, tuple[set[str], set[str]]] = {
@@ -136,6 +158,9 @@ _SPECS: dict[str, tuple[set[str], set[str]]] = {
         {"report_id", "report_type", "parameters", "input_transaction_ids", "content_digest"},
         set(),
     ),
+    "notebook.session_start": ({"session_id", "objective", "scope"}, set()),
+    "notebook.entry_append": ({"entry_id", "session_id", "entry_type", "content"}, set()),
+    "notebook.session_close": ({"session_id", "status", "summary"}, set()),
 }
 
 
@@ -181,6 +206,8 @@ def validate_payload(operation_type: str, payload: dict[str, Any]) -> None:
         "request",
         "bundle",
         "input_transaction_ids",
+        "scope",
+        "content",
     }
     for key in required - non_strings:
         _string(payload, key)
@@ -226,6 +253,20 @@ def validate_payload(operation_type: str, payload: dict[str, Any]) -> None:
         _string_list(payload, "input_transaction_ids")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", payload["content_digest"]):
             raise EpiqError("invalid_operation_payload", "content_digest must be SHA-256")
+    elif operation_type == "notebook.session_start":
+        if not isinstance(payload["scope"], dict):
+            raise EpiqError("invalid_operation_payload", "notebook scope must be an object")
+    elif operation_type == "notebook.entry_append":
+        if payload["entry_type"] not in {
+            "plan", "query", "lead", "note", "source_candidate", "rejection",
+            "follow_up", "finding", "checkpoint",
+        }:
+            raise EpiqError("invalid_operation_payload", "Unknown notebook entry type")
+        if not isinstance(payload["content"], dict):
+            raise EpiqError("invalid_operation_payload", "notebook content must be an object")
+    elif operation_type == "notebook.session_close":
+        if payload["status"] not in {"paused", "completed", "abandoned"}:
+            raise EpiqError("invalid_operation_payload", "Unknown notebook session status")
 
 
 def apply(
@@ -479,6 +520,44 @@ def _report(
     )
 
 
+def _notebook_start(connection, transaction_id, operation_id, payload):
+    connection.execute(
+        "INSERT INTO projected_notebook_sessions VALUES(?,?,?,?,?,?,?,?)",
+        (
+            payload["session_id"], payload["objective"], _json(payload["scope"]), "active",
+            None, transaction_id, None, operation_id,
+        ),
+    )
+
+
+def _notebook_entry(connection, transaction_id, operation_id, payload):
+    row = _require_row(
+        connection, "projected_notebook_sessions", "session_id", payload["session_id"]
+    )
+    if row["status"] != "active":
+        raise EpiqError("notebook_session_closed", "Notebook entries require an active session")
+    connection.execute(
+        "INSERT INTO projected_notebook_entries VALUES(?,?,?,?,?,?)",
+        (
+            payload["entry_id"], payload["session_id"], payload["entry_type"],
+            _json(payload["content"]), transaction_id, operation_id,
+        ),
+    )
+
+
+def _notebook_close(connection, transaction_id, operation_id, payload):
+    row = _require_row(
+        connection, "projected_notebook_sessions", "session_id", payload["session_id"]
+    )
+    if row["status"] != "active":
+        raise EpiqError("notebook_session_closed", "Notebook session is already closed")
+    connection.execute(
+        """UPDATE projected_notebook_sessions
+           SET status=?,summary=?,closed_transaction_id=? WHERE session_id=?""",
+        (payload["status"], payload["summary"], transaction_id, payload["session_id"]),
+    )
+
+
 _HANDLERS = {
     "question.challenge": _challenge,
     "question.challenge_resolve": _resolve_challenge,
@@ -488,5 +567,8 @@ _HANDLERS = {
     "research.not_found": _not_found,
     "source.bundle_record": _source_bundle,
     "report.record": _report,
+    "notebook.session_start": _notebook_start,
+    "notebook.entry_append": _notebook_entry,
+    "notebook.session_close": _notebook_close,
 }
 

@@ -50,6 +50,9 @@ _OPERATION_TYPES = frozenset(
         "research.not_found",
         "source.bundle_record",
         "report.record",
+        "notebook.session_start",
+        "notebook.entry_append",
+        "notebook.session_close",
     }
 )
 

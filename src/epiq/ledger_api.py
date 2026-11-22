@@ -1069,6 +1069,66 @@ class LedgerDatabase:
     def source_bundles(self) -> list[dict[str, Any]]:
         return self.view.source_bundles()
 
+    def start_notebook(
+        self,
+        objective: str,
+        *,
+        scope: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id("nbk", session_id, actor, idempotency_key, "notebook")
+        result = self.transact(
+            [{"type": "notebook.session_start", "payload": {
+                "session_id": identifier, "objective": objective, "scope": scope or {},
+            }}],
+            actor=actor, recorded_at=recorded_at, idempotency_key=idempotency_key,
+        )
+        return {"session_id": identifier, **result}
+
+    def append_notebook(
+        self,
+        session_id: str,
+        entry_type: str,
+        content: dict[str, Any],
+        *,
+        entry_id: str | None = None,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        identifier = self._domain_id("nte", entry_id, actor, idempotency_key, "notebook-entry")
+        result = self.transact(
+            [{"type": "notebook.entry_append", "payload": {
+                "entry_id": identifier, "session_id": session_id,
+                "entry_type": entry_type, "content": content,
+            }}],
+            actor=actor, recorded_at=recorded_at, idempotency_key=idempotency_key,
+        )
+        return {"entry_id": identifier, **result}
+
+    def close_notebook(
+        self,
+        session_id: str,
+        status: str,
+        summary: str,
+        *,
+        actor: str = "agent:python",
+        recorded_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self.transact(
+            [{"type": "notebook.session_close", "payload": {
+                "session_id": session_id, "status": status, "summary": summary,
+            }}],
+            actor=actor, recorded_at=recorded_at, idempotency_key=idempotency_key,
+        )
+
+    def notebooks(self, *, session_id: str | None = None) -> list[dict[str, Any]]:
+        return self.view.notebooks(session_id=session_id)
+
     def reports(self) -> list[dict[str, Any]]:
         return self.view.reports()
 

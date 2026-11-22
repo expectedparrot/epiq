@@ -103,6 +103,18 @@ and provider-reported usage. Missing usage remains unknown. Read them with
 and response headers are not copied into this audit. Asynchronous provider jobs and PDF capture
 are not implemented; the optional external job ID field is reserved for providers that supply one.
 
+## Lab notebook
+
+Ledger-native research creates an append-only lab notebook before retrieval begins. Plans, search
+queries, candidate sources, failed attempts, provider-reported usage, and final findings are stored
+as typed notebook entries. These entries document the search process but are not evidence: a claim
+still requires a captured source and an exact supporting quote. Inspect sessions with
+`epiq --project . notebook list` or the read-only FastAPI endpoints `GET /api/notebooks` and
+`GET /api/notebooks/{session_id}`.
+
+Interrupted commands intentionally leave their notebook active so another agent can inspect the
+leads and continue the work. Close or pause it explicitly with `epiq notebook close`.
+
 ## Capture retention and review
 
 Three separate layers appear in matrix lineage, the browser inspector, HTML/XLSX, and claims-long

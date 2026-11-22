@@ -95,6 +95,7 @@ _BINDINGS = [
     ("export", "GET", "/api/export/{format}", "read", "family"),
     ("export-html", "GET", "/api/export/{entity_kind}.html", "read"),
     ("not-found", "POST", "/api/research/not-found", "additive"),
+    ("notebook", "GET", "/api/notebooks", "read", "family"),
     ("derive-distribution", "POST", "/api/derive-distribution", "additive"),
     ("derive", "POST", "/api/derive", "additive"),
     ("materialize", "POST", "/api/materialize", "additive"),

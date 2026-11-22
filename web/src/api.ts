@@ -221,6 +221,31 @@ export interface CuratorState {
   }>;
 }
 
+export interface NotebookSession {
+  session_id: string;
+  objective: string;
+  scope: Record<string, unknown>;
+  status: "active" | "paused" | "completed" | "abandoned";
+  summary?: string | null;
+  started_transaction_id: string;
+  closed_transaction_id?: string | null;
+  entries: Array<{
+    entry_id: string;
+    entry_type:
+      | "plan"
+      | "query"
+      | "lead"
+      | "note"
+      | "source_candidate"
+      | "rejection"
+      | "follow_up"
+      | "finding"
+      | "checkpoint";
+    content: Record<string, unknown>;
+    transaction_id: string;
+  }>;
+}
+
 export interface SchemaAdaptation {
   kind: "cardinality_mismatch";
   question_id: string;
