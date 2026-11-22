@@ -736,7 +736,7 @@ def test_control_center_yolo_mode_applies_plan_without_separate_approval(
     assert any("YOLO mode enabled" in item["message"] for item in job["messages"])
 
 
-def test_curator_repeatedly_enriches_until_a_cycle_has_no_changes(tmp_path: Path) -> None:
+def test_curator_repeatedly_enriches_until_two_cycles_have_no_changes(tmp_path: Path) -> None:
     root = tmp_path / "project"
     goals = []
 
@@ -756,6 +756,7 @@ def test_curator_repeatedly_enriches_until_a_cycle_has_no_changes(tmp_path: Path
         "/api/curator",
         json={
             "objective": "Build a useful company comparison dataset",
+            "budget_usd": 10,
             "max_cycles": 5,
             "max_research_cells": 10,
         },
@@ -764,18 +765,44 @@ def test_curator_repeatedly_enriches_until_a_cycle_has_no_changes(tmp_path: Path
 
     for _ in range(300):
         state = client.get("/api/curator").json()
+        if state["status"] == "awaiting_approval":
+            break
+        time.sleep(0.01)
+    assert state["strategy"]["target_example_count"] == 25
+    assert client.post("/api/curator/approve").status_code == 202
+
+    for _ in range(300):
+        state = client.get("/api/curator").json()
         if state["status"] in {"completed", "failed", "stopped"}:
             break
         time.sleep(0.01)
 
     assert state["status"] == "completed"
-    assert state["completed_cycles"] == 2
+    assert state["completed_cycles"] == 3
     assert state["cycles"][0]["written"] == 2
     assert state["cycles"][1]["written"] == 0
+    assert state["cycles"][2]["written"] == 0
     assert "no useful changes" in state["message"]
-    assert len(goals) == 2
+    assert state["estimated_spend_usd"] == 3.0
+    assert state["budget_usd"] == 10
+    assert len(goals) == 3
     assert "Previous cycle outcome" in goals[1]
     assert client.get("/api/matrix/Company").json()["rows"][0]["name"] == "Acme"
+
+    extended = client.post(
+        "/api/curator/add-budget",
+        json={"amount_usd": 0.75, "direction": "Focus next on funding"},
+    )
+    assert extended.status_code == 202
+    assert extended.json()["budget_usd"] == 10.75
+    for _ in range(300):
+        state = client.get("/api/curator").json()
+        if state["status"] in {"completed", "failed", "stopped"}:
+            break
+        time.sleep(0.01)
+    assert state["completed_cycles"] == 5
+    assert state["estimated_spend_usd"] == 4.5
+    assert "Focus next on funding" in goals[-1]
 
     restarted = TestClient(create_ledger_app(root, workspace_agent_runner=curator_plan))
     persisted = restarted.get("/api/curator").json()

@@ -205,6 +205,9 @@ def test_pi_workspace_agent_uses_persistent_tool_free_session(tmp_path, monkeypa
     assert command[command.index("--model") + 1] == "openai/gpt-6.2-astra"
     assert command[command.index("--system-prompt") + 1] == EPIQ_PI_SYSTEM_PROMPT
     assert "institutional taxonomies" in EPIQ_PI_SYSTEM_PROMPT
+    assert "Design for comparison and analysis" in EPIQ_PI_SYSTEM_PROMPT
+    assert "unknown must remain distinct from false" in EPIQ_PI_SYSTEM_PROMPT
+    assert "mini-reports in a single String cell" in EPIQ_PI_SYSTEM_PROMPT
     assert captured["kwargs"]["cwd"] == tmp_path.resolve()
     assert any("persistent Pi agent" in item for item in progress)
 
@@ -215,5 +218,50 @@ def test_pi_workspace_agent_rejects_non_json_output(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
 
-    with pytest.raises(RuntimeError, match="invalid workspace plan"):
+    with pytest.raises(RuntimeError, match="invalid JSON"):
         PiWorkspaceAgentRunner(tmp_path)("Add a field", {"project": {}, "tables": []})
+
+
+def test_pi_curator_strategy_plans_scope_and_budget_before_mutations(
+    tmp_path, monkeypatch
+) -> None:
+    strategy = {
+        "summary": "Build breadth before depth.",
+        "primary_entity_kind": "Startup",
+        "target_example_count": 30,
+        "priority_fields": [
+            {
+                "name": "employee_count",
+                "value_type": "Int",
+                "rationale": "Supports comparison.",
+            }
+        ],
+        "phases": [
+            {
+                "name": "Discovery",
+                "objective": "Verify in-scope startups.",
+                "target_new_rows": 30,
+                "estimated_research_cells": 60,
+                "budget_usd": 8.0,
+            }
+        ],
+        "stopping_criteria": ["Budget exhausted"],
+    }
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(strategy), stderr="")
+
+    monkeypatch.setattr("epiq.research.subprocess.run", fake_run)
+    result = PiWorkspaceAgentRunner(tmp_path).curator_strategy(
+        "Map simulation startups",
+        {"project": {}, "tables": []},
+        10.0,
+    )
+
+    assert result == strategy
+    prompt = captured["command"][-1]
+    assert "Cash budget: $10.00" in prompt
+    assert "strategy only" in prompt
+    assert "target_example_count" in prompt

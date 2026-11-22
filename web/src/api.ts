@@ -177,13 +177,38 @@ export interface ResearchJob {
 export interface CuratorState {
   curator_id: string;
   objective: string;
-  status: "running" | "paused" | "stopping" | "stopped" | "completed";
+  budget_usd: number | null;
+  estimated_spend_usd: number;
+  reserved_usd: number;
+  cost_basis: "estimated" | "actual" | "mixed";
+  status:
+    | "planning"
+    | "awaiting_approval"
+    | "running"
+    | "paused"
+    | "stopping"
+    | "stopped"
+    | "completed";
   max_cycles: number;
   max_research_cells: number;
   completed_cycles: number;
   research_cells_used: number;
   active_job_id?: string | null;
   message: string;
+  strategy?: {
+    summary: string;
+    primary_entity_kind: string;
+    target_example_count: number;
+    priority_fields: Array<{ name: string; value_type: string; rationale: string }>;
+    phases: Array<{
+      name: string;
+      objective: string;
+      target_new_rows: number;
+      estimated_research_cells: number;
+      budget_usd: number;
+    }>;
+    stopping_criteria: string[];
+  } | null;
   cycles: Array<{
     cycle: number;
     job_id: string;
@@ -191,6 +216,7 @@ export interface CuratorState {
     summary: string;
     written: number;
     research_cells: number;
+    estimated_cost_usd?: number;
     finished_at: string;
   }>;
 }

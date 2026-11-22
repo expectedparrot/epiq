@@ -1787,12 +1787,29 @@ commands. Configure the frontier planning model with `EPIQ_PI_MODEL` (default
 row research remains separately configurable through `EPIQ_RESEARCH_MODEL`.
 
 The Control Center's **Keep enriching this project** curator runs that same project-scoped Pi agent
-for multiple bounded cycles. Each cycle reflects on current coverage and usefulness, chooses one
+for multiple bounded cycles. Starting a curator requires a cash budget. Pi first produces a
+no-mutation strategy for approval: intended breadth, target example count, priority typed fields,
+phases, expected research volume, budget allocation, and stopping criteria. After approval, each
+cycle reflects on current coverage and usefulness, chooses one
 high-value enrichment, exposes its CLI commands and results in the conversation, and then evaluates
 the updated project before continuing. Curators have explicit cycle and research-cell budgets, can
-pause or stop at safe cycle boundaries, and stop automatically when a cycle makes no useful changes.
+pause or stop at safe cycle boundaries, and stop automatically after repeated no-change cycles.
+For landscape, roster, and catalog objectives, the curator prioritizes adding credible examples
+before deepening the schema, normally seeking batches of 5–10 rows until the primary table has useful
+breadth. A single stalled tactic triggers another discovery approach; two no-change cycles stop the
+run.
+Curator schema plans favor analysis-ready atomic fields: quantities with units, numbers, dates,
+mutually exclusive enums, carefully evidenced booleans, URLs, and relationships. Free-text fields
+are reserved for facts that cannot be represented by a structured type without meaningful loss;
+unknown remains distinct from `false`.
 Their state is stored in `.epiq/curator.json`; a curator that was running when the server stopped is
 restored paused rather than silently resuming external work.
+Curator accounting is currently conservative and explicitly labeled estimated: by default Epiq
+reserves `$0.75` per Pi planning turn and `$0.25` per researched cell. Override those rates with
+`EPIQ_CURATOR_PLANNING_COST_USD` and `EPIQ_CURATOR_RESEARCH_CELL_COST_USD`. Cycle and cell ceilings
+remain internal safety caps behind the user-facing cash budget.
+When the allocation is exhausted, **Add budget & continue** extends the same approved strategy and
+Pi session from the next cycle; it does not discard progress or require a replacement curator plan.
 
 Background research jobs and provisional entity/field suggestions are persisted in the project
 database. Completed review queues therefore survive a server restart. Startup recovers every queued

@@ -159,7 +159,14 @@ FIELD_SUGGESTION_SCHEMA = {
                 "properties": {
                     "name": {"type": "string"},
                     "label": {"type": "string"},
-                    "value_type": {"type": "string"},
+                    "value_type": {
+                        "type": "string",
+                        "description": (
+                            "Prefer analysis-ready types: Int, Float, Quantity[unit], Year, Date, "
+                            "Probability, mutually exclusive Enum[a,b], Bool, URL, or Ref[Kind]. "
+                            "Use String only when the underlying fact is genuinely textual."
+                        ),
+                    },
                     "rationale": {"type": "string"},
                     "research_guidance": {"type": "string"},
                 },
@@ -289,6 +296,59 @@ WORKSPACE_PLAN_SCHEMA = {
     },
 }
 
+CURATOR_STRATEGY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "summary",
+        "primary_entity_kind",
+        "target_example_count",
+        "priority_fields",
+        "phases",
+        "stopping_criteria",
+    ],
+    "properties": {
+        "summary": {"type": "string"},
+        "primary_entity_kind": {"type": "string"},
+        "target_example_count": {"type": "integer", "minimum": 1},
+        "priority_fields": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "value_type", "rationale"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "value_type": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+            },
+        },
+        "phases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "name",
+                    "objective",
+                    "target_new_rows",
+                    "estimated_research_cells",
+                    "budget_usd",
+                ],
+                "properties": {
+                    "name": {"type": "string"},
+                    "objective": {"type": "string"},
+                    "target_new_rows": {"type": "integer", "minimum": 0},
+                    "estimated_research_cells": {"type": "integer", "minimum": 0},
+                    "budget_usd": {"type": "number", "minimum": 0},
+                },
+            },
+        },
+        "stopping_criteria": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 EPIQ_PI_SYSTEM_PROMPT = """You are the persistent Control Center agent for an Epiq project.
 Epiq is an evidence-backed, Git-ledger database. The user's durable intent matters more than a
 literal reading of one message. Maintain continuity across turns, but treat the current workspace
@@ -309,6 +369,17 @@ representation.
 Reuse existing schema and rows. Model durable things as entity rows, typed questions as columns,
 and repeated things as related tables with Ref[Kind]. Research guidance must define positive,
 negative, and unknown evidence standards. Do not claim research is complete during planning.
+
+Design for comparison and analysis, not prose accumulation. Prefer numerical fields with explicit
+units, dates and years, probabilities, URLs, references, mutually exclusive exhaustive Enum choices,
+and narrowly defined Bool fields. A Bool is appropriate only when authoritative evidence can support
+both yes and no; unknown must remain distinct from false. Enum options must not overlap, and their
+guidance must say how to handle cases outside or spanning the options. Prefer several atomic typed
+fields over one long narrative field. Use String only when the source fact is irreducibly textual,
+such as a name, short label, or concise finding that cannot be represented without material loss.
+Whenever proposing a String field, explicitly explain in its research_guidance why a number, Enum,
+Bool, Date, URL, Ref, or related entity would lose important information. Do not encode multiple
+facts, lists, rationales, or mini-reports in a single String cell.
 
 Return only one JSON object matching the schema supplied in the user message. Do not use markdown
 fences or commentary outside the JSON object. The application—not you—validates and executes every
@@ -336,34 +407,16 @@ class PiWorkspaceAgentRunner:
         self.session_id = session_id
         self.session_directory = self.working_directory / ".epiq" / "pi-sessions"
 
-    def __call__(
+    def _run_pi(
         self,
-        goal: str,
-        context: dict[str, Any],
-        progress: Progress | None = None,
+        prompt: str,
+        progress: Progress | None,
+        *,
+        completed_message: str,
     ) -> dict[str, Any]:
         self.session_directory.mkdir(parents=True, exist_ok=True)
         if progress:
             progress(f"Consulting persistent Pi agent · {self.model}")
-        prompt = f"""User direction: {goal}
-
-Current authoritative Epiq workspace snapshot:
-{json.dumps(context, sort_keys=True)}
-
-Create the next bounded plan. You may propose additive entity kinds, entities, questions, research
-requests, explicit retractions, and evidence-preserving replacements of claim IDs supplied in the
-conversation or workspace. Use a replacement—not research—when changing an already answered value
-without changing its evidence. Question names must be snake_case. Use value types such as String,
-Bool, Int, Float, Year, Date, URL, Image, Probability, Enum[a,b], Quantity[USD], and Ref[Kind].
-Every research request must use an exact table kind, exact question name, and existing or proposed
-row names.
-Set allow_estimates true when the user asks for ballpark values or when a useful sourced reference-
-class estimate is preferable to an unknown. Keep it false for identity, legal, categorical, and
-other fields where approximation would be misleading.
-
-Required JSON Schema:
-{json.dumps(WORKSPACE_PLAN_SCHEMA, sort_keys=True)}
-"""
         command = [
             self.executable,
             "--print",
@@ -401,12 +454,73 @@ Required JSON Schema:
         text = completed.stdout.strip()
         try:
             start, end = text.index("{"), text.rindex("}") + 1
-            plan = json.loads(text[start:end])
+            result = json.loads(text[start:end])
         except (ValueError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"Pi returned an invalid workspace plan: {text[-2000:]}") from error
+            raise RuntimeError(f"Pi returned invalid JSON: {text[-2000:]}") from error
         if progress:
-            progress("Pi reviewed the intent and proposed the next steps")
-        return plan
+            progress(completed_message)
+        return result
+
+    def curator_strategy(
+        self,
+        objective: str,
+        context: dict[str, Any],
+        budget_usd: float,
+        progress: Progress | None = None,
+    ) -> dict[str, Any]:
+        prompt = f"""Design a broad curation strategy before making any workspace changes.
+
+User objective: {objective}
+Cash budget: ${budget_usd:.2f}
+Current authoritative Epiq workspace snapshot:
+{json.dumps(context, sort_keys=True)}
+
+Define the intended breadth, primary row type, approximate number of examples, analysis-ready
+priority fields, phased research volume, budget allocation, and explicit stopping criteria. Favor
+numbers with units, mutually exclusive enums, dates, narrow booleans, URLs, and relationships over
+long prose. For landscape or catalog objectives, allocate early phases to discovering and verifying
+many examples before deepening individual rows. Phase budgets must sum to no more than the supplied
+cash budget. This is a strategy only: do not propose executable mutations yet.
+
+Required JSON Schema:
+{json.dumps(CURATOR_STRATEGY_SCHEMA, sort_keys=True)}
+"""
+        return self._run_pi(
+            prompt,
+            progress,
+            completed_message="Pi proposed a curation strategy for review",
+        )
+
+    def __call__(
+        self,
+        goal: str,
+        context: dict[str, Any],
+        progress: Progress | None = None,
+    ) -> dict[str, Any]:
+        prompt = f"""User direction: {goal}
+
+Current authoritative Epiq workspace snapshot:
+{json.dumps(context, sort_keys=True)}
+
+Create the next bounded plan. You may propose additive entity kinds, entities, questions, research
+requests, explicit retractions, and evidence-preserving replacements of claim IDs supplied in the
+conversation or workspace. Use a replacement—not research—when changing an already answered value
+without changing its evidence. Question names must be snake_case. Use value types such as String,
+Bool, Int, Float, Year, Date, URL, Image, Probability, Enum[a,b], Quantity[USD], and Ref[Kind].
+Every research request must use an exact table kind, exact question name, and existing or proposed
+row names.
+Set allow_estimates true when the user asks for ballpark values or when a useful sourced reference-
+class estimate is preferable to an unknown. Keep it false for identity, legal, categorical, and
+other fields where approximation would be misleading.
+
+Required JSON Schema:
+{json.dumps(WORKSPACE_PLAN_SCHEMA, sort_keys=True)}
+"""
+        return self._run_pi(
+            prompt,
+            progress,
+            completed_message="Pi reviewed the intent and proposed the next steps",
+        )
 
 
 class CodexResearchRunner:

@@ -139,8 +139,14 @@ class WorkspaceAgentCreate(BaseModel):
 
 class CuratorCreate(BaseModel):
     objective: str = Field(min_length=1)
-    max_cycles: int = Field(default=5, ge=1, le=50)
-    max_research_cells: int = Field(default=50, ge=0, le=5000)
+    budget_usd: float = Field(gt=0, le=10000)
+    max_cycles: int = Field(default=10, ge=1, le=50)
+    max_research_cells: int = Field(default=150, ge=0, le=5000)
+
+
+class CuratorBudgetAdd(BaseModel):
+    amount_usd: float = Field(gt=0, le=10000)
+    direction: str | None = Field(default=None, min_length=1)
 
 
 def create_ledger_app(
@@ -247,7 +253,8 @@ def create_ledger_app(
             )
             active = active or bool(
                 app.state.curator
-                and app.state.curator.get("status") in {"running", "stopping"}
+                and app.state.curator.get("status")
+                in {"planning", "awaiting_approval", "running", "stopping"}
             )
         if active:
             raise EpiqError(
@@ -257,6 +264,12 @@ def create_ledger_app(
 
     def now() -> str:
         return datetime.now(UTC).isoformat()
+
+    def curator_cost_rates() -> tuple[float, float]:
+        return (
+            float(os.environ.get("EPIQ_CURATOR_PLANNING_COST_USD", "0.75")),
+            float(os.environ.get("EPIQ_CURATOR_RESEARCH_CELL_COST_USD", "0.25")),
+        )
 
     def curator_path() -> Path:
         return root / ".epiq" / "curator.json"
@@ -281,9 +294,22 @@ def create_ledger_app(
         except (OSError, json.JSONDecodeError):
             app.state.curator = None
             return
-        if state.get("status") in {"running", "stopping"}:
+        if state.get("status") in {"planning", "running", "stopping"}:
             state["status"] = "paused"
             state["message"] = "Paused after server restart; resume when ready."
+        state.setdefault("budget_usd", None)
+        state.setdefault("estimated_spend_usd", 0.0)
+        state.setdefault("reserved_usd", 0.0)
+        state.setdefault("cost_basis", "estimated")
+        if state.get("budget_usd") is None and state.get("status") == "paused":
+            state.update(
+                status="stopped",
+                message=(
+                    "This earlier curator had no cash budget; create a budgeted curation "
+                    "plan to continue."
+                ),
+                finished_at=now(),
+            )
         app.state.curator = state
         save_curator()
 
@@ -1085,27 +1111,62 @@ def create_ledger_app(
                     save_curator()
                     return
                 cycle = int(state.get("completed_cycles", 0)) + 1
-                remaining_cells = int(state["max_research_cells"]) - int(
+                remaining_cell_cap = int(state["max_research_cells"]) - int(
                     state.get("research_cells_used", 0)
                 )
-                if cycle > int(state["max_cycles"]) or remaining_cells <= 0:
+                planning_cost, cell_cost = curator_cost_rates()
+                budget = float(state["budget_usd"])
+                remaining_usd = budget - float(state.get("estimated_spend_usd", 0.0))
+                affordable_cells = max(
+                    0,
+                    int((remaining_usd - planning_cost) // cell_cost),
+                )
+                remaining_cells = min(remaining_cell_cap, affordable_cells)
+                if (
+                    cycle > int(state["max_cycles"])
+                    or remaining_cell_cap <= 0
+                    or remaining_usd < planning_cost
+                ):
                     state.update(
                         status="completed",
-                        message="Finished the configured curation budget.",
+                        message="Finished the configured cash budget or safety limits.",
                         finished_at=now(),
                     )
                     save_curator()
                     return
                 previous = state.get("cycles", [])[-1] if state.get("cycles") else None
                 objective = str(state["objective"])
+                strategy = state.get("strategy") or {}
+                continuation_direction = str(
+                    state.get("continuation_direction") or ""
+                ).strip()
                 message = (
                     f"Curator cycle {cycle}. Keep enriching this project toward this objective: "
-                    f"{objective}\n\nReflect on the current authoritative workspace, identify the "
+                    f"{objective}\n\nApproved curation strategy: "
+                    f"{json.dumps(strategy, sort_keys=True)}\n\n"
+                    "Reflect on the current authoritative workspace, identify the "
                     "single "
                     "highest-value next enrichment, and execute a bounded step. Prefer useful "
                     "coverage, natural related tables, stronger evidence, and comparison fields. "
-                    "Do not repeat completed work or add low-value fields merely to keep going."
+                    "Do not repeat completed work or add low-value fields merely to keep going. "
+                    "When the objective is a landscape, roster, catalog, or collection, breadth "
+                    "comes first: until the primary table has at least 25 credible examples, "
+                    "normally add 5–10 new in-scope rows per cycle and research the minimum fields "
+                    "needed to verify their identity and relevance. Use later cycles for deeper "
+                    "comparison fields and related evidence. Favor sortable numerical values with "
+                    "units, dates, mutually exclusive categories, narrowly defined yes/no fields, "
+                    "URLs, and relationships over long prose. Split compound concepts into atomic "
+                    "typed fields; add a String field only when the fact is genuinely textual and "
+                    "cannot be represented usefully by a more structured type. If the last tactic "
+                    "stalled, try a "
+                    "different discovery strategy rather than immediately stopping."
                 )
+                if continuation_direction:
+                    message += (
+                        "\n\nThe user added this direction when extending the budget: "
+                        f"{continuation_direction}. Treat it as the priority within the approved "
+                        "strategy for this continuation."
+                    )
                 if previous:
                     message += (
                         "\n\nPrevious cycle outcome: "
@@ -1127,6 +1188,8 @@ def create_ledger_app(
                     "curator_id": curator_id,
                     "curator_cycle": cycle,
                     "research_cell_limit": remaining_cells,
+                    "estimated_planning_cost_usd": planning_cost,
+                    "estimated_research_cell_cost_usd": cell_cost,
                     "status": "queued",
                     "total": 0,
                     "completed": 0,
@@ -1139,6 +1202,7 @@ def create_ledger_app(
                 state.update(
                     status="running",
                     active_job_id=job_id,
+                    reserved_usd=round(planning_cost, 4),
                     message=f"Cycle {cycle}: reflecting on the next enrichment.",
                 )
                 save_curator()
@@ -1159,6 +1223,7 @@ def create_ledger_app(
                     return
                 job = app.state.research_jobs[job_id]
                 attempted = int(job.get("estimated_research_cells", 0))
+                cycle_cost = planning_cost + attempted * cell_cost
                 cycle_record = {
                     "cycle": cycle,
                     "job_id": job_id,
@@ -1166,6 +1231,7 @@ def create_ledger_app(
                     "summary": job.get("assistant_summary") or job.get("error") or "",
                     "written": int(job.get("written", 0)),
                     "research_cells": attempted,
+                    "estimated_cost_usd": round(cycle_cost, 4),
                     "finished_at": now(),
                 }
                 state.setdefault("cycles", []).append(cycle_record)
@@ -1173,7 +1239,20 @@ def create_ledger_app(
                 state["research_cells_used"] = int(
                     state.get("research_cells_used", 0)
                 ) + attempted
+                state["estimated_spend_usd"] = round(
+                    min(
+                        float(state["budget_usd"]),
+                        float(state.get("estimated_spend_usd", 0.0)) + cycle_cost,
+                    ),
+                    4,
+                )
+                state["no_change_streak"] = (
+                    int(state.get("no_change_streak", 0)) + 1
+                    if int(job.get("written", 0)) == 0
+                    else 0
+                )
                 state["active_job_id"] = None
+                state["reserved_usd"] = 0.0
                 state["message"] = str(cycle_record["summary"])
                 if job.get("status") == "failed":
                     state.update(
@@ -1182,10 +1261,10 @@ def create_ledger_app(
                     )
                     save_curator()
                     return
-                if int(job.get("written", 0)) == 0:
+                if int(state["no_change_streak"]) >= 2:
                     state.update(
                         status="completed",
-                        message="Stopped after a cycle produced no useful changes.",
+                        message="Stopped after two different cycles produced no useful changes.",
                         finished_at=now(),
                     )
                     save_curator()
@@ -1198,6 +1277,94 @@ def create_ledger_app(
             args=(curator_id,),
             daemon=True,
             name=f"epiq-curator-{curator_id}",
+        ).start()
+
+    def plan_curator_strategy(curator_id: str) -> None:
+        def progress(text: str) -> None:
+            with app.state.research_lock:
+                state = app.state.curator
+                if state and state.get("curator_id") == curator_id:
+                    state["message"] = text
+                    save_curator()
+
+        try:
+            with app.state.research_lock:
+                state = app.state.curator
+                if state is None or state.get("curator_id") != curator_id:
+                    return
+                objective = str(state["objective"])
+                budget_usd = float(state["budget_usd"])
+            current = database()
+            context = workspace_context(current)
+            strategy_method = getattr(
+                app.state.workspace_agent_runner, "curator_strategy", None
+            )
+            if callable(strategy_method):
+                strategy = strategy_method(objective, context, budget_usd, progress)
+            else:
+                primary_kind = (
+                    str(context["tables"][0]["kind"])
+                    if context.get("tables")
+                    else "PrimaryEntity"
+                )
+                strategy = {
+                    "summary": f"Build broad, comparable coverage for {objective}",
+                    "primary_entity_kind": primary_kind,
+                    "target_example_count": 25,
+                    "priority_fields": [],
+                    "phases": [
+                        {
+                            "name": "Breadth",
+                            "objective": "Discover and verify in-scope examples.",
+                            "target_new_rows": 25,
+                            "estimated_research_cells": 0,
+                            "budget_usd": max(0.0, budget_usd - curator_cost_rates()[0]),
+                        }
+                    ],
+                    "stopping_criteria": [
+                        "Cash budget exhausted",
+                        "Two consecutive cycles make no useful changes",
+                    ],
+                }
+            planning_cost, _ = curator_cost_rates()
+            with app.state.research_lock:
+                state = app.state.curator
+                if state is None or state.get("curator_id") != curator_id:
+                    return
+                if state.get("stop_requested"):
+                    state.update(
+                        status="stopped",
+                        reserved_usd=0.0,
+                        message="Stopped by the user.",
+                        finished_at=now(),
+                    )
+                    save_curator()
+                    return
+                state.update(
+                    status="awaiting_approval",
+                    strategy=strategy,
+                    estimated_spend_usd=round(planning_cost, 4),
+                    reserved_usd=0.0,
+                    message="Review the curation strategy before spending the remaining budget.",
+                )
+                save_curator()
+        except Exception as error:
+            with app.state.research_lock:
+                state = app.state.curator
+                if state and state.get("curator_id") == curator_id:
+                    state.update(
+                        status="paused",
+                        reserved_usd=0.0,
+                        message=f"Strategy planning failed: {error}",
+                    )
+                    save_curator()
+
+    def start_curator_strategy_thread(curator_id: str) -> None:
+        threading.Thread(
+            target=plan_curator_strategy,
+            args=(curator_id,),
+            daemon=True,
+            name=f"epiq-curator-strategy-{curator_id}",
         ).start()
 
     @app.get("/api/health")
@@ -1638,30 +1805,117 @@ def create_ledger_app(
     @app.post("/api/curator", status_code=202)
     def launch_curator(body: CuratorCreate) -> dict[str, Any]:
         database().project()
+        planning_cost, _ = curator_cost_rates()
+        if body.budget_usd < planning_cost:
+            raise EpiqError(
+                "curator_budget_too_small",
+                f"The curation strategy alone is estimated at ${planning_cost:.2f}",
+                f"Choose a budget of at least ${planning_cost:.2f}.",
+            )
         with app.state.research_lock:
             existing = app.state.curator
-            if existing and existing.get("status") in {"running", "stopping"}:
+            if existing and existing.get("status") in {
+                "planning",
+                "awaiting_approval",
+                "running",
+                "stopping",
+            }:
                 raise EpiqError("curator_active", "A curator is already running for this project")
             curator_id = uuid.uuid4().hex[:16]
             app.state.curator = {
                 "curator_id": curator_id,
                 "objective": body.objective,
-                "status": "running",
+                "budget_usd": body.budget_usd,
+                "estimated_spend_usd": 0.0,
+                "reserved_usd": planning_cost,
+                "cost_basis": "estimated",
+                "cost_rates": {
+                    "planning_cycle_usd": curator_cost_rates()[0],
+                    "research_cell_usd": curator_cost_rates()[1],
+                },
+                "status": "planning",
                 "max_cycles": body.max_cycles,
                 "max_research_cells": body.max_research_cells,
                 "completed_cycles": 0,
                 "research_cells_used": 0,
+                "no_change_streak": 0,
                 "active_job_id": None,
                 "pause_requested": False,
                 "stop_requested": False,
                 "cycles": [],
-                "message": "Starting the first enrichment cycle.",
+                "strategy": None,
+                "message": "Pi is designing a curation strategy.",
                 "created_at": now(),
             }
             save_curator()
             state = dict(app.state.curator)
-        start_curator_thread(curator_id)
+        start_curator_strategy_thread(curator_id)
         return state
+
+    @app.post("/api/curator/approve", status_code=202)
+    def approve_curator() -> dict[str, Any]:
+        with app.state.research_lock:
+            state = app.state.curator
+            if state is None:
+                raise EpiqError("curator_not_found", "No curator is configured for this project")
+            if state.get("status") != "awaiting_approval":
+                raise EpiqError(
+                    "curator_strategy_unavailable",
+                    "The curator strategy is not awaiting approval",
+                )
+            state.update(
+                status="running",
+                pause_requested=False,
+                stop_requested=False,
+                message="Starting the first approved enrichment cycle.",
+            )
+            save_curator()
+            curator_id = str(state["curator_id"])
+            response = dict(state)
+        start_curator_thread(curator_id)
+        return response
+
+    @app.post("/api/curator/add-budget", status_code=202)
+    def add_curator_budget(body: CuratorBudgetAdd) -> dict[str, Any]:
+        with app.state.research_lock:
+            state = app.state.curator
+            if state is None:
+                raise EpiqError("curator_not_found", "No curator is configured for this project")
+            if state.get("status") in {"planning", "running", "stopping"}:
+                raise EpiqError(
+                    "curator_active",
+                    "Wait for the current curator cycle before adding budget",
+                )
+            if not state.get("strategy") or state.get("budget_usd") is None:
+                raise EpiqError(
+                    "curator_strategy_unavailable",
+                    "Create and approve a budgeted curator strategy first",
+                )
+            state["budget_usd"] = round(
+                float(state["budget_usd"]) + body.amount_usd,
+                4,
+            )
+            if int(state.get("completed_cycles", 0)) >= int(state["max_cycles"]):
+                state["max_cycles"] = int(state["max_cycles"]) + 10
+            if int(state.get("research_cells_used", 0)) >= int(
+                state["max_research_cells"]
+            ):
+                state["max_research_cells"] = int(state["max_research_cells"]) + 150
+            state.update(
+                status="running",
+                pause_requested=False,
+                stop_requested=False,
+                no_change_streak=0,
+                message=f"Added ${body.amount_usd:.2f}; continuing the approved strategy.",
+            )
+            if body.direction:
+                state["continuation_direction"] = body.direction.strip()
+            state.pop("finished_at", None)
+            save_curator()
+            curator_id = str(state["curator_id"])
+            response = dict(state)
+        start_curator_thread(curator_id)
+        return response
 
     @app.post("/api/curator/pause", status_code=202)
     def pause_curator() -> dict[str, Any]:
@@ -1701,10 +1955,15 @@ def create_ledger_app(
             state = app.state.curator
             if state is None:
                 raise EpiqError("curator_not_found", "No curator is configured for this project")
-            if state.get("status") in {"running", "paused"}:
+            if state.get("status") in {
+                "planning",
+                "awaiting_approval",
+                "running",
+                "paused",
+            }:
                 state["stop_requested"] = True
                 state["pause_requested"] = False
-                if state.get("status") == "paused":
+                if state.get("status") in {"paused", "awaiting_approval"}:
                     state.update(status="stopped", finished_at=now())
                 else:
                     state["status"] = "stopping"

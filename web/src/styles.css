@@ -2528,49 +2528,50 @@ button:hover {
   display: flex;
   flex-direction: column;
 }
-.curator-control {
-  border-bottom: 1px solid var(--line);
-  padding: 10px 16px;
-}
-.curator-control details > summary {
-  color: #175b45;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 700;
-}
-.curator-control details[open] > summary { margin-bottom: 10px; }
-.curator-control textarea {
-  box-sizing: border-box;
-  font-size: 13px;
-  margin-top: 8px;
-  min-height: 62px;
+.curator-strategy {
+  background: #f4f8f5;
+  border: 1px solid #cbded3;
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
   padding: 10px;
-  resize: vertical;
-  width: 100%;
 }
-.curator-budget,
-.curator-status > div {
+.curator-strategy > small { color: #175b45; }
+.curator-strategy > div { border-top: 1px solid #dce8e1; padding-top: 7px; }
+.curator-strategy > div span { display: block; font-size: 12px; font-weight: 700; }
+.curator-strategy > div p { font-size: 11px; }
+.curator-exchange .curator-strategy { margin-top: 10px; }
+.inline-curator-budget {
   align-items: center;
+  color: var(--muted);
   display: flex;
-  gap: 8px;
-  justify-content: space-between;
-}
-.curator-budget span,
-.curator-status small {
-  color: var(--muted);
   font-size: 11px;
+  gap: 7px;
 }
-.curator-status { display: grid; gap: 6px; }
-.curator-status p {
+.inline-curator-budget input { min-height: 30px; width: 88px; }
+.inline-curator-budget small { margin-left: auto; }
+.curator-live-strip {
+  align-items: center;
+  background: #f4f8f5;
+  border-top: 1px solid #cbded3;
+  display: flex;
+  gap: 9px;
+  padding: 9px 16px;
+}
+.curator-live-strip > div { display: grid; gap: 2px; min-width: 0; }
+.curator-live-strip b { font-size: 11px; }
+.curator-live-strip small {
   color: var(--muted);
-  font-size: 12px;
-  margin: 0;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.curator-status button,
-.curator-budget button {
-  font-size: 12px;
-  min-height: 30px;
-  padding: 5px 10px;
+.curator-live-strip > span {
+  color: #175b45;
+  font-size: 10px;
+  margin-left: auto;
+  white-space: nowrap;
 }
 .agent-conversation {
   flex: 1;

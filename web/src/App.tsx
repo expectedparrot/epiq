@@ -656,18 +656,30 @@ export default function App() {
   };
   const startCurator = async (
     objective: string,
+    budgetUsd: number,
     maxCycles: number,
     maxResearchCells: number,
   ) => {
     const state = await post<CuratorState>("/api/curator", {
       objective,
+      budget_usd: budgetUsd,
       max_cycles: maxCycles,
       max_research_cells: maxResearchCells,
     });
     setCurator(state);
   };
-  const controlCurator = async (action: "pause" | "resume" | "stop") => {
+  const controlCurator = async (
+    action: "approve" | "pause" | "resume" | "stop",
+  ) => {
     setCurator(await post<CuratorState>(`/api/curator/${action}`, {}));
+  };
+  const addCuratorBudget = async (amountUsd: number, direction?: string) => {
+    setCurator(
+      await post<CuratorState>("/api/curator/add-budget", {
+        amount_usd: amountUsd,
+        direction: direction || null,
+      }),
+    );
   };
   const draftForAgent = (message: string) => {
     setChatDraft(message);
@@ -2635,6 +2647,7 @@ export default function App() {
             onReject={rejectWorkspacePlan}
             onStartCurator={startCurator}
             onControlCurator={controlCurator}
+            onAddCuratorBudget={addCuratorBudget}
           />
         )}
         {rightPane === "review" && (
@@ -5035,6 +5048,7 @@ function WorkspaceAgentPanel({
   onReject,
   onStartCurator,
   onControlCurator,
+  onAddCuratorBudget,
 }: {
   jobs: ResearchJob[];
   curator: CuratorState | null;
@@ -5047,26 +5061,45 @@ function WorkspaceAgentPanel({
   onReject: (jobId: string) => Promise<void>;
   onStartCurator: (
     objective: string,
+    budgetUsd: number,
     maxCycles: number,
     maxResearchCells: number,
   ) => Promise<void>;
-  onControlCurator: (action: "pause" | "resume" | "stop") => Promise<void>;
+  onControlCurator: (
+    action: "approve" | "pause" | "resume" | "stop",
+  ) => Promise<void>;
+  onAddCuratorBudget: (amountUsd: number, direction?: string) => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState("");
-  const [curatorObjective, setCuratorObjective] = useState("");
-  const [curatorStarting, setCuratorStarting] = useState(false);
+  const [curatorMode, setCuratorMode] = useState(false);
+  const [curatorBudget, setCuratorBudget] = useState("10");
   const [yoloMode, setYoloMode] = useState(
     () => window.localStorage.getItem("epiq-control-center-yolo") === "true",
   );
   const listRef = useRef<HTMLDivElement>(null);
   const followConversationTail = useRef(true);
+  const previousCuratorStatus = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!draft) return;
     setMessage(draft);
     onDraftConsumed();
   }, [draft, onDraftConsumed]);
+  useEffect(() => {
+    const status = curator?.status;
+    if (
+      status &&
+      ["completed", "stopped"].includes(status) &&
+      previousCuratorStatus.current !== status &&
+      curator?.budget_usd != null &&
+      curator.strategy
+    ) {
+      setCuratorMode(true);
+      setCuratorBudget("5");
+    }
+    previousCuratorStatus.current = status;
+  }, [curator]);
   const ordered = jobs
     .map((job, index) => ({ job, index }))
     .filter(({ job }) => job.job_type === "workspace_agent")
@@ -5081,6 +5114,12 @@ function WorkspaceAgentPanel({
     })
     .map(({ job }) => job);
   const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
+  const canContinueCurator = Boolean(
+    curator &&
+      ["completed", "stopped"].includes(curator.status) &&
+      curator.budget_usd != null &&
+      curator.strategy,
+  );
   useEffect(() => {
     const list = listRef.current;
     if (list && followConversationTail.current) {
@@ -5089,7 +5128,7 @@ function WorkspaceAgentPanel({
       });
       return () => window.cancelAnimationFrame(frame);
     }
-  }, [jobs]);
+  }, [jobs, curator]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const value = message.trim();
@@ -5098,7 +5137,16 @@ function WorkspaceAgentPanel({
     setSendError("");
     followConversationTail.current = true;
     try {
-      await onSend(value, yoloMode);
+      if (curatorMode) {
+        if (canContinueCurator) {
+          await onAddCuratorBudget(Number(curatorBudget), value);
+        } else {
+          await onStartCurator(value, Number(curatorBudget), 10, 150);
+        }
+        setCuratorMode(false);
+      } else {
+        await onSend(value, yoloMode);
+      }
       setMessage("");
     } catch (error) {
       setSendError(error instanceof Error ? error.message : "Request failed");
@@ -5112,58 +5160,6 @@ function WorkspaceAgentPanel({
         <button className="close" onClick={onClose}>×</button>
         <h2>Control Center</h2>
       </div>
-      <div className="curator-control">
-        {curator && ["running", "paused", "stopping"].includes(curator.status) ? (
-          <div className="curator-status">
-            <div>
-              <b>Curator · {curator.status}</b>
-              <small>
-                {curator.completed_cycles}/{curator.max_cycles} cycles · {curator.research_cells_used}/{curator.max_research_cells} research cells
-              </small>
-            </div>
-            <p>{curator.message}</p>
-            <div>
-              {curator.status === "running" && (
-                <button onClick={() => void onControlCurator("pause")}>Pause</button>
-              )}
-              {curator.status === "paused" && (
-                <button onClick={() => void onControlCurator("resume")}>Resume</button>
-              )}
-              {curator.status !== "stopping" && (
-                <button onClick={() => void onControlCurator("stop")}>Stop</button>
-              )}
-            </div>
-          </div>
-        ) : (
-          <details>
-            <summary>Keep enriching this project</summary>
-            {curator && <small>{curator.message}</small>}
-            <textarea
-              value={curatorObjective}
-              onChange={(event) => setCuratorObjective(event.target.value)}
-              placeholder="What should this dataset become useful for?"
-              rows={2}
-            />
-            <div className="curator-budget">
-              <span>Up to 5 cycles · 50 research cells</span>
-              <button
-                disabled={curatorStarting || !curatorObjective.trim()}
-                onClick={async () => {
-                  setCuratorStarting(true);
-                  try {
-                    await onStartCurator(curatorObjective.trim(), 5, 50);
-                    setCuratorObjective("");
-                  } finally {
-                    setCuratorStarting(false);
-                  }
-                }}
-              >
-                {curatorStarting ? "Starting…" : "Start curator"}
-              </button>
-            </div>
-          </details>
-        )}
-      </div>
       <div
         className="agent-conversation"
         ref={listRef}
@@ -5173,7 +5169,7 @@ function WorkspaceAgentPanel({
             list.scrollHeight - list.scrollTop - list.clientHeight < 48;
         }}
       >
-        {ordered.length === 0 && (
+        {ordered.length === 0 && !curator && (
           <p className="agent-empty">Tell Epiq what to research or change.</p>
         )}
         {ordered.map((job) => {
@@ -5296,12 +5292,86 @@ function WorkspaceAgentPanel({
             </div>
           </div>;
         })}
+        {curator && (
+          <div className="agent-exchange curator-exchange">
+            <div className="agent-message user-message">{curator.objective}</div>
+            <div className="agent-message assistant-message">
+              <div className="agent-message-status">
+                <span className={`job-status ${curator.status}`}>
+                  curator · {curator.status.replace("_", " ")}
+                </span>
+                {["planning", "running", "stopping"].includes(curator.status) && (
+                  <i className="agent-spinner" />
+                )}
+              </div>
+              <p>{curator.message}</p>
+              <div className="agent-plan-summary">
+                <span>${curator.estimated_spend_usd.toFixed(2)} spent</span>
+                <span>${curator.budget_usd?.toFixed(2) ?? "—"} budget</span>
+                <span>{curator.completed_cycles}/{curator.max_cycles} cycles</span>
+              </div>
+              {curator.strategy && (
+                <div className="curator-strategy">
+                  <b>{curator.strategy.summary}</b>
+                  <small>
+                    Target: {curator.strategy.target_example_count} {curator.strategy.primary_entity_kind} rows
+                  </small>
+                  {curator.strategy.phases.map((phase) => (
+                    <div key={phase.name}>
+                      <span>{phase.name}</span>
+                      <small>
+                        {phase.target_new_rows} new rows · {phase.estimated_research_cells} research cells · ${phase.budget_usd.toFixed(2)}
+                      </small>
+                      <p>{phase.objective}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="workspace-plan-actions">
+                {curator.status === "awaiting_approval" && (
+                  <button className="primary" onClick={() => void onControlCurator("approve")}>
+                    Approve strategy
+                  </button>
+                )}
+                {curator.status === "running" && (
+                  <button onClick={() => void onControlCurator("pause")}>Pause</button>
+                )}
+                {curator.status === "paused" && curator.budget_usd != null && (
+                  <button onClick={() => void onControlCurator("resume")}>Resume</button>
+                )}
+                {["planning", "awaiting_approval", "running", "paused"].includes(curator.status) && (
+                  <button onClick={() => void onControlCurator("stop")}>Stop</button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+      {curator && ["planning", "running", "stopping"].includes(curator.status) && (
+        <div className="curator-live-strip">
+          <i className="agent-spinner" />
+          <div>
+            <b>
+              {curator.status === "planning"
+                ? "Planning curation"
+                : `Curator cycle ${curator.completed_cycles + 1}`}
+            </b>
+            <small>{curator.message}</small>
+          </div>
+          <span>${curator.estimated_spend_usd.toFixed(2)} / ${curator.budget_usd?.toFixed(2) ?? "—"}</span>
+        </div>
+      )}
       <form className="agent-composer" onSubmit={submit}>
         <textarea
           value={message}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder="What should Epiq do?"
+          placeholder={
+            curatorMode
+              ? canContinueCurator
+                ? "What should the curator focus on next?"
+                : "What should Epiq keep enriching?"
+              : "What should Epiq do?"
+          }
           rows={3}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -5310,8 +5380,26 @@ function WorkspaceAgentPanel({
             }
           }}
         />
+        {curatorMode && (
+          <label className="inline-curator-budget">
+            <span>{canContinueCurator ? "Additional budget $" : "Budget $"}</span>
+            <input
+              type="number"
+              min="0.75"
+              max="10000"
+              step="0.50"
+              value={curatorBudget}
+              onChange={(event) => setCuratorBudget(event.target.value)}
+            />
+            <small>
+              {canContinueCurator
+                ? "Continue the approved strategy with your direction above."
+                : "Pi will propose a strategy before spending the remainder."}
+            </small>
+          </label>
+        )}
         <div>
-          <label
+          {!curatorMode && <label
             className={`yolo-toggle ${yoloMode ? "enabled" : ""}`}
             title="Execute proposed CLI commands immediately without a separate approval step"
           >
@@ -5329,8 +5417,32 @@ function WorkspaceAgentPanel({
             />
             <span>YOLO mode</span>
             <small>{yoloMode ? "Build immediately" : "Ask before building"}</small>
+          </label>}
+          <label className={`yolo-toggle ${curatorMode ? "enabled" : ""}`}>
+            <input
+              type="checkbox"
+              checked={curatorMode}
+              disabled={Boolean(curator && ["planning", "awaiting_approval", "running", "paused", "stopping"].includes(curator.status))}
+              onChange={(event) => setCuratorMode(event.target.checked)}
+            />
+            <span>{canContinueCurator ? "Continue curator" : "Continuous"}</span>
+            <small>
+              {curatorMode
+                ? canContinueCurator
+                  ? "Extend the existing strategy"
+                  : "Plan a budgeted curation run"
+                : "One request"}
+            </small>
           </label>
-          <button disabled={sending || !message.trim()}>{sending ? "Starting…" : "Send direction ✦"}</button>
+          <button disabled={sending || !message.trim() || (curatorMode && Number(curatorBudget) < 0.75)}>
+            {sending
+              ? "Starting…"
+              : curatorMode
+                ? canContinueCurator
+                  ? "Continue curation ✦"
+                  : "Plan curation ✦"
+                : "Send direction ✦"}
+          </button>
         </div>
         <small className="composer-key-hint">Enter to send · Shift+Enter for a new line</small>
         {sendError && <div className="form-error">{sendError}</div>}
