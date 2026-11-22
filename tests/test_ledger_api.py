@@ -162,3 +162,39 @@ def test_high_level_research_workflow_is_ledger_authoritative(tmp_path: Path) ->
     (root / ".epiq" / "projection.sqlite").unlink()
     reopened = epiq.open_ledger(root, clock=clock)
     assert reopened.claims()[0]["claim_id"] == recorded["claim_id"]
+
+
+def test_quantity_claims_are_normalized_to_schema_unit(tmp_path: Path) -> None:
+    database = epiq.open_ledger(tmp_path / "project", create=True, clock=clock)
+    database.define_kind("FundingRound")
+    entity = database.create_entity("FundingRound", "Seed")["entity_id"]
+    question = database.define_question(
+        "amount",
+        "FundingRound",
+        "Quantity[USD]",
+    )["question_id"]
+    evidence = database.capture_evidence(
+        source_title="Funding announcement",
+        source_type="web",
+        url="https://example.test/funding",
+        retrieved_at="2026-11-21",
+        excerpt="The company raised $5.3 million.",
+    )["evidence_id"]
+
+    database.assert_claim(
+        entity,
+        question,
+        {"amount": 5_300_000, "currency": "USD"},
+        valid_from="2026-11-21",
+        evidence_ids=[evidence],
+    )
+
+    assert database.claims()[0]["value"] == 5_300_000
+    with pytest.raises(EpiqError, match="received unit 'EUR'"):
+        database.assert_claim(
+            entity,
+            question,
+            {"amount": 5_000_000, "currency": "EUR"},
+            valid_from="2026-11-21",
+            evidence_ids=[evidence],
+        )

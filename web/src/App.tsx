@@ -198,25 +198,38 @@ const formattedValue = (
     unknown
   >;
   const hasDisplayFormat = Boolean(override ?? definition.display_format);
-  if (
-    valueType?.startsWith("Quantity[") &&
-    valueType.endsWith("]") &&
-    value !== null &&
-    typeof value === "object" &&
-    "value" in value
-  ) {
-    const quantity = value as { value: unknown; unit?: unknown };
+  if (valueType?.startsWith("Quantity[") && valueType.endsWith("]")) {
+    const schemaUnit = valueType.slice("Quantity[".length, -1);
+    const quantity =
+      value !== null && typeof value === "object"
+        ? (value as {
+            value?: unknown;
+            unit?: unknown;
+            amount?: unknown;
+            currency?: unknown;
+          })
+        : null;
+    const rawAmount = quantity
+      ? quantity.value ?? quantity.amount
+      : value;
     const unit =
-      typeof quantity.unit === "string"
-        ? quantity.unit
-        : valueType.slice("Quantity[".length, -1);
+      quantity && typeof (quantity.unit ?? quantity.currency) === "string"
+        ? String(quantity.unit ?? quantity.currency)
+        : schemaUnit;
     const amount =
-      typeof quantity.value === "number"
+      typeof rawAmount === "number"
         ? new Intl.NumberFormat("en-US", {
             maximumFractionDigits: 6,
             useGrouping: format.use_grouping !== false,
-          }).format(quantity.value)
-        : display(quantity.value);
+          }).format(rawAmount)
+        : display(rawAmount);
+    if (unit === "USD" && typeof rawAmount === "number") {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: Number.isInteger(rawAmount) ? 0 : 2,
+      }).format(rawAmount);
+    }
     return `${amount} ${unit}`.trim();
   }
   if (valueType === "Year" && typeof value === "number") return String(value);

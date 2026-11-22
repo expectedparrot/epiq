@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +62,41 @@ class LedgerDatabase:
     ) -> dict[str, Any]:
         """Validate and append one atomic transaction to the authoritative ledger."""
         prepared = [self._operation(item) for item in operations]
+        question_types = {
+            str(question["question_id"]): str(question["value_type"])
+            for question in self.questions()
+        }
+        question_types.update(
+            {
+                str(operation.payload["question_id"]): str(operation.payload["value_type"])
+                for operation in prepared
+                if operation.type == "question.define"
+            }
+        )
+        normalized: list[Operation] = []
+        for operation in prepared:
+            if operation.type != "claim.assert":
+                normalized.append(operation)
+                continue
+            payload = dict(operation.payload)
+            question_id = str(payload["question_id"])
+            value_type = question_types.get(question_id)
+            if value_type is not None:
+                payload["value"] = self._normalize_claim_value(
+                    value_type,
+                    payload["value"],
+                )
+            normalized.append(
+                Operation(
+                    operation_id=operation.operation_id,
+                    type=operation.type,
+                    payload=payload,
+                    version=operation.version,
+                    requires=operation.requires,
+                    metadata=operation.metadata,
+                )
+            )
+        prepared = normalized
         result = self.writer.commit(
             prepared,
             actor=actor,
@@ -75,6 +111,38 @@ class LedgerDatabase:
             "created": result["created"],
             "projection": result["projection"],
         }
+
+    @staticmethod
+    def _normalize_claim_value(value_type: str, value: Any) -> Any:
+        if not (value_type.startswith("Quantity[") and value_type.endswith("]")):
+            return value
+        expected_unit = value_type[len("Quantity[") : -1]
+        amount = value
+        supplied_unit: Any = expected_unit
+        if isinstance(value, dict):
+            allowed = {"value", "unit", "amount", "currency"}
+            if set(value) - allowed:
+                raise EpiqError(
+                    "value_type_error",
+                    f"Expected {value_type} number; received {value!r}",
+                )
+            amount = value.get("value", value.get("amount"))
+            supplied_unit = value.get("unit", value.get("currency", expected_unit))
+        if supplied_unit != expected_unit:
+            raise EpiqError(
+                "value_type_error",
+                f"Expected {value_type}; received unit {supplied_unit!r}",
+            )
+        if (
+            not isinstance(amount, (int, float))
+            or isinstance(amount, bool)
+            or not math.isfinite(amount)
+        ):
+            raise EpiqError(
+                "value_type_error",
+                f"Expected finite {value_type} number; received {value!r}",
+            )
+        return amount
 
     def define_kind(
         self,
