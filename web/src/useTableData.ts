@@ -21,8 +21,9 @@ export function useTableData(
   );
   const [result, setResult] = useState<{
     scope: RequestScope;
-    matrix: Matrix;
+    matrix: Matrix | null;
     stale: StaleDerivation[];
+    status: "loading" | "ready" | "error";
   } | null>(null);
 
   useLayoutEffect(() => {
@@ -49,6 +50,11 @@ export function useTableData(
     const controller = new AbortController();
     scope.controller = controller;
     const current = () => scope.active && scope.controller === controller;
+    setResult((previous) =>
+      previous?.scope === scope && previous.matrix
+        ? previous
+        : { scope, matrix: null, stale: emptyDerivations, status: "loading" },
+    );
     scope.pending = (async () => {
       try {
         const [matrix, stale] = await Promise.all([
@@ -58,10 +64,23 @@ export function useTableData(
             { signal: controller.signal },
           ),
         ]);
-        if (current()) setResult({ scope, matrix, stale: stale.stale_derivations });
+        if (current())
+          setResult({
+            scope,
+            matrix,
+            stale: stale.stale_derivations,
+            status: "ready",
+          });
       } catch (error) {
-        if (current() && !controller.signal.aborted)
+        if (current() && !controller.signal.aborted) {
+          setResult({
+            scope,
+            matrix: null,
+            stale: emptyDerivations,
+            status: "error",
+          });
           onError(error instanceof Error ? error.message : "Could not load table");
+        }
       } finally {
         if (current()) scope.pending = null;
       }
@@ -72,6 +91,10 @@ export function useTableData(
   return {
     matrix: result?.scope === scope ? result.matrix : null,
     staleDerivations: result?.scope === scope ? result.stale : emptyDerivations,
+    isLoading:
+      enabled &&
+      Boolean(projectId && kind) &&
+      (result?.scope !== scope || result.status === "loading"),
     loadMatrix,
     clearMatrix,
   };

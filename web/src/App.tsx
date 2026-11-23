@@ -472,7 +472,7 @@ export default function App() {
   const [updatedCellKeys, setUpdatedCellKeys] = useState<Set<string>>(new Set());
   const [updatedCellCount, setUpdatedCellCount] = useState(0);
   const [sheetUpdateCounts, setSheetUpdateCounts] = useState<Record<string, number>>({});
-  const { matrix, staleDerivations, loadMatrix, clearMatrix } = useTableData(
+  const { matrix, staleDerivations, isLoading: tableLoading, loadMatrix, clearMatrix } = useTableData(
     overview?.project.project_id, kind, !needsInit && !projectClosed, setError,
   );
   const overviewGeneration = useRef(0);
@@ -2015,7 +2015,7 @@ export default function App() {
             Git ledger connected
           </div>
         </aside>
-        <main>
+        <main aria-busy={tableLoading}>
           {!kind ? (
             <div className="blank-workspace">
               <div className="blank-workspace-actions">
@@ -2029,6 +2029,13 @@ export default function App() {
             </div>
           ) : (
             <>
+          {tableLoading && (
+            <div className="table-loading-overlay" role="status" aria-live="polite">
+              <span className="spinner" />
+              <strong>Loading {kind}</strong>
+              <small>Preparing rows, fields, and evidence…</small>
+            </div>
+          )}
           <div className="toolbar">
             <div>
               <h1>{kind}</h1>
