@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
+import shutil
+import sys
 from importlib.resources import files
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +92,52 @@ def version_data() -> dict[str, Any]:
     }
 
 
+def install_status_data() -> dict[str, Any]:
+    """Report local installation and optional integration readiness without exposing secrets."""
+    package_root = files("epiq")
+    optional_modules = {
+        name: find_spec(name) is not None for name in ("fastapi", "uvicorn", "edsl")
+    }
+    source_provider = os.environ.get("EPIQ_SOURCE_PROVIDER") or "openai"
+    return {
+        **version_data(),
+        "python": {
+            "version": platform.python_version(),
+            "supported": sys.version_info >= (3, 11),
+            "executable": sys.executable,
+        },
+        "commands": {
+            "epiq": shutil.which("epiq"),
+            "epiq-web": shutil.which("epiq-web"),
+            "pi": shutil.which(os.environ.get("EPIQ_PI_EXECUTABLE", "pi")),
+            "git": shutil.which("git"),
+        },
+        "optional_modules": optional_modules,
+        "web": {
+            "dependencies_ready": optional_modules["fastapi"] and optional_modules["uvicorn"],
+            "frontend_bundled": package_root.joinpath("_frontend", "index.html").is_file(),
+        },
+        "research": {
+            "source_provider": source_provider,
+            "openai_key_configured": bool(os.environ.get("OPENAI_API_KEY")),
+            "firecrawl_key_configured": bool(os.environ.get("FIRECRAWL_API_KEY")),
+            "pi_available": bool(
+                shutil.which(os.environ.get("EPIQ_PI_EXECUTABLE", "pi"))
+            ),
+        },
+        "recommended_actions": {
+            "install": [
+                "uv",
+                "tool",
+                "install",
+                "git+https://github.com/expectedparrot/epiq.git",
+            ],
+            "upgrade": ["uv", "tool", "upgrade", "epiq"],
+            "verify": ["epiq", "install-status"],
+        },
+    }
+
+
 def capabilities_data() -> dict[str, Any]:
     """Describe the small stable orientation surface for a fresh agent."""
     return {
@@ -96,6 +147,7 @@ def capabilities_data() -> dict[str, Any]:
         "human_output_opt_in": ["--human", "-H", "--format table"],
         "orientation_commands": {
             "version": ["epiq", "version"],
+            "install_status": ["epiq", "install-status"],
             "capabilities": ["epiq", "capabilities"],
             "guide": ["epiq", "guide"],
             "guide_topics": ["epiq", "guide", "<topic>"],

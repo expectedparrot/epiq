@@ -621,8 +621,8 @@ negative, and unknown evidence standards. Do not claim research is complete duri
 Model time-varying many-to-many roles—leadership, employment, membership, funding rounds, and
 authorship—as relationship rows such as Appointment, not as a single lossy Ref on one endpoint.
 Include references to both durable entities plus atomic role/title, acting or interim status,
-start/end dates when supported, and evidence. A direct current_leader Ref may remain as a convenience
-projection, but it must not erase co-heads or appointment history.
+start/end dates when supported, and evidence. A direct current_leader Ref may remain as a
+convenience projection, but it must not erase co-heads or appointment history.
 
 For Ref[Kind] research, separate discovery and relationship evidence from enrichment of the
 referenced row. Once a source identifies a durable thing and directly supports the requested
@@ -961,9 +961,9 @@ Choose exactly one next action. A command action may contain a bounded batch of 
   empty, decision and plan null, and completion must audit the retained plan. Use stop_reason
   completed only when the target breadth and every coverage category are actually satisfied.
 
-After a command batch, inspect every JSON result before choosing another action. Keep working until the
-objective is genuinely handled; do not finish merely because one command succeeded or one search
-failed. Prefer commands that discover or update useful batches over one row at a time. Before
+After a command batch, inspect every JSON result before choosing another action. Keep working until
+the objective is genuinely handled; do not finish merely because one command succeeded or one
+search failed. Prefer commands that discover or update useful batches over one row at a time. Before
 finishing, audit the result against the original population, target breadth, coverage categories,
 and intended analytical use. If the result is only a starter dataset, continue unless a real budget,
 tool, or evidence limit prevents progress; then report that limit explicitly. Use read-only Epiq

@@ -22,6 +22,7 @@ from .agent_interface import (
     docs_show_data,
     envelope,
     guide_data,
+    install_status_data,
     next_actions,
     schema_data,
     status_data,
@@ -309,7 +310,9 @@ def _write_claims_long(rows: list[dict[str, Any]], output: str) -> Path:
     return path
 
 
-def _capabilities(command: str | None = None) -> dict[str, Any]:
+def _capabilities(
+    command: str | None = None, *, ledger_native: bool = True
+) -> dict[str, Any]:
     """Describe the CLI protocol without requiring an initialized project."""
     root = parser()
     subparsers = next(
@@ -377,9 +380,63 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
         "materialize",
         "propagate",
     }
+    ledger_reads = {
+        "validate",
+        "status",
+        "log",
+        "conflicts",
+        "merge-check",
+        "doctor",
+        "benchmark",
+        "entity-lookup",
+        "matrix",
+        "claims",
+        "question-challenges",
+        "derivations",
+        "proposals",
+        "artifact-verify",
+        "documents",
+        "pipelines",
+        "pipeline-chunk",
+        "bundles",
+        "reports",
+    }
+    ledger_atomic = {
+        "init",
+        "transact",
+        "kind",
+        "entity",
+        "entity-batch",
+        "ref-batch",
+        "question",
+        "evidence",
+        "assert",
+        "support-claim",
+        "supersede-claim",
+        "record",
+        "not-found",
+        "retire-entity",
+        "restore-entity",
+        "retire-question",
+        "restore-question",
+        "assess-evidence",
+        "review-claim",
+        "retract-claim",
+        "end-validity",
+        "challenge-question",
+        "resolve-challenge",
+        "alias-entity",
+        "merge-entities",
+        "evolve-question",
+        "derive",
+        "propose",
+        "review-proposal",
+        "bundle-record",
+        "report-record",
+    }
     commands = []
     for name in names:
-        is_ledger_command = name not in subparsers.choices
+        is_ledger_command = ledger_native and name in _PROMOTED_LEDGER_COMMANDS
         child = ledger_subparsers.choices[name] if is_ledger_command else subparsers.choices[name]
         groups = [
             {
@@ -392,16 +449,9 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
         item: dict[str, Any] = {
             "name": name,
             "summary": (ledger_summaries if is_ledger_command else summaries).get(name),
-            "mutates_project": name in writes
-            or name
-            in {
-                "kind",
-                "transact",
-                "remote",
-                "artifact-add",
-                "bundle-record",
-                "report-record",
-            },
+            "mutates_project": (
+                name not in ledger_reads if is_ledger_command else name in writes
+            ),
             "architecture": "git-ledger" if is_ledger_command else "shared-or-legacy",
         }
         if command is not None:
@@ -413,7 +463,9 @@ def _capabilities(command: str | None = None) -> dict[str, Any]:
                         for action in child._actions
                         if action.dest != "help"
                     ],
-                    "transactional": name in atomic,
+                    "transactional": (
+                        name in ledger_atomic if is_ledger_command else name in atomic
+                    ),
                     "example": CAPABILITY_EXAMPLES.get(name),
                     "returns": CAPABILITY_RETURNS.get(name, "JSON object or array"),
                     "constraints": groups,
@@ -680,6 +732,11 @@ def _select(value: Any, path: str) -> Any:
     for component in path.split("."):
         if isinstance(current, dict) and component in current:
             current = current[component]
+        elif isinstance(current, list) and component.isdigit():
+            index = int(component)
+            if index >= len(current):
+                raise EpiqError("select_not_found", f"Output path not found: {path}")
+            current = current[index]
         else:
             raise EpiqError("select_not_found", f"Output path not found: {path}")
     return current
@@ -806,11 +863,19 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--actor", default="human:cli", help="Actor recorded for write commands")
     root.add_argument("--quiet", action="store_true", help="Suppress successful command output")
     root.add_argument("--select", help="Emit only a dotted output path, such as entity_id")
+    root.add_argument(
+        "--raw",
+        action="store_true",
+        help="Emit a selected scalar without JSON encoding; requires --select",
+    )
     root.add_argument("--format", choices=["json", "ids", "table"], default="json")
     root.add_argument("--human", "-H", action="store_true", help="Emit human-readable output")
     commands = root.add_subparsers(dest="command", required=True)
 
     commands.add_parser("version", help="Report package and public contract versions")
+    commands.add_parser(
+        "install-status", help="Report installation and optional integration readiness"
+    )
     guide = commands.add_parser("guide", help="Return JSON-enveloped ledger-native usage guidance")
     guide.add_argument(
         "topic",
@@ -910,7 +975,9 @@ def parser() -> argparse.ArgumentParser:
     ledger_entity_batch.add_argument("--path", default=".")
     ledger_entity_batch.add_argument("kind")
     ledger_entity_batch.add_argument("--names-json", required=True)
-    ledger_entity_batch.add_argument("--role", choices=["entity", "observation", "relation"], default="entity")
+    ledger_entity_batch.add_argument(
+        "--role", choices=["entity", "observation", "relation"], default="entity"
+    )
     ledger_entity_lookup = ledger_commands.add_parser(
         "entity-lookup", help="Resolve ledger entity names to stable IDs"
     )
@@ -919,7 +986,10 @@ def parser() -> argparse.ArgumentParser:
     ledger_entity_lookup.add_argument("--name", action="append", default=[])
     ledger_ref_batch = ledger_commands.add_parser(
         "ref-batch",
-        help="Create or reuse referenced rows and record evidence-backed links in one CLI operation",
+        help=(
+            "Create or reuse referenced rows and record evidence-backed links "
+            "in one CLI operation"
+        ),
     )
     ledger_ref_batch.add_argument("--path", default=".")
     ledger_ref_batch.add_argument("--kind", required=True)
@@ -1292,6 +1362,12 @@ def parser() -> argparse.ArgumentParser:
     ledger_export.add_argument("--include-closed", action="store_true")
     ledger_export.add_argument("--record-manifest", action="store_true")
     ledger_export.add_argument("--retention", choices=["git", "git-lfs", "external"], default="git")
+    ledger_export_html = ledger_commands.add_parser(
+        "export-html", help="Export a self-contained ledger-backed HTML snapshot"
+    )
+    ledger_export_html.add_argument("--path", default=".")
+    ledger_export_html.add_argument("--kind")
+    ledger_export_html.add_argument("--output", required=True)
 
     agent_parser = commands.add_parser(
         "agent", help="Inspect the versioned agent contract and current workflow state"
@@ -1810,6 +1886,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
     """Execute one parsed command."""
     if args.command == "version":
         return version_data()
+    if args.command == "install-status":
+        return install_status_data()
     if args.command == "guide":
         return guide_data(args.topic)
     if args.command == "schema-plan":
@@ -1988,7 +2066,9 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                     if (args.kind, name.casefold()) in existing:
                         skipped.append(name)
                         continue
-                    result = database.create_entity(args.kind, name, role=args.role, actor=args.actor)
+                    result = database.create_entity(
+                        args.kind, name, role=args.role, actor=args.actor
+                    )
                     created.append({"name": name, "entity_id": result["entity_id"]})
                     existing.add((args.kind, name.casefold()))
                 return {
@@ -2040,7 +2120,10 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                 if question["value_type"] != f"Ref[{args.target_kind}]":
                     raise EpiqError(
                         "invalid_reference_question",
-                        f"{question['name']} is {question['value_type']}, not Ref[{args.target_kind}]",
+                        (
+                            f"{question['name']} is {question['value_type']}, "
+                            f"not Ref[{args.target_kind}]"
+                        ),
                     )
                 subjects = {
                     item["entity_id"]: item for item in database.entities(kind=args.kind)
@@ -3094,6 +3177,18 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
                         idempotency_key=args.idempotency_key,
                     )
                 return response
+            if args.ledger_command == "export-html":
+                output = export_ledger(
+                    database,
+                    args.output,
+                    "html",
+                    kind=args.kind,
+                )
+                return {
+                    "format": "html",
+                    "output": str(output),
+                    "size": output.stat().st_size,
+                }
             return database.record_not_found(
                 args.subject_id,
                 args.question_id,
@@ -3218,7 +3313,10 @@ def run(args: argparse.Namespace) -> dict[str, Any] | list[dict[str, Any]]:
         }
     database, database_source = _database(args.db)
     if args.command == "capabilities":
-        result = _capabilities(args.capability_command)
+        result = _capabilities(
+            args.capability_command,
+            ledger_native=not bool(args.db),
+        )
         if args.include_schema:
             result["project_schema"] = (
                 _project_schema(Store(database)) if database.exists() else None
@@ -4108,8 +4206,25 @@ def main(argv: list[str] | None = None) -> None:
         if args.select:
             result = _select(result, args.select)
             if args.format == "json" and not args.human:
-                print(json.dumps(result, sort_keys=True))
+                if args.raw:
+                    if not isinstance(result, str | int | float | bool) and result is not None:
+                        raise EpiqError(
+                            "raw_requires_scalar",
+                            "--raw requires --select to resolve to a scalar value",
+                        )
+                    rendered = (
+                        ""
+                        if result is None
+                        else str(result).lower()
+                        if isinstance(result, bool)
+                        else result
+                    )
+                    print(rendered)
+                else:
+                    print(json.dumps(result, sort_keys=True))
                 return
+        elif args.raw:
+            raise EpiqError("raw_requires_select", "--raw requires --select PATH")
         if args.format == "ids":
             print(json.dumps(_ids(result)))
         elif args.format == "table" or args.human:

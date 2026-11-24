@@ -106,6 +106,11 @@ _BINDINGS = [
 
 _LOCAL_ONLY = [
     (
+        "install-status",
+        "read",
+        "Installation and integration readiness describe the local CLI environment.",
+    ),
+    (
         "schema-plan",
         "read",
         "Schema planning is local, non-mutating guidance and does not require a hosted API.",

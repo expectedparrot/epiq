@@ -539,6 +539,73 @@ def test_capabilities_are_machine_readable_without_a_project(tmp_path: Path, cap
     assert result["document_schemas"]["apply"]["questions"]
 
 
+def test_promoted_init_capability_declares_git_ledger_mutation(capsys) -> None:
+    main(["capabilities", "--command", "init"])
+    command = _data(capsys)["commands"][0]
+
+    assert command["architecture"] == "git-ledger"
+    assert command["mutates_project"] is True
+    assert command["transactional"] is True
+    assert command["usage"].startswith("usage: epiq ledger init")
+
+
+def test_select_emits_string_ids_without_json_quotes(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "selected-id"
+    main(["--project", str(root), "init", "--name", "Selected ID"])
+    capsys.readouterr()
+    main(["--project", str(root), "kind", "Company"])
+    capsys.readouterr()
+    main(
+        [
+            "--project",
+            str(root),
+            "--select",
+            "entity_id",
+            "--raw",
+            "entity",
+            "Company",
+            "Acme",
+        ]
+    )
+
+    selected = capsys.readouterr().out.strip()
+    assert selected.startswith("ent_")
+    assert '"' not in selected
+
+    main(
+        [
+            "--select",
+            "commands.0.architecture",
+            "--raw",
+            "capabilities",
+            "--command",
+            "init",
+        ]
+    )
+    assert capsys.readouterr().out.strip() == "git-ledger"
+
+
+def test_install_status_is_agent_readable_and_never_returns_secret_values(
+    capsys, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "do-not-expose-openai")
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "do-not-expose-firecrawl")
+
+    main(["install-status"])
+    result = _data(capsys)
+
+    assert result["python"]["supported"] is True
+    assert result["research"]["openai_key_configured"] is True
+    assert result["research"]["firecrawl_key_configured"] is True
+    assert result["recommended_actions"]["upgrade"] == [
+        "uv",
+        "tool",
+        "upgrade",
+        "epiq",
+    ]
+    assert "do-not-expose" not in json.dumps(result)
+
+
 def test_schema_and_context_include_question_only_kind(tmp_path: Path, capsys) -> None:
     database = tmp_path / "empty-kind.sqlite"
     main(["--db", str(database), "init", "--name", "Question first"])

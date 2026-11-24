@@ -1,40 +1,50 @@
 # E[🦜]
 
 Epiq is a local-first epistemic database for agent-driven research. Its authoritative datastore is
-a Git-versioned collection of canonical, immutable JSON transactions containing entities, typed
-questions, source excerpts, and evidence-backed claims. SQLite is a disposable projection for
-queries and interfaces; deleting it does not delete research state.
+a Git-versioned directory of immutable JSON transactions containing entities, typed questions,
+source excerpts, and evidence-backed claims. SQLite under `.epiq/` is a disposable projection for
+queries and interfaces; it is never the source of truth.
 
-Epiq's core database and CLI do not search the web or call a language model. The optional local web
-application can launch replaceable research agents and submit evidence-backed findings through the
-same deterministic interface. This keeps research orchestration replaceable and makes storage
-behavior testable.
+Epiq separates durable research state from replaceable orchestration. The CLI validates every
+write and emits machine-readable JSON. The optional local web application adds a spreadsheet,
+document pipelines, and a persistent project-scoped Control Center agent.
 
-The Git-native architecture is under active implementation on `feature/git-ledger`. The older
-SQLite-only commands documented later remain available during that work but are not the target
-storage architecture.
+## Install the CLI
 
-## Coding agent quickstart — click to copy
+Epiq requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
 
-Copy the prompt below into Codex, Claude Code, or another terminal-capable coding agent:
+```bash
+uv tool install git+https://github.com/expectedparrot/epiq.git
+epiq install-status
+```
+
+Upgrade an existing installation before starting important work:
+
+```bash
+uv tool upgrade epiq
+epiq install-status
+```
+
+`install-status` reports the installed version and path, Python compatibility, bundled frontend,
+optional modules, available `git`/`pi` commands, and whether research-provider credentials are
+configured. It reports only credential presence, never credential values.
+
+## Coding-agent quickstart — click to copy
+
+Paste this prompt into Codex, Claude Code, or another terminal-capable coding agent:
 
 ```text
 Use Epiq's CLI to build or maintain an evidence-backed research project. Epiq's authoritative
-datastore is a Git-versioned directory of immutable JSON transactions; `.epiq/projection.sqlite`
-is disposable. Never edit transaction files or SQLite directly, and never commit `.epiq/`.
+datastore is a Git-versioned directory of immutable JSON transactions. Never edit ledger
+transactions or `.epiq/projection.sqlite` directly, and never commit `.epiq/` or credentials.
 
-First, make sure `uv` is installed. Install Epiq as an isolated CLI with:
+Before working, install or update Epiq and inspect its machine-readable guidance:
   uv tool install git+https://github.com/expectedparrot/epiq.git
-If Epiq is already installed, update it before starting:
+or, if it is already installed:
   uv tool upgrade epiq
-  epiq version
-If working in an Epiq source checkout, run `git pull --ff-only`, then `uv sync --extra test`, and
-use `uv run epiq` instead. Stale installations may not expose current ledger commands.
-
-Before acting, inspect Epiq's built-in JSON guidance:
-  epiq version
+then run:
+  epiq install-status
   epiq capabilities
-  epiq guide
   epiq guide workflow
   epiq guide schema-design
   epiq guide schema-patterns
@@ -42,189 +52,160 @@ Before acting, inspect Epiq's built-in JSON guidance:
   epiq guide git
   epiq guide recovery
 
-Commands return a versioned JSON envelope. Read results from `data`, failures from `errors`, and
-review any `next_steps`. Use `epiq capabilities --command COMMAND` for exact argument contracts;
-do not guess flags or IDs.
+If working inside an Epiq source checkout, do not install over it. Run `git pull --ff-only`,
+`uv sync --extra test`, and use `uv run epiq`.
 
-For an existing project, use `epiq remote clone URL --path DIRECTORY` or enter its checkout. For a
-new project, use `epiq --project DIRECTORY init --name NAME`. Select it with `--project DIRECTORY`,
-`EPIQ_PROJECT`, or `epiq use-project DIRECTORY`. Use IDs returned by Epiq, identify automated writes
-with `--actor agent:NAME`, and provide stable `--idempotency-key` values.
+Commands return one versioned JSON envelope. Read results from `data`, failures from `errors`, and
+review `next_steps`. Run `epiq capabilities --command COMMAND` before guessing arguments. Select a
+project with `--project DIRECTORY`, `EPIQ_PROJECT`, `epiq use-project DIRECTORY`, or by entering a
+directory containing `epiq.toml`.
 
-Record factual claims with real, bounded evidence and explicit retrieval and validity dates. Prefer
-the atomic `record` command. Use `not-found` for an unsuccessful search, never as evidence that the
-answer is negative. Never invent evidence or expose credentials.
+Design the collection before scaling it. Define inclusion rules and stable identities; use
+Ref[Kind] relationships instead of embedded names; model repeated events as rows; prefer atomic
+numeric, enum, boolean, date, year, quantity, URL, and image fields over long prose; and propose a
+minimal core plus useful adjacent tables. Pilot typical, missing, ambiguous, and changing cases.
 
-After material writes, run `epiq doctor`. After fetching and explicitly integrating Git changes,
-run `epiq merge-check` and inspect `epiq conflicts`. Publish Epiq-owned changes with
+Use IDs returned by Epiq and stable `--idempotency-key` values for automated writes. Record claims
+with real bounded excerpts, retrieval dates, and validity dates. Use `not-found` for an unsuccessful
+search, never as evidence that an answer is negative. Never invent evidence.
+
+After writes run `epiq doctor`. After Git integration run `epiq merge-check`, inspect
+`epiq conflicts`, and run `epiq doctor`. Publish only Epiq-owned paths with
 `epiq remote publish --message MESSAGE`; use `--pr --base main` when review is appropriate.
 ```
 
-For common collection designs, inspect a non-mutating, review-first schema plan before creating any
-project objects:
+## Five-minute CLI workflow
 
-```bash
-epiq schema-plan faculty
-epiq schema-plan literature
-epiq schema-plan startups
-```
-
-## Git-native projects
-
-Create and validate a project directory:
+Create a project and inspect the built-in orientation surface:
 
 ```bash
 epiq --project research init --name "Market research"
-epiq --project research validate
-epiq --project research build --verify
-epiq --project research doctor
+epiq --project research status
+epiq --project research guide 2>/dev/null || epiq guide workflow
 ```
 
-Select it once for the current workspace to omit `--project` thereafter:
-
-```bash
-epiq use-project research
-epiq status
-```
-
-`EPIQ_PROJECT` provides the same selection for scripts and CI. The explicit `epiq ledger ...`
-namespace remains a compatibility alias during the cutover. Commands using `--db` continue to
-address the quarantined SQLite implementation and are not part of the target architecture.
-Inside a project directory containing `epiq.toml`, Epiq discovers the project automatically.
-
-Agents append typed operation batches with `epiq transact`. Independent branches normally
-add different transaction files, so Git merges them as a set union. After merging, run:
-
-```bash
-epiq --project research merge-check
-epiq --project research conflicts
-```
-
-`merge-check` distinguishes structural integrity from domain disagreement. A project containing
-concurrent claims or visibility decisions can be structurally mergeable while reporting explicit
-domain conflicts. See [the architecture specification](docs/git-ledger-architecture.md).
-
-Use a Git repository as a collaboration remote without committing the disposable projection:
-
-```bash
-epiq remote clone git@github.com:example/research.git --path research
-epiq --project research remote status
-epiq --project research remote fetch
-epiq --project research remote publish --message "Add competitor evidence"
-epiq --project research remote publish --message "Add pricing review" --pr --base main
-```
-
-`remote publish` validates the project, stages only `epiq.toml`, `.gitignore`, `ledger/`, and
-`artifacts/`, commits, and pushes the current branch. It refuses to commit unrelated staged files.
-The optional `--pr` uses the GitHub `gh` CLI to create a pull request. Fetch does not integrate
-remote changes automatically; branch integration remains an explicit Git operation followed by
-`epiq merge-check`.
-
-Measure local storage behavior without contacting a remote:
-
-```bash
-epiq --project research benchmark --iterations 5
-epiq benchmark --synthetic medium --iterations 3
-```
-
-See [the performance baseline](docs/ledger-performance.md) for profile definitions, measurements,
-and the deliberately broad CI regression thresholds.
-
-An ordinary evidence-backed workflow does not require raw transaction JSON:
+Create a typed table, one row, and one field:
 
 ```bash
 epiq --project research kind Company
 epiq --project research entity Company Acme --idempotency-key entity-acme
 epiq --project research question employees --for Company --type Int \
-  --idempotency-key question-employees
+  --idempotency-key question-company-employees
+```
+
+Record evidence and its supported answer atomically:
+
+```bash
 epiq --project research record \
-  --subject-id ent_... --question-id q_... --value 12 \
-  --valid-from 2026-11-21 --source-title "Acme profile" --source-type web \
-  --url https://example.test/acme --retrieved-at 2026-11-21 \
-  --excerpt "Acme has 12 employees." --idempotency-key record-employees
+  --subject Acme --question employees --value 12 \
+  --source-title "Acme company profile" --source-type web \
+  --url https://example.test/acme --retrieved-at 2026-11-23 \
+  --excerpt "Acme has 12 employees." --valid-from 2026-11-23 \
+  --idempotency-key acme-employees-2026-11-23
+
 epiq --project research matrix --kind Company
+epiq --project research doctor
 ```
 
-The record command commits evidence capture and claim assertion in one immutable transaction.
-Supplying an idempotency key makes safe retries reuse the same transaction and object IDs.
+Every response is a JSON envelope. Add `--human` for prose, `--format table` for compact tabular
+output, `--select PATH` to extract one JSON value, or `--select PATH --raw` to emit a scalar for
+shell composition.
 
-Retain full captures or generated reports by content digest:
+## Executable smoke test with returned IDs
+
+This creates an isolated project and chains identifiers without parsing prose or using placeholders:
 
 ```bash
-epiq --project research artifact-add --input capture.html --retention git
-epiq --project research artifact-verify
-epiq --project research bundle-record --job-id job_123 \
-  --request request.json --bundle source-bundle.json
-epiq --project research report-record --type summary --input report.md \
-  --input-transaction-id txn_... --parameters '{"format":"markdown"}'
-epiq --project research reports
+PROJECT="$(mktemp -d)/epiq-smoke"
+epiq --project "$PROJECT" init --name "Epiq smoke test"
+epiq --project "$PROJECT" kind Company
+ENTITY_ID="$(epiq --project "$PROJECT" --select entity_id --raw entity Company Acme \
+  --idempotency-key smoke-entity)"
+QUESTION_ID="$(epiq --project "$PROJECT" --select question_id --raw question employees \
+  --for Company --type Int --idempotency-key smoke-question)"
+epiq --project "$PROJECT" record \
+  --subject-id "$ENTITY_ID" --question-id "$QUESTION_ID" --value 12 \
+  --source-title "Smoke-test fixture" --source-type report \
+  --url https://example.test/acme --retrieved-at 2026-11-23 \
+  --excerpt "Acme has 12 employees." --valid-from 2026-11-23 \
+  --idempotency-key smoke-record
+epiq --project "$PROJECT" matrix --kind Company
+epiq --project "$PROJECT" doctor
 ```
 
-`git` and `git-lfs` retention write atomic files under `artifacts/sha256/`; `external` records the
-digest without retaining bytes locally. `ledger doctor` verifies every retained artifact and every
-locally retained report reference.
+## Design a useful collection
 
-### Extract structured data from files
-
-Keep long documents as content-addressed artifacts rather than copying their bodies into database
-cells or an agent conversation. Epiq can prepare deterministic, bounded chunks and accept only
-structured findings whose quoted support occurs verbatim in the selected chunk:
+Do not translate the nouns in a request into one flat table. Start with:
 
 ```bash
-epiq --project research document-add --input upwork-q3-2026.pdf \
-  --title "Upwork Q3 2026 earnings call" --type earnings-call-transcript \
-  --retention git-lfs
+epiq guide schema-design
+epiq guide schema-patterns
+epiq schema-plan faculty
+epiq schema-plan literature
+epiq schema-plan startups
+```
 
+A useful schema normally distinguishes:
+
+- stable things with independent identity, such as people, organizations, papers, products, and
+  places;
+- repeated events or observations, such as appointments, funding rounds, earnings calls, citations,
+  and news coverage;
+- typed relationships using `Ref[Kind]`;
+- analysis-ready fields such as numbers, quantities, years, dates, enums, booleans, URLs, and images;
+- explicit scope, inclusion rules, identifiers, evidence requirements, and time policy.
+
+For example, a faculty project may begin with `Faculty` and `AcademicGroup`, then add `Paper`,
+`Authorship`, `Course`, `Appointment`, and `NewsArticle` when those tables answer useful questions.
+Pilot the schema before collecting hundreds of rows.
+
+## Existing projects and Git collaboration
+
+Clone or select an existing project:
+
+```bash
+epiq remote clone git@github.com:example/research.git --path research
+epiq use-project research
+epiq status
+```
+
+Fetch never silently merges. Integrate explicitly, then validate semantic and structural state:
+
+```bash
+epiq remote fetch
+git merge origin/main
+epiq merge-check
+epiq conflicts
+epiq doctor
+```
+
+Publish only Epiq-owned files (`epiq.toml`, `.gitignore`, `ledger/`, and retained `artifacts/`):
+
+```bash
+epiq remote publish --message "Add competitor evidence"
+epiq remote publish --message "Add pricing review" --pr --base main
+```
+
+## Long documents and extraction pipelines
+
+Keep PDFs and transcripts as content-addressed artifacts rather than pasting entire documents into
+agent context or database cells. Epiq prepares deterministic bounded chunks and accepts only
+findings whose supporting quote occurs in the selected chunk:
+
+```bash
+epiq --project research document-add --input call.pdf \
+  --title "Q3 earnings call" --type earnings-call-transcript --retention git-lfs
 epiq --project research pipeline-define --input transcript-facts.json
 epiq --project research pipeline-prepare \
   --document rpt_DOCUMENT --pipeline rpt_PIPELINE
-epiq --project research pipeline-chunk --run rpt_RUN --index 0
 epiq --project research pipeline-extract --run rpt_RUN --workers 4
-epiq --project research pipeline-apply --run rpt_RUN --findings-json '[
-  {
-    "chunk_index": 0,
-    "subject_kind": "EarningsCall",
-    "subject_name": "Upwork Q3 2026",
-    "question": "call_date",
-    "value": "2026-11-07",
-    "quote": "The call took place on November 7, 2026.",
-    "valid_from": "2026-11-07"
-  }
-]'
 ```
 
-A pipeline definition is versioned JSON. It declares bounded chunking plus the exact existing
-fields the extractor may populate:
+Use `epiq capabilities --command document-add` and the corresponding pipeline commands for exact
+contracts. Pipeline jobs write verified results incrementally; the web application checkpoints
+completed chunks and resumes unfinished work after a restart.
 
-```json
-{
-  "name": "transcript-facts",
-  "version": 1,
-  "chunking": {"chunk_chars": 12000, "overlap_chars": 500},
-  "outputs": [
-    {
-      "kind": "EarningsCall",
-      "question": "call_date",
-      "instructions": "Extract only an explicitly stated call date."
-    }
-  ]
-}
-```
-
-The original document, extracted text, pipeline definition, chunks, and run manifest are addressed
-by SHA-256. Applying findings verifies the pipeline allow-list, row and field identities, chunk
-membership, and exact quote before appending evidence and a claim. Re-running the same finding is
-idempotent.
-
-`pipeline-extract` runs independent bounded chunks concurrently (one to eight workers) and applies
-each verified chunk's findings immediately, so visible tables update while the rest of the document
-is still processing. The web explorer exposes the same flow in its **Documents** pane: upload a
-file, save a pipeline definition, prepare chunks, and monitor extraction progress. Pipelines may
-opt into creating missing output rows with `"create_subjects": true`; a `Ref[Kind]` output may use
-`"create_refs": true` to resolve or create the named referenced row before writing the link.
-
-Ledger projections export directly to deterministic JSON, JSONL, and CSV, or to native EDSL
-packages when the `edsl` extra is installed:
+## Exports
 
 ```bash
 epiq --project research export --format matrix-csv --kind Company \
@@ -235,1742 +216,75 @@ epiq --project research export --format scenario-list --kind Company \
   --output companies.scenario-list.ep
 epiq --project research export --format agent-list --kind Company \
   --output companies.agent-list.ep --record-manifest
-epiq --project research export-html --kind Company --output companies.html
+epiq --project research export --format html --kind Company --output companies.html
 ```
 
-EDSL exports are loadable `ScenarioList` or `AgentList` `.ep` packages. Reference-valued Epiq
-questions are resolved to entity names, question labels become the EDSL codebook, and stable Epiq
-entity IDs remain in each exported record. `--record-manifest` retains the generated bytes and
-appends a `report.record` transaction naming every input transaction.
+EDSL exports are native `.ep` packages. Install the `edsl` optional dependency when using them.
 
-`epiq-web` now opens the ledger project directory selected by `EPIQ_PROJECT` (default:
-`.epiq/project`). Its core project, entity, question, evidence, claim, matrix, conflict, and doctor
-endpoints use `LedgerDatabase` exclusively. The **Ask Epiq** console accepts directions such as
-“find more examples,” “add official photos,” or “create a Papers table.” It first presents a bounded
-schema, row, and research plan; nothing changes until the user approves it. Approved scalar
-research captures evidence and claims as ledger transactions. Relationship research is not yet
-executed by this console. The older `create_app` factory remains temporarily for workflows that
-have not yet been ported; it is no longer the executable's default application.
+## Run the web application
 
-## Design paper and executable example
-
-Read [Epiq: An Epistemic Database for Agent-Driven Research](docs/epiq-short-paper.pdf)
-for the design philosophy, architecture diagram, core semantics, and implementation limits.
-The [Markdown source](docs/epiq-short-paper.md) includes a
-[CLI walkthrough](docs/epiq-short-paper.md#appendix-a-an-executable-research-cycle)
-whose exact snippets run in CI, checking all four cell states, evidence lineage, explicit
-correction, and historical reads. The [TikZ source](docs/figures/epiq-operation.tex) and
-[build script](docs/build-short-paper.sh) keep the paper and vector diagram reproducible.
-
-## Run the web app locally — paste this into your coding agent
-
-Copy the following prompt into Codex, Claude Code, or another terminal-capable coding agent. Replace
-the project filename and display name if you already know what you want to research.
-
-```text
-Set up and launch the Epiq web application locally for me.
-
-1. If you are already inside an Epiq checkout, use it. Otherwise clone
-   https://github.com/expectedparrot/epiq.git and enter the repository.
-2. Confirm Python 3.11+, uv, and Node.js are available. Do not replace or remove any existing
-   databases, configuration, uncommitted work, or running research jobs.
-3. Install the application and build the browser assets:
-     uv sync --extra web
-     npm --prefix web ci
-     npm --prefix web run build
-4. Choose a persistent Git-ledger project directory and pass it to the server:
-     export EPIQ_PROJECT="$PWD/.epiq/projects/my-research"
-     mkdir -p "$(dirname "$EPIQ_PROJECT")"
-   Do not initialize or overwrite the project from the terminal. If it is new, let me name and
-   create it from the web welcome screen.
-5. If OPENAI_API_KEY is already present in the environment, pass it through without printing,
-   logging, or writing it into the repository. If it is absent, explain that the spreadsheet and
-   manual evidence workflows will work but AI research buttons will require the variable.
-6. Start the long-running local server from the repository root:
-     uv run --extra web epiq-web
-   Bind only to the default loopback address. If port 8000 is occupied by an existing healthy Epiq
-   server, do not kill it until you have checked for active research jobs and confirmed whether it
-   can be reused.
-7. Verify that the server started, open http://127.0.0.1:8000 in my browser, and tell me:
-   - the selected ledger project path;
-   - whether agent research is enabled;
-   - the local URL; and
-   - how to stop and restart the server safely.
-
-Keep the server running after you finish. Do not expose it to the public network and do not commit
-generated databases, workspace configuration, credentials, or build artifacts.
-```
-
-Keep `EPIQ_PROJECT` set to the same directory on subsequent launches:
+For development or the current web interface, use a source checkout:
 
 ```bash
-EPIQ_PROJECT="$PWD/.epiq/projects/my-research" uv run --extra web epiq-web
+git clone https://github.com/expectedparrot/epiq.git
+cd epiq
+uv sync --extra web
+npm --prefix web ci
+npm --prefix web run build
+export EPIQ_PROJECT="$PWD/.epiq/projects/my-research"
+mkdir -p "$(dirname "$EPIQ_PROJECT")"
+uv run --extra web epiq-web
 ```
 
-## The model in one minute
+Open <http://127.0.0.1:8000>. Keep the project path stable across restarts. The browser can create a
+new project at that path.
 
-Suppose you want a table like this:
+Research integrations are optional. `epiq install-status` shows readiness. The default direct
+reasoner uses `OPENAI_API_KEY`; Firecrawl retrieval additionally uses `EPIQ_SOURCE_PROVIDER=firecrawl`
+and `FIRECRAWL_API_KEY`; the persistent Control Center uses the configurable `pi` executable. Never
+print, log, or commit credential values. Bind the local application only to loopback unless you have
+added an appropriate authentication and deployment layer.
 
-| Town | Population | Median home value |
-| --- | ---: | ---: |
-| Barnstable | 49,568 | $602,500 |
-| Truro | 1,708 | $888,200 |
-
-An ordinary spreadsheet stores the displayed values. Epiq stores the pieces that justify them:
-
-| Epiq object | Example | Rough spreadsheet analogy |
-| --- | --- | --- |
-| Entity | `Barnstable`, of kind `Town` | Row |
-| Question | `population : Int for Town` | Typed column |
-| Source | Census API URL and retrieval date | Citation |
-| Evidence | A bounded excerpt from that source | Supporting passage |
-| Claim | Barnstable's population was 49,568 as of 2024-12-31 | Cell assertion |
-| Event | `claim.assert` by `agent:census` | Audit-log entry |
-| Projection | Current Town-by-question matrix | View or report |
-
-The table is derived. Claims and evidence are the durable record.
-
-Four cell states remain distinct:
-
-- `Answered`: one supported current answer.
-- `Contested`: multiple incompatible current answers.
-- `NotFound`: a bounded search was completed without sufficient evidence.
-- `Unasked`: no claim or completed search has been recorded.
-
-`NotFound` is deliberately not a negative answer. “I searched and could not establish whether the
-product supports SSO” does not mean “the product does not support SSO.”
-
-## Install
-
-Epiq requires Python 3.11 or later and has no runtime dependencies.
-
-From a checkout:
+## Develop Epiq
 
 ```bash
-uv sync --extra test
-uv run epiq --help
+git clone https://github.com/expectedparrot/epiq.git
+cd epiq
+uv sync --extra test --extra web
+npm --prefix web ci
+uv run pytest -q
+uv run ruff check .
+npm --prefix web run build
 ```
 
-Install the command in an isolated environment:
+Inside a source checkout, prefer `uv run epiq` and `uv run epiq-web` so you test the checked-out
+code rather than a separately installed executable.
+
+## Agent protocol and recovery
+
+These commands do not require guessing flags or reading this README:
 
 ```bash
-uv tool install .
-epiq --help
-```
-
-You can also replace `epiq` with `python -m epiq` in every example below.
-
-## Agent interface
-
-Epiq is agent-first. Every command emits one versioned JSON envelope to stdout by default:
-
-```json
-{
-  "schema_version": "1.0",
-  "status": "ok",
-  "command": "epiq db",
-  "argv": ["epiq", "db"],
-  "data": {},
-  "warnings": [],
-  "errors": [],
-  "next_steps": []
-}
-```
-
-Agents should read command results from `data` and execute only reviewed `next_steps`. Suggested
-actions are exact argument arrays and declare whether they mutate state, use the network, or require
-approval. Errors use the same envelope on stderr with `status: "error"`.
-
-An agent can orient and resume without reading this README:
-
-```bash
-epiq version
+epiq install-status
 epiq capabilities
-epiq guide
+epiq capabilities --command record
 epiq guide workflow
 epiq guide evidence
 epiq guide git
-epiq agent schema envelope
-epiq agent schema ledger-transaction
-epiq docs list
-```
-
-Use `--human` or `-H` for explicit human-readable output. `--select` selects a path inside `data`
-and emits that value directly for shell chaining; `--format ids` and `--format table` are likewise
-explicit compact-output modes.
-For readability, JSON fragments shown throughout the tutorial represent the envelope's `data`
-member unless the complete envelope is being discussed.
-
-## Legacy SQLite tutorial and reference
-
-The remaining long-form tutorial documents the quarantined `--db` interface and older examples.
-It is retained temporarily as a behavioral reference, not as guidance for new projects or agents.
-For the authoritative workflow, use `epiq guide`, the Git-native section above, and
-[the ledger architecture](docs/git-ledger-architecture.md).
-
-### Tutorial: build a town database
-
-### 1. Select a database
-
-Choose the SQLite file once for the current workspace:
-
-```bash
-epiq use examples/tutorial-towns.sqlite
-```
-
-Epiq writes the absolute path to `.epiq/config.json`. The file is workspace configuration, is
-ignored by Git, and may point to a database that does not exist yet.
-
-Inspect the selection:
-
-```bash
-epiq db
-```
-
-```json
-{
-  "database": "/path/to/epiq/examples/tutorial-towns.sqlite",
-  "exists": false,
-  "ok": true,
-  "source": "workspace"
-}
-```
-
-Database resolution has an explicit precedence order:
-
-1. `epiq --db path/to/file.sqlite ...`
-2. The `EPIQ_DB` environment variable
-3. `.epiq/config.json`, written by `epiq use`
-4. `.epiq/epiq.sqlite`
-
-Therefore CI can use `EPIQ_DB`, a developer can use `epiq use`, and an individual command can
-still override both.
-
-### 2. Initialize it
-
-```bash
-epiq init --name "Cape Cod Town Tutorial"
-```
-
-```json
-{
-  "database": "/path/to/epiq/examples/tutorial-towns.sqlite",
-  "name": "Cape Cod Town Tutorial",
-  "ok": true
-}
-```
-
-Initialization creates the SQLite schema and immutable project identity. Running `init` again on
-the same path fails rather than replacing the database.
-
-### 3. Add entities—the future rows
-
-```bash
-epiq entity Town "Barnstable" \
-  --attributes '{"county":"Barnstable County","state":"Massachusetts","geoid":"06000US2500103690"}'
-
-epiq entity Town "Truro" \
-  --attributes '{"county":"Barnstable County","state":"Massachusetts","geoid":"06000US2500170605"}'
-```
-
-Each command returns a stable ID:
-
-```json
-{
-  "entity_id": "ent_...",
-  "ok": true
-}
-```
-
-Commands accept either that ID or the exact entity name when referring to the entity later.
-Attributes are descriptive metadata; researched values belong in claims, not attributes.
-
-Observation and relation rows can declare a compound identity. Repeating the same kind and identity
-returns the existing entity even if a caller proposes a different display name:
-
-```bash
-epiq entity Forecast --role observation \
-  --identity '{"event":"rain_boston","forecaster":"Alice","issued_at":"2026-08-17T09:00:00Z"}'
-
-epiq entity PriceQuote --role relation \
-  --identity '{"product":"Acorn","plan":"Pro","region":"US","period":"monthly","effective":"2026-08-01"}'
-```
-
-Entity identity can evolve without erasing or rewriting research:
-
-```bash
-# Let later commands and agents resolve an alternate name.
-epiq entity-alias "Barnstable" "Town of Barnstable"
-
-# Unify a duplicate row into the surviving row; historical claim subject IDs remain intact.
-epiq merge-entities "Barnstable, MA" "Barnstable" --reason "Duplicate place identity"
-
-# Remove a row from current projections, then restore it if the scope changes.
-epiq retire-entity "Truro" --reason "Outside current comparison scope"
-epiq restore-entity "Truro" --reason "Restored to comparison scope"
-```
-
-### 4. Define typed questions—the future columns
-
-Questions apply to an entity kind. Adding a question is how the schema grows.
-
-```bash
-epiq question population \
-  --for Town \
-  --type Int \
-  --definition '{"label":"Population estimate","unit":"people","cardinality":"one"}'
-
-epiq question median_home_value \
-  --for Town \
-  --type Int \
-  --definition '{"label":"Median owner-occupied home value","unit":"USD","cardinality":"one"}'
-```
-
-The question name is the stable machine-facing field name. `definition` holds presentation and
-policy metadata. The current implementation recognizes:
-
-- `Int`: validated as a JSON integer.
-- `Float`: validated as a finite JSON number; integers are accepted because they are valid real
-  values (for example, probability endpoints `0` and `1`).
-- `Probability`: a finite number constrained to the closed interval `[0,1]`.
-- `Bool`: validated as JSON `true` or `false`.
-- `String`: validated as plain text.
-- `URL`: an absolute `http://` or `https://` URL; the web application renders it as a safe,
-  clickable new-tab link.
-- `Date`: an ISO `YYYY-MM-DD` calendar date.
-- `DateTime`: a timezone-aware ISO timestamp, including timestamps ending in `Z`.
-- `Year`: a calendar year from 1 through 9999, displayed without numeric grouping (use this rather
-  than `Int` for fields such as `founded_year` or `major_census_year`).
-- `Interval[Date]`: `{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"}`; `end` may be null.
-- `Enum[a,b,c]`: validated against the listed strings.
-- `Distribution[Float]`: an empirical or weighted empirical numeric distribution.
-- `Distribution[Enum[a,b,c]]`: a categorical probability distribution over exactly those outcomes.
-- `Ref[EntityKind]`: a validated relationship to another entity; names and aliases resolve to a
-  stable entity ID when the claim is recorded.
-- `Quantity[unit]`: a finite numeric measurement whose unit is part of the field's declared type,
-  such as `Quantity[USD]`, `Quantity[people]`, or `Quantity[km^2]`.
-- `Json`: accepts structured JSON for richer answers.
-
-For example, probability and free-text fields can be declared without wrapping either in a JSON
-object:
-
-```bash
-epiq question probability_of_launch \
-  --for Company \
-  --type Probability \
-  --definition '{"label":"Probability of launch","cardinality":"one"}'
-
-epiq question positioning_summary \
-  --for Company \
-  --type String \
-  --definition '{"label":"Positioning summary","cardinality":"one"}'
-```
-
-`cardinality` defaults to `one`. A question with `"cardinality":"many"` projects all supported
-values instead of treating multiple values as a contradiction.
-
-Questions are immutable and versioned. Defining the same question name again creates a new version;
-current projections use the latest version.
-
-### 5. Add evidence
-
-Evidence is stored before a claim can cite it:
-
-```bash
-epiq --actor agent:census evidence \
-  --url "https://api.example.gov/towns/barnstable" \
-  --title "2024 town estimates" \
-  --retrieved-at 2026-08-15 \
-  --excerpt "Barnstable population: 49,568; median owner-occupied home value: $602,500."
-```
-
-```json
-{
-  "evidence_id": "evd_...",
-  "ok": true,
-  "source_id": "src_..."
-}
-```
-
-A source records the URL, title, retrieval date, and content hash. Evidence is the bounded excerpt
-used to support a claim. Repeating the same URL and excerpt returns the existing IDs, which makes
-agent retries safe.
-
-Non-web evidence does not need a pretend URL. Its source type and deterministic URN are retained:
-
-```bash
-epiq evidence --type interview \
-  --title "Technical interview notes" \
-  --retrieved-at 2026-08-17 \
-  --excerpt-file private-notes.md
-```
-
-Source types are `web`, `personal`, `model`, `report`, `interview`, and `other`.
-
-Use structured locators for precise citations and optionally link the source to an entity already
-modeled in Epiq:
-
-```bash
-epiq evidence --type report --title "Remote Work Study A" \
-  --source-entity "Remote Work Study A" \
-  --locator '{"page":12,"table":"3","section":"Results"}' \
-  --retrieved-at 2026-08-17 --excerpt "The standardized effect was 0.18."
-```
-
-A claim may cite more than one fragment by repeating `--evidence`:
-
-```bash
-epiq assert --subject Barnstable --question population --value 49568 \
-  --valid-from 2024-12-31 \
-  --evidence evd_census_table \
-  --evidence evd_town_profile
-```
-
-Every evidence link remains visible in JSON, HTML, and Excel lineage.
-
-Capture the evidence ID without shell-side JSON traversal:
-
-```bash
-BARNSTABLE_EVIDENCE=$(epiq --actor agent:census --select evidence_id evidence \
-  --url "https://api.example.gov/towns/barnstable" \
-  --title "2024 town estimates" \
-  --retrieved-at 2026-08-15 \
-  --excerpt "Barnstable population: 49,568; median owner-occupied home value: $602,500.")
-```
-
-The CLI does not download or summarize the URL. The caller is responsible for retrieval; Epiq
-stores the submitted source metadata and excerpt.
-
-When newly found evidence supports one or more answers, `record` avoids manually copying evidence
-IDs between commands while preserving the same underlying records:
-
-```bash
-epiq --actor agent:research record \
-  --subject Barnstable \
-  --source-type web \
-  --url "https://api.example.gov/towns/barnstable" \
-  --source-title "2024 town estimates" \
-  --retrieved-at 2026-08-15 \
-  --excerpt "Population 49,568; median home value $602,500." \
-  --valid-from 2024-12-31 \
-  --answer population 49568 \
-  --answer median_home_value 602500
-```
-
-This is atomic syntactic sugar over `batch-write`: Epiq creates one evidence record and a separate
-typed claim for each `--answer`. If any answer fails validation, none of the evidence or claims are
-written. For one answer, use `--question population --value 49568` instead of `--answer`.
-
-If one source supports cells on several rows, omit `--subject` and repeat
-`--cell SUBJECT QUESTION VALUE`. Evidence and all cross-row claims still commit atomically:
-
-```bash
-epiq record --source-type report --source-title "Regional prices" \
-  --retrieved-at 2026-08-17 --excerpt "Acorn: 10; Beacon: 20." \
-  --valid-from 2026-08-17 \
-  --cell Acorn price 10 \
-  --cell Beacon price 20
-```
-
-### 6. Assert evidence-backed claims
-
-Use the same evidence fragment for both facts it supports:
-
-```bash
-epiq --actor agent:census assert \
-  --subject "Barnstable" \
-  --question population \
-  --value 49568 \
-  --valid-from 2024-12-31 \
-  --evidence "$BARNSTABLE_EVIDENCE" \
-  --confidence high
-
-epiq --actor agent:census assert \
-  --subject "Barnstable" \
-  --question median_home_value \
-  --value 602500 \
-  --valid-from 2024-12-31 \
-  --evidence "$BARNSTABLE_EVIDENCE" \
-  --confidence high
-```
-
-An assertion is rejected if the entity, question, or evidence does not exist; the question applies
-to another entity kind; or the value fails type validation. Confidence is `low`, `medium`, or
-`high`. Epiq records confidence but does not silently rewrite it as evidence ages.
-
-`--valid-from` answers “when was this true?” The event timestamp separately records “when did this
-database learn it?” This is the distinction between valid time and transaction time.
-
-The `--value` argument is parsed as JSON when possible:
-
-```bash
-# Int
---value 49568
-
-# Bool
---value true
-
-# Float
---value 0.73
-
-# Probability uses the same JSON number syntax but additionally enforces 0 <= p <= 1
---value 0.73
-
-# String (unquoted text that is not another JSON literal is treated as a string)
---value 'Enterprise research platform'
-
-# An explicitly JSON-quoted String is equivalent
---value '"Enterprise research platform"'
-
-# Enum or plain string
---value native
-
-# Structured Json
---value '{"amount":602500,"currency":"USD","measure":"median"}'
-```
-
-Repeating an identical normalized assertion returns the original claim ID without adding another
-event.
-
-### Review agent output before publication
-
-An agent can stage a claim that passes the same entity, type, and evidence validation as an
-assertion but remains invisible to current projections:
-
-```bash
-epiq --actor agent:research propose-claim \
-  --subject Barnstable \
-  --question population \
-  --value 49568 \
-  --valid-from 2020-04-01 \
-  --evidence evd_... \
-  --rationale "Matches the cited decennial Census table"
-
-epiq claim-proposals
-epiq --actor human:reviewer review-claims prp_... \
-  --decision approved --reason "Citation and interpretation verified"
-```
-
-`review-claims` accepts multiple proposal IDs. The entire selection is approved or rejected in one
-transaction; a missing or previously reviewed proposal leaves every selected proposal unchanged.
-
-Trusted agent pipelines can write a JSON array of claim objects directly. This is also one SQLite
-transaction: if item 12 is malformed, items 0–11 do not leak into either events or projections.
-
-```bash
-epiq --actor agent:research bulk-assert --input claims.json
-# Use --input - to read the JSON array from stdin.
-```
-
-When evidence and claims are both new, use `batch-write`. An `evidence.add` operation can define a
-batch-local `ref`; later `claim.assert` operations consume it through `evidence_refs`:
-
-```json
-[
-  {
-    "op": "evidence.add",
-    "ref": "funding_announcement",
-    "url": "https://example.com/news",
-    "title": "Funding announcement",
-    "retrieved_at": "2026-08-17",
-    "excerpt": "Acme has raised $12 million."
-  },
-  {
-    "op": "claim.assert",
-    "subject": "Acme",
-    "question": "funding",
-    "value": 12000000,
-    "valid_from": "2026-08-17",
-    "evidence_refs": ["funding_announcement"]
-  }
-]
-```
-
-Run it with `epiq --actor agent:research batch-write --input writeback.json`. A bad local reference,
-invalid evidence, or invalid claim rolls back every evidence, source, event, and claim in the batch.
-Each operation may provide its own `actor`; the event records that actor plus `submitted_by` when it
-differs from the batch submitter. This lets an import agent preserve individual interviewers or
-model runs as the originators of observations.
-
-The batch input is a stable, semver-covered contract. Its version 1.0 JSON Schema ships as
-`epiq/schemas/batch-write-1.0.schema.json`; incompatible changes require a new schema version.
-
-### Source capture and claim review
-
-The optional source pipeline separates retrieval (Firecrawl, explicit URLs, or a custom provider)
-from EDSL reasoning. Captured excerpts, supporting quotes, and explicit reviews have separate
-provenance in the inspector, matrix lineage, and exports. New research claims remain unreviewed
-until someone records a review. `doctor` reports structural integrity separately from provenance
-gaps; an excerpt match does not establish that a claim is true.
-
-See [Source providers and provenance](docs/source-providers-and-provenance.md) for setup,
-retention controls, provider injection, and the versioned contracts. The default research backend
-remains available when `EPIQ_SOURCE_PROVIDER` is unset.
-
-### Research lab notebook
-
-Every ledger-native `epiq research` command creates an append-only lab notebook session. The
-notebook separates informal discovery work—plans, queries, leads, candidate sources, rejections,
-and follow-ups—from evidence-backed claims. Only captured evidence can support a claim, while the
-notebook preserves how the researcher got there and leaves interrupted sessions resumable.
-
-```bash
-epiq --project . notebook start --objective "Map likely competitors" \
-  --scope '{"kind":"Company"}'
-epiq --project . notebook add nbk_... --type lead \
-  --content '{"name":"Acme","next":"verify its operator and funding"}'
-epiq --project . notebook list --session-id nbk_...
-epiq --project . notebook close nbk_... --status completed \
-  --summary "Verified the strongest leads"
-```
-
-Notebook entries are immutable ledger operations. SQLite only projects their current session view.
-The FastAPI app exposes read-only notebook projections at `GET /api/notebooks` and
-`GET /api/notebooks/{session_id}`; both appear in its generated OpenAPI documentation. Notebook
-writes continue to flow through the Epiq CLI so the Control Center can display the exact commands.
-
-### Repeated measurements and actor-aware reads
-
-Model each repeated measurement as an `observation` entity. Its compound identity should contain
-the measured item, rater, run, and iteration (or another tuple that uniquely identifies one
-measurement). Put the verdict and rationale on that observation, and use typed `Ref[...]` questions
-to link it to the measured item and rater. Re-ingesting the same compound identity returns the same
-observation entity, making retries idempotent.
-
-Do not rely on actor alone to distinguish repeated measurements. Actor is provenance for an
-assertion, while observations are independently addressable domain records. Identical assertions
-against the same subject, question, evidence, value, and valid date remain idempotent.
-
-For analysis that needs assertion provenance, read claims without collapsing them into cells:
-
-```bash
-epiq claims list --kind Observation --question verdict --actor model:gpt-x
-epiq export --format claims-long --kind Observation --questions verdict \
-  --output-path verdicts.jsonl
-epiq aggregate --kind Observation --question verdict --op tally --group-by-actor
-```
-
-`claims-long` writes JSONL when the output ends in `.jsonl` and CSV when it ends in `.csv`. Each
-row includes claim, subject, question, value, actor, confidence, temporal fields, status, evidence,
-and creation sequence. `matrix` and `query` also accept `--actor` to restrict their projections to
-claims asserted by one actor. For categorical breakdowns, `aggregate --op tally --group-by
-<question>` groups claim values by the subject's grouping field; `--group-by-actor` groups by
-assertion provenance. These grouping options are mutually exclusive.
-
-### Python embedding API
-
-The supported Python surface is deliberately small:
-
-```python
-import epiq
-
-db = epiq.open("judge-results", create=True, name="Judge results")
-db.define_kind("Observation")
-entity = db.create_entity("Observation", "Example")["entity_id"]
-question = db.define_question("verdict", "Observation", "Bool")["question_id"]
-db.record(
-    entity,
-    question,
-    True,
-    valid_from="2026-11-21",
-    source_title="Judge result",
-    source_type="model",
-    url="urn:epiq:model",
-    retrieved_at="2026-11-21",
-    excerpt="The verdict is true.",
-)
-claims = db.claims(kind="Observation", question="verdict")
-```
-
-`epiq.open` and `epiq.Database` now refer to Git-ledger projects. The primary surface includes
-typed transactions, entities, questions, evidence, claims, derivations, proposals, source bundles,
-reports, matrices, and conflicts. Without `create=True`, a missing or non-Epiq path raises a typed
-`EpiqError` instead of creating a project implicitly.
-
-During removal of the old SQLite implementation, it remains available only through the explicit
-`epiq.open_legacy_database` and `epiq.LegacyDatabase` names.
-
-For atomic proposal bundles, retry keys, historical imports, and fixture clocks, see
-[Historical imports and atomic proposal bundles](docs/historical-imports-and-proposals.md).
-Timestamp cutoffs compare UTC instants; date-only cutoffs mean midnight UTC at the start of the day.
-
-Question upserts compare against the latest immutable version; returning to an older definition
-creates a new version so that definition becomes current again. Entity upserts with a matching
-compound identity return the existing entity without renaming it—the original display name remains
-canonical.
-
-For repeatable setup, place `project`, `entity_kinds`, `entities`, `questions`, `aliases`, and
-`operations` in one JSON object:
-
-```bash
-epiq --db project.sqlite apply --input project.json
-epiq --db project.sqlite seed --input fixture.json
-```
-
-If the database is absent, `project.name` initializes it. Reapplying an unchanged declaration adds
-no events; a changed question definition creates the next immutable version. Any conflict or bad
-operation rolls the entire application back.
-
-### Evolve a field without losing its history
-
-A category error can be resolved as an executable schema transformation. For example, split one
-ambiguous Boolean into two separately answerable fields:
-
-```bash
-epiq evolve-question has_spinnaker \
-  --relationship splits \
-  --reason "Capability and installed configuration are distinct" \
-  --replacement '{"name":"spinnaker_available","value_type":"Enum[standard,optional,unavailable,unknown]"}' \
-  --replacement '{"name":"spinnaker_installed","value_type":"Bool"}'
-
-epiq question-lineage has_spinnaker
-```
-
-The successor definitions, lineage edges, and predecessor retirement commit together. Existing
-claims remain attached to the old question version and therefore remain historically inspectable;
-Epiq does not guess how to migrate semantically ambiguous answers.
-
-### End a fact or challenge its evidence
-
-Retraction means “we should no longer believe this assertion.” A validity end instead means “this
-was true, and then stopped being true”:
-
-```bash
-epiq end-validity clm_... --valid-to 2025-01-01 --reason "Leadership changed"
-```
-
-This is bitemporal: a query with `--known-at` before the validity-end event still reconstructs the
-earlier database belief, while `--valid-at 2025-06-01` after that event excludes the ended fact.
-
-Evidence itself remains immutable, but its quality can be assessed repeatedly:
-
-```bash
-epiq assess-evidence evd_... --status disputed \
-  --reason "The page may refer to a different company with the same name"
-epiq evidence-assessments evd_...
-```
-
-Statuses are `accepted`, `disputed`, `invalid`, and `superseded`. The latest assessment is shown in
-claim lineage; even invalid evidence is not erased, and Epiq does not silently retract every claim
-that cites it.
-
-### 7. Inspect the projection
-
-```bash
-epiq matrix --kind Town
-```
-
-The response contains question schemas, entity rows, projected cell states, values, confidence,
-and lineage. A shortened cell looks like this:
-
-```json
-{
-  "confidence": "high",
-  "lineage": [
-    {
-      "claim_id": "clm_...",
-      "evidence_id": "evd_...",
-      "excerpt": "Barnstable population: 49,568...",
-      "source": {
-        "title": "2024 town estimates",
-        "url": "https://api.example.gov/towns/barnstable"
-      },
-      "token": "p_clm_..."
-    }
-  ],
-  "state": "Answered",
-  "value": 49568,
-  "values": [49568]
-}
-```
-
-Use compact terminal tables without changing the JSON-first default:
-
-```bash
-epiq --format table matrix --kind Town
-epiq --format table query --kind Town --where 'population > 10000'
-```
-
-Select particular questions or historical cutoffs:
-
-```bash
-epiq matrix --kind Town --questions population,median_home_value
-epiq matrix --kind Town --valid-at 2024-12-31
-epiq matrix --kind Town --known-at 2026-01-01T00:00:00Z
-```
-
-At fixed valid- and transaction-time cutoffs, the projection is deterministic.
-`--known-at` also limits which rows, field versions, aliases, merges, retirements, research
-outcomes and evidence assessments are visible. Later research cannot turn a historical `Unasked`
-cell into `NotFound`. Each table is read from one SQLite snapshot, including its evidence lineage.
-
-### 8. Record research that did not find an answer
-
-Truro currently has two `Unasked` cells. Suppose an agent searches for a population source but
-cannot establish an answer:
-
-```bash
-epiq --actor agent:census not-found \
-  --subject "Truro" \
-  --question population \
-  --query 'Truro Massachusetts 2024 official population estimate' \
-  --notes 'Checked the town profile and state portal; neither exposed a citable 2024 estimate.'
-```
-
-The Truro population cell becomes `NotFound`, while its home-value cell remains `Unasked`. This
-records work performed without inventing a negative or zero value. A later supported assertion
-will make the current cell `Answered`; the research task remains in the event history.
-
-### 9. Understand contradictions and corrections
-
-For a cardinality-one question, two active claims with different values produce `Contested`:
-
-```bash
-epiq assert --subject Barnstable --question population --value 49568 \
-  --valid-from 2024-12-31 --evidence evd_first
-
-epiq assert --subject Barnstable --question population --value 50000 \
-  --valid-from 2024-12-31 --evidence evd_second
-```
-
-Epiq does not silently choose a winner. A reviewer resolves the conflict by retracting the claim
-that should no longer be active:
-
-```bash
-epiq --actor human:reviewer retract clm_incorrect \
-  --reason "The source rounded the ACS estimate; retain the exact table value."
-```
-
-Retraction closes the claim's transaction-time interval. It does not delete the assertion,
-evidence, or original event. The current projection changes, while historical queries can still
-recover what the database previously believed.
-
-### Challenge a question that imposes the wrong categories
-
-A source can reveal that the field itself is ill-typed rather than merely unanswered. For example,
-`has_spinnaker: Bool` conflates a boat model's optional capability with the equipment installed on
-an individual boat. Record that as a schema-level challenge:
-
-```bash
-epiq challenge-question has_spinnaker \
-  --problem modal_ambiguity \
-  --explanation "Can be equipped is different from currently has." \
-  --example-entity "RS Quest" \
-  --evidence evd_quest_options \
-  --proposed-replacement '{
-    "questions": [
-      {"name":"spinnaker_availability","value_type":"Enum[standard,optional,unavailable,unknown]"},
-      {"name":"spinnaker_equipped","value_type":"Bool","subject_kind":"Boat"}
-    ]
-  }'
-```
-
-This appends a `question.challenge` event and marks the projected question's `schema_state` as
-`challenged`. It does not mutate the question, retract claims, or automatically apply the proposed
-schema. Challenges are review-first:
-
-```bash
-epiq question-challenges --status open
-epiq question-challenges --question has_spinnaker
-epiq resolve-question-challenge qch_... --status resolved \
-  --resolution "Created separate model capability and boat equipment questions."
-```
-
-The initial problem taxonomy is `type_mismatch`, `cardinality_mismatch`, `temporal_mismatch`,
-`level_mismatch`, `population_mismatch`, `predicate_conflation`, `modal_ambiguity`,
-`unit_mismatch`, `epistemic_mismatch`, `definition_ambiguity`, and `other`. Triggering evidence and
-an example entity are optional but preserved when supplied.
-
-### Retire or restore a field without erasing it
-
-When a field is redundant, incorrectly typed, or asks the wrong question, remove it from current
-tables with an append-only retirement:
-
-```bash
-epiq retire-question google_star_reviews \
-  --reason "Google publishes an average rating, not the requested probability distribution."
-```
-
-This appends `question.retire`, removes the column from matrix, context, gaps, refresh-plan, export,
-and agent-research projections, and rejects new claims against it. It does **not** delete the
-field's definition, prior claims, evidence, challenges, or event history. The spreadsheet exposes
-the same operation as the `×` control in each field's action row and requires a reason before
-retiring it.
-
-If the field becomes useful again, restore its original history and values:
-
-```bash
-epiq restore-question google_star_reviews \
-  --reason "The field has been clarified and is needed again."
-```
-
-This appends `question.restore`; it does not manufacture a new field or duplicate the old claims.
-In Epiq, this reversible retirement is what the UI means by “Remove field.” There is intentionally
-no destructive schema-delete command.
-
-### 10. Inspect the event history
-
-```bash
-epiq history
-epiq history --type entity.create
-epiq history --type claim.assert
-epiq history --type claim.retracted
-```
-
-Each event includes a monotonically increasing sequence, event ID, timestamp, actor, type, and
-payload. Use distinctive actors for research runs:
-
-```bash
-epiq --actor agent:census-refresh-2026-08 evidence ...
-epiq --actor agent:census-refresh-2026-08 assert ...
-```
-
-`--actor` is a global option, so it appears before the subcommand.
-
-### 11. Export without losing provenance
-
-Create a self-contained, read-only snapshot of the entire database:
-
-```bash
-epiq export-html --output reports/project.html
-```
-
-Open that file directly in any browser. It embeds its data, styling, and interaction code, so it
-does not need Epiq, a web server, or an internet connection. It cannot modify the database. The
-snapshot includes:
-
-- every current table, field schema, row, and cell state;
-- claim lineage, temporal status, evidence excerpts, and source metadata;
-- `NotFound` research outcomes;
-- claim proposals, field challenges, and agent-job records;
-- integrity results and the complete append-only event history;
-- local filtering and cell inspection, draggable column widths, and wrapped or clipped text.
-
-The file reflects the database at export time; regenerate it to capture later changes. To disclose
-only one table while retaining its associated history and review metadata, add `--kind Town`.
-
-Create a multi-sheet Excel audit workbook:
-
-```bash
-epiq export --format xlsx --kind Town --output-path reports/towns.xlsx
-```
-
-The workbook contains five sheets:
-
-- `Table`: a conventional entity-by-question table.
-- `Evidence`: one row per active claim lineage, including URLs and excerpts.
-- `Research Gaps`: `Unasked`, `NotFound`, and contested cells.
-- `Field Schema`: field keys, labels, types, cardinality, and definitions.
-- `Event Log`: the append-only audit history with actors, timestamps, and payloads.
-
-Export the same current table as a native EDSL Git-backed package:
-
-```bash
-epiq export --format scenario-list --kind Town \
-  --output-path reports/towns.scenario_list.ep
-
-epiq export --format agent-list --kind Town \
-  --output-path reports/towns.agent_list.ep
-```
-
-These files are produced by EDSL's own `obj.git.save("file.ep")` implementation and can be loaded
-with `ScenarioList.load(...)` or `AgentList.load(...)`. Each object retains the stable Epiq entity
-ID; relationship values are exported as readable related-row names. Scenario records include
-`entity_name`, while AgentList rows use the Epiq row name as the EDSL agent name.
-
-Download or script a transactionally consistent copy of the complete SQLite source of truth:
-
-```bash
-epiq export --format sqlite --output-path backups/towns.sqlite
-```
-
-The older `export-xlsx`, `export-edsl`, and `backup` commands remain available. The unified
-`epiq export` form is recommended for agents because the format and output path are explicit.
-
-Excel and EDSL exports are projections. The SQLite database remains the source of truth.
-
-## Tutorial: preserve multiple forecasts as a distribution
-
-Five forecasts are not one fact with a strangely shaped value. They are five separately sourced
-claims that may disagree. Epiq preserves those observations first and derives an ensemble second.
-
-Create an event and two questions:
-
-```bash
-epiq entity WeatherEvent "Boston rain on 2026-08-17" \
-  --attributes '{"location":"Boston, MA","target_date":"2026-08-17"}'
-
-epiq question rain_probability \
-  --for WeatherEvent \
-  --type Probability \
-  --definition '{"label":"Provider rain probabilities","cardinality":"many"}'
-
-epiq question forecast_distribution \
-  --for WeatherEvent \
-  --type 'Distribution[Float]' \
-  --definition '{"label":"Forecast ensemble","cardinality":"one"}'
-```
-
-Each provider gets its own evidence and claim:
-
-```bash
-NOAA_EVIDENCE=$(epiq --select evidence_id evidence \
-  --url https://example.test/noaa/2026-08-17 \
-  --title "NOAA forecast" \
-  --retrieved-at 2026-08-16 \
-  --excerpt "NOAA assigns a 40% chance of rain.")
-
-NOAA_CLAIM=$(epiq --select claim_id assert \
-  --subject "Boston rain on 2026-08-17" \
-  --question rain_probability \
-  --value 0.40 \
-  --valid-from 2026-08-17 \
-  --evidence "$NOAA_EVIDENCE")
-```
-
-Repeat that write for the other providers. Then derive an equally weighted empirical distribution
-from the five claim IDs:
-
-```bash
-epiq --actor agent:weather-ensemble derive-distribution \
-  --subject "Boston rain on 2026-08-17" \
-  --question forecast_distribution \
-  --input-claim "$NOAA_CLAIM" \
-  --input-claim "$WEATHER_DOT_COM_CLAIM" \
-  --input-claim "$ACCUWEATHER_CLAIM" \
-  --input-claim "$APPLE_CLAIM" \
-  --input-claim "$LOCAL_STATION_CLAIM" \
-  --valid-from 2026-08-17
-```
-
-The projected value is:
-
-```json
-{
-  "kind": "empirical",
-  "samples": [0.4, 0.55, 0.35, 0.6, 0.45]
-}
-```
-
-The derived claim additionally records:
-
-- all five input claim IDs in order;
-- all five inherited evidence fragments;
-- the `empirical` derivation operation;
-- its own actor, timestamp, confidence, and validity interval.
-
-Use weights when providers should not contribute equally. Do this instead of the unweighted
-derivation (or retract the earlier derived claim), otherwise both ensembles correctly appear as a
-contested cardinality-one field:
-
-```bash
-epiq derive-distribution \
-  --subject "Boston rain on 2026-08-17" \
-  --question forecast_distribution \
-  --input-claim "$NOAA_CLAIM,$WEATHER_DOT_COM_CLAIM,$ACCUWEATHER_CLAIM" \
-  --weights '[0.5,0.3,0.2]' \
-  --valid-from 2026-08-17
-```
-
-Weights must be finite, nonnegative, match the number of samples, and sum to one. A categorical
-distribution supplied directly by a source uses a typed value such as:
-
-```bash
-epiq question rain_outcome \
-  --for WeatherEvent \
-  --type 'Distribution[Enum[rain,no_rain]]'
-
-epiq assert \
-  --subject "Boston rain on 2026-08-17" \
-  --question rain_outcome \
-  --value '{"kind":"categorical","probabilities":{"rain":0.4,"no_rain":0.6}}' \
-  --valid-from 2026-08-17 \
-  --evidence "$NOAA_EVIDENCE"
-```
-
-Categorical probabilities must cover exactly the declared outcomes and sum to one.
-
-## What an agent loop looks like
-
-A research agent does not need a privileged write path. Its loop is ordinary CLI composition:
-
-1. Run `epiq matrix --kind Company` and locate `Unasked`, `NotFound`, stale, or contested cells.
-2. Search externally using a browser, API, scraper, or another tool.
-3. Add a bounded source excerpt with `epiq evidence`.
-4. Submit the supported answer with `epiq assert`.
-5. If a bounded search fails, record it with `epiq not-found`.
-6. Regenerate HTML, Excel, or JSON projections.
-
-All commands emit exactly one versioned JSON envelope on success. Errors use the same envelope on
-stderr:
-
-```json
-{
-  "schema_version": "1.0",
-  "status": "error",
-  "command": "epiq matrix",
-  "argv": ["epiq", "matrix", "--kind", "Barnstabel"],
-  "data": null,
-  "warnings": [],
-  "errors": [{
-    "code": "entity_not_found",
-    "message": "Entity not found: Barnstabel"
-  }],
-  "next_steps": []
-}
-```
-
-Write commands return created IDs, so an agent can chain operations without parsing terminal prose.
-
-## Python API
-
-Bulk importers may use the same storage API directly:
-
-```python
-from epiq.store import Store
-
-store = Store("research.sqlite")
-store.initialize("Product landscape")
-
-company_id = store.add_entity(
-    "Company",
-    "Example Research",
-    {"domain": "example.test"},
-    "import:seed",
-)
-
-store.add_question(
-    "supports_sso",
-    "Company",
-    "Bool",
-    {"label": "Supports SSO", "cardinality": "one"},
-    "import:seed",
-)
-
-_, evidence_id = store.add_evidence(
-    "https://example.test/security",
-    "Security documentation",
-    "2026-08-15",
-    "Enterprise accounts support SAML SSO.",
-    "agent:security-review",
-)
-
-store.assert_claim(
-    company_id,
-    "supports_sso",
-    True,
-    "2026-08-15",
-    evidence_id,
-    "agent:security-review",
-)
-
-matrix = store.matrix("Company")
-```
-
-The CLI is the preferred cross-package boundary. The Python API is useful for trusted importers.
-Direct SQL reads are possible, but external code should not write tables directly because doing so
-would bypass validation and the event log.
-
-## Packaged CLI tutorials
-
-Eleven narrated, executable tutorials live in [`examples/cli`](examples/cli/README.md). Four teach
-the model with incremental CLI commands; seven stress-test forecasts, multidimensional pricing,
-literature and clinical findings, procurement derivations, and recursive ownership/supply chains.
-Build all eleven with:
-
-```bash
-uv run examples/cli/build-all.sh /tmp/epiq-cli-examples
-```
-
-Each tutorial is Markdown, every fixture enters through actual CLI commands, and the test suite
-rebuilds all twelve projects from scratch and runs their integrity checks.
-
-### Patriots and transaction time
-
-The Patriots fixture demonstrates cells changing as results become known:
-
-```bash
-epiq --db /tmp/patriots.sqlite init --name "Patriots 2025"
-epiq --db /tmp/patriots.sqlite demo patriots
-epiq --db /tmp/patriots.sqlite season-record "New England Patriots 2025"
-```
-
-The final command returns `14-3` plus the 17 claim tokens used in the derivation. Move the
-transaction-time cutoff backward:
-
-```bash
-epiq --db /tmp/patriots.sqlite season-record \
-  "New England Patriots 2025" --known-at 2025-09-22T00:00:00Z
-```
-
-That returns `1-2`, because only three results were known at the cutoff.
-
-### Cape Cod towns
-
-This reproducible importer builds 15 towns, two questions, 15 evidence fragments, and 30 claims
-from the Census ACS 2024 five-year release:
-
-```bash
-python scripts/build_cape_cod_towns.py --db examples/cape-cod-towns.sqlite
-epiq --db examples/cape-cod-towns.sqlite export-html \
-  --kind Town --output examples/cape-cod-towns.html
-epiq --db examples/cape-cod-towns.sqlite export-xlsx \
-  --kind Town --output examples/cape-cod-towns.xlsx
-```
-
-The visible questions are population and median owner-occupied home value. Each evidence excerpt
-also retains the estimate's margin of error.
-
-### Weather forecast distributions
-
-The illustrative weather fixture creates five atomic provider forecasts and derives an empirical
-distribution with full claim and evidence lineage:
-
-```bash
-python scripts/build_weather_forecasts.py --db examples/weather-forecasts.sqlite
-epiq --db examples/weather-forecasts.sqlite matrix --kind WeatherEvent
-epiq --db examples/weather-forecasts.sqlite export-html \
-  --kind WeatherEvent --output examples/weather-forecasts.html
-```
-
-### Cham corpus adapter
-
-`import-cham` translates the earlier entity/evidence/claim JSON packet into typed Epiq questions:
-
-```bash
-epiq use examples/ai-interviewers.sqlite
-epiq init --name "AI Interviewer Market"
-epiq --actor agent:corpus-import import-cham \
-  --entities path/to/entities.json \
-  --evidence path/to/evidence.json \
-  --claims path/to/claims.json
-epiq matrix --kind Company
-```
-
-The current adapter uses the primary evidence item for older multi-source claims. Native
-many-to-many claim/evidence support is a planned storage migration.
-
-## EpiQL v0.1
-
-The repository also contains a deliberately narrow parser for a future research DSL:
-
-```epiq
-question game_result : Enum[W,L,T] for Game {
-  ask "What was the final result?"
-  cardinality one
-}
-
-derive wins : Int for Season =
-  games |> where game_result == W |> count
-```
-
-Check a file without performing effects:
-
-```bash
-epiq --db /tmp/patriots.sqlite check examples/patriots.epiq
-```
-
-Unsupported expressions fail loudly. Planned language work includes populations, temporal lenses,
-proposal-producing research effects, and explicit acceptance policies.
-
-## Storage and concurrency
-
-An Epiq project is one SQLite file. The principal tables are:
-
-- `meta`
-- `events`
-- `entities`
-- `questions`
-- `sources`
-- `evidence`
-- `claims`
-- `claim_evidence`
-- `derivations`
-- `claim_inputs`
-- `research_tasks`
-
-SQLite runs in WAL mode. Writes use `BEGIN IMMEDIATE`, which serializes competing writers rather
-than allowing interleaved partial changes. Each accepted domain write and its event-log record are
-committed in one transaction.
-
-Current invariants:
-
-1. Events, sources, and evidence are never updated or deleted.
-2. A claim requires an existing evidence fragment.
-3. Closing a claim changes its active interval; its assertion remains addressable.
-4. Operational tables and replayable events change in one SQLite transaction.
-5. A pure query at fixed valid- and transaction-time cutoffs is deterministic.
-6. Failure to find evidence is not a negative claim.
-7. Retried identical evidence and claim writes are idempotent.
-
-The database is portable and can live beside a research project. Generated SQLite databases,
-HTML reports, and Excel files are ignored in this repository by default.
-
-## Spreadsheet web application
-
-Epiq includes a functional local web application built with FastAPI, React, and TypeScript. The
-spreadsheet is a projection of the same SQLite database used by the CLI; it does not maintain a
-second source of truth.
-
-The application currently supports:
-
-- creating a workspace;
-- importing an existing `.sqlite`, `.sqlite3`, or `.db` Epiq project through the browser into
-  managed project storage, with file-signature, SQLite integrity, Epiq metadata, schema-version,
-  and upload-size validation;
-- downloading a transactionally consistent SQLite snapshot of the active project;
-- adding multiple entity tables from the sidebar and switching between them;
-- adding entity rows and typed question columns on the fly;
-- defining one-to-one or one-to-many relationship fields that reference rows in another table;
-- choosing related rows by name while retaining stable entity IDs underneath;
-- researching many-valued relationships as a provisional graph: the agent proposes links, resolves
-  existing related rows, identifies rows that must be created, and waits for checkbox approval;
-- entering evidence-backed answers;
-- inspecting confidence, excerpts, source links, and claim tokens in a cell drawer;
-- displaying `Answered`, `Contested`, `NotFound`, and `Unasked` as distinct states;
-- recording unsuccessful research without asserting a negative answer;
-- retracting claims while preserving their event history;
-- challenging incorrect answers, failed searches, and category/schema mistakes while preserving
-  human guidance for subsequent agent runs;
-- reversibly removing fields without deleting their historical claims or evidence;
-- editing field labels, types, cardinality, time policy, and agent guidance through a compatibility
-  preview before applying an immutable new schema version;
-- launching cell, row, column, and whole-table research with incremental progress indicators;
-- cancelling queued or running research without accepting late results, and retrying failed jobs;
-- finding independent supporting evidence without returning sources already attached to a claim;
-- describing a desired entity set in natural language (for example, “US Senators from the
-  Northeast”), then reviewing sourced candidates as checkboxes before adding rows;
-- using AI to propose additional typed fields, with checkbox-based human approval;
-- assigning stable, slow-changing, or dynamic temporal policies and surfacing stale evidence;
-- reviewing contradictions, stale evidence, and invalidated calculations from a unified queue;
-- defining calculated fields with a builder or safe row-relative arithmetic such as
-  `=C1/(2026-E1)`, filling
-  them down by click or drag, and inspecting typed derivation lineage;
-- sorting any column, filtering rows by text or research status, and preserving view preferences;
-- setting non-destructive numeric display policies per field, including thousands separators and
-  decimal-place or significant-digit precision;
-- keyboard navigation with arrows/Tab, Enter or double-click inspection, and clipboard copy;
-- frozen headers and identity columns, draggable column order, resizable columns, and compact or
-  wrapped row density; and
-- exporting the visible research domain to Excel or downloading a consistent project backup.
-
-Import deliberately creates and opens a managed copy. A hosted web server cannot edit a file in a
-user's local filesystem after the browser uploads it. The local file therefore remains unchanged;
-download a new SQLite snapshot to carry the hosted project elsewhere. This is the same project-file
-model used locally and in a future hosted deployment.
-
-Single-click selects a cell without changing the sheet layout. Use the arrow keys or Tab to move,
-Enter (or double-click) to open its evidence inspector, Escape to clear selection, and
-Command/Ctrl+C to copy the displayed value. Command/Ctrl+V opens a typed preview and requires
-evidence, confidence, and temporal context before committing the pasted range atomically.
-
-Install both development environments:
-
-```bash
-uv sync --extra test --extra web --extra web-test
-npm --prefix web install
-```
-
-For frontend development, run the API and Vite development server in separate terminals:
-
-```bash
-EPIQ_DB=examples/my-market.sqlite uv run --extra web epiq-web
-npm --prefix web run dev
-```
-
-Open `http://localhost:5173`. Vite proxies `/api` requests to FastAPI on port 8000. If the selected
-database does not exist, the welcome screen initializes it.
-
-For the single-server production-style build:
-
-```bash
-npm --prefix web run build
-EPIQ_DB=examples/my-market.sqlite uv run --extra web epiq-web
-```
-
-Then open `http://127.0.0.1:8000`. FastAPI serves `web/dist` and falls back to `index.html` for
-client-side routes. API documentation remains available at `http://127.0.0.1:8000/docs`.
-
-The principal endpoints are:
-
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/project` | Project identity and available tables |
-| `POST` | `/api/project` | Initialize the selected SQLite file |
-| `GET` | `/api/capabilities` | Versioned agent/tool protocol, optionally with live schema |
-| `GET` | `/api/schema` | Current row types and typed fields |
-| `GET` | `/api/context` | Token-budgeted current state for an agent |
-| `GET` | `/api/matrix/{kind}` | Current entity-by-question projection |
-| `GET` | `/api/gaps/{kind}` | Unanswered and unsuccessful research cells |
-| `GET` | `/api/stale/{kind}` | Evidence made stale by field time policy |
-| `GET` | `/api/contradictions/{kind}` | Contested cells and their lineage |
-| `GET` | `/api/refresh-plan/{kind}` | Deterministic external-agent research tasks |
-| `GET` | `/api/stale-derivations` | Derived claims with changed dependencies |
-| `GET` | `/api/search` | Search identities, schema, evidence, and claims |
-| `GET` | `/api/research/jobs` | Durable background-research activity |
-| `POST` | `/api/research/jobs/{id}/cancel` | Cooperatively cancel work and discard late results |
-| `POST` | `/api/research/jobs/{id}/retry` | Relaunch a failed or cancelled request |
-| `POST` | `/api/entities` | Add a row |
-| `POST` | `/api/apply` | Atomically converge a declarative project document |
-| `POST` | `/api/entities/{id}/aliases` | Add an alternate stable identity |
-| `POST` | `/api/questions/{id}/revision-preview` | Check a proposed field version against current values |
-| `POST` | `/api/questions/{id}/revise` | Apply a compatible field revision with schema lineage |
-| `POST` | `/api/entities/{id}/merge` | Merge a duplicate into a surviving row |
-| `POST` | `/api/entities/{id}/retire` | Retire a row without erasing it |
-| `POST` | `/api/entities/{id}/restore` | Restore a retired row |
-| `POST` | `/api/questions` | Add a typed, versioned column |
-| `POST` | `/api/questions/{id}/retire` | Hide a field while preserving its history |
-| `POST` | `/api/questions/{id}/restore` | Restore a retired field and its prior values |
-| `POST` | `/api/questions/{id}/evolve` | Atomically replace, refine, or split a field |
-| `GET` | `/api/questions/{id}/lineage` | Read schema predecessor/successor lineage |
-| `POST` | `/api/questions/{id}/challenges` | Record a schema/category challenge |
-| `GET` | `/api/question-challenges` | List and filter schema challenges |
-| `POST` | `/api/question-challenges/{id}/resolve` | Resolve or dismiss a challenge |
-| `POST` | `/api/evidence` | Add an immutable source excerpt |
-| `POST` | `/api/evidence/{id}/assess` | Append an evidence quality assessment |
-| `GET` | `/api/evidence/{id}/assessments` | Read evidence assessment history |
-| `POST` | `/api/claims` | Assert an evidence-backed cell answer |
-| `POST` | `/api/claims/bulk` | Assert up to 1,000 claims atomically |
-| `POST` | `/api/batch` | Atomically add evidence and dependent claims |
-| `POST` | `/api/derive` | Persist a calculation with typed dependencies |
-| `POST` | `/api/materialize` | Calculate declared formulas for ready rows |
-| `POST` | `/api/propagate` | Materialize a claim through a relationship path |
-| `POST` | `/api/aggregate/{kind}` | Group and summarize current numeric values |
-| `POST` | `/api/claim-proposals` | Stage a validated claim outside the live matrix |
-| `GET` | `/api/claim-proposals` | Read the durable claim review queue |
-| `POST` | `/api/claim-proposals/review` | Approve or reject a selection atomically |
-| `POST` | `/api/claims/{id}/retract` | Close a claim without deleting it |
-| `POST` | `/api/claims/{id}/validity-end` | Record when a fact stopped being true |
-| `POST` | `/api/claims/{id}/supersede` | Atomically replace a claim |
-| `POST` | `/api/research/not-found` | Record a completed unsuccessful search |
-| `POST` | `/api/research/jobs` | Launch background cell or column research |
-| `POST` | `/api/research/rows` | Research unanswered fields for one row |
-| `POST` | `/api/research/table` | Research unanswered cells across the table |
-| `POST` | `/api/entity-suggestions/jobs` | Propose additional rows for human review |
-| `POST` | `/api/field-suggestions/jobs` | Propose additional typed fields for review |
-| `GET` | `/api/export/{kind}.xlsx` | Download a provenance-aware Excel workbook |
-| `GET` | `/api/export/{kind}.scenario-list.ep` | Download an EDSL ScenarioList package |
-| `GET` | `/api/export/{kind}.agent-list.ep` | Download an EDSL AgentList package |
-| `GET` | `/api/export/project.sqlite` | Download a consistent project backup |
-| `GET` | `/api/export/project.epiq` | Download a checksummed portable project bundle |
-| `POST` | `/api/query/{kind}` | Filter rows with structured predicates |
-| `GET` | `/api/related/{entity}` | Traverse incoming or outgoing typed references |
-| `GET` | `/api/reports/dossier/{entity}` | Read a sourced entity profile and history |
-| `GET` | `/api/reports/timeline/{kind}/{question}` | Read a chronological field view |
-| `POST` | `/api/reports/delta` | Record and read changes since a report baseline |
-| `GET` | `/api/history` | Read the append-only event history |
-
-### What a cell edit means
-
-The UI deliberately does not implement silent replacement. Adding an answer creates a claim. If a
-different active answer already exists in a single-valued field, the cell becomes `Contested` and
-both claims remain inspectable. Retracting a claim closes its transaction-time interval but leaves
-the original assertion and evidence in history.
-
-## Querying, reports, and portable projects
-
-`query` accepts concise expressions or JSON predicate objects. Predicates are combined with logical
-AND and support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `contains_any`, `contains_all`,
-`any_ref`, `in`, and `state`:
-
-```bash
-epiq query --kind Company \
-  --where 'funding >= 10000000' \
-  --where 'status=active'
-
-epiq query --kind Work --where 'author=Paul Graham'
-epiq query --kind Work --where 'topic contains_all ["Programming","Startups"]'
-```
-
-Reference predicates accept entity names and aliases. Matrix cells retain the stable ID in `value`
-and add `{entity_id,name,kind}` objects in `display_value`/`display_values`. Traverse links and
-backlinks directly:
-
-```bash
-epiq related "Paul Graham" --via author --direction incoming
-epiq --format table related "Paul Graham" --direction incoming --depth 3
-```
-
-`--depth` performs bounded recursive traversal with cycle protection. Summarize numeric fields,
-optionally grouping by another field:
-
-```bash
-epiq aggregate --kind PriceQuote --question price_usd --op avg --group-by region
-epiq --format table aggregate --kind Forecast --question probability --op avg --group-by forecaster
-```
-
-`aggregate` is a read-only report. Use `derive` when the result should become a typed claim with
-durable formula, input-claim, and inherited evidence lineage:
-
-```bash
-epiq --actor agent:ensemble derive \
-  --subject "Rain tomorrow" --question ensemble_probability \
-  --operation weighted_avg --parameters '{"weights":[1,2,1]}' \
-  --valid-from 2026-08-18 \
-  --input-cell "Alice forecast" probability \
-  --input-cell "Bob forecast" probability \
-  --input-cell "Carol forecast" probability
-```
-
-Operations are `sum`, `avg`, `min`, `max`, `count`, `weighted_avg`, and `linear`. `linear` accepts
-`{"scale":...,"offset":...}` for conversions such as annual to monthly price. Inputs may also be
-provided directly by repeating `--input-claim`.
-
-Weights can themselves be sourced claims. Repeat `--weight-cell SUBJECT QUESTION` in the same
-order as the weighted inputs; Epiq inherits their evidence and records their claim IDs:
-
-```bash
-epiq derive --subject "Sleep review" --question pooled_effect \
-  --operation weighted_avg --valid-from 2026-08-17 \
-  --input-cell "Study A finding" effect --input-cell "Study B finding" effect \
-  --weight-cell "Study A finding" sample_size --weight-cell "Study B finding" sample_size
-```
-
-For a formula shared by a table, declare it in the target question's definition and materialize all
-ready rows together. Rows missing an input are reported as skipped:
-
-```bash
-epiq question landed_cost --for Quote --type 'Quantity[USD]' \
-  --definition '{"formula":{"operation":"sum","inputs":["price","shipping"]}}'
-epiq materialize --kind Quote --valid-from 2026-08-17
-```
-
-The web interface also accepts spreadsheet notation with numeric constants, parentheses, and
-`+`, `-`, `*`, or `/`. With the entity in column A, `=C1/(2026-E1)` is normalized to a bounded
-arithmetic AST and stable field names before it is stored; arbitrary code, function calls, and
-attribute access are rejected. Reordering visible columns therefore cannot change the formula's meaning. Click
-`ƒ Fill down` to calculate every ready row, or drag it to a row in the derived column to calculate
-through that row. Division by zero fails explicitly and does not create a derived claim.
-
-Relationship traversal can also produce a derived claim. `propagate` selects the nearest related
-entity with the requested source claim and rejects ambiguous equally-near matches:
-
-```bash
-epiq propagate --subject Acorn --via parent_company --direction outgoing --depth 5 \
-  --question risk_level --to-question inherited_risk --valid-from 2026-08-17
-```
-
-Omit `--via` when a path intentionally crosses differently named reference fields, such as
-`product.component → component.subcomponent → component.supplier`.
-
-Every derived claim has typed `operand`, `parameter`, and `path` dependencies. Check whether an
-input has been retracted, superseded, or followed by a newer active claim:
-
-```bash
-epiq stale-derivations
-epiq stale-derivations --kind Company
-```
-
-Staleness is reported rather than silently recomputed: the original derivation remains an auditable
-historical assertion, while an agent or human can inspect the change and rematerialize it.
-
-For scripts, suppress successful output, select one JSON path, or request collected IDs:
-
-```bash
-epiq --quiet apply --input project.json
-epiq --select query.matched query --kind Company --where 'stage=seed'
-epiq --format ids entity Company "Acme"
-```
-
-The same valid-time and transaction-time controls as `matrix` are available through `--valid-at`
-and `--known-at`. Reports are deterministic JSON rather than prose invented by the CLI:
-
-```bash
-epiq dossier "Acme"
-epiq timeline --kind Company --question funding
-epiq delta                       # changes since the prior delta report
-epiq delta --since-seq 120       # explicit event baseline
-```
-
-Each delta records a `report.generated` event containing its through-sequence and content hash, so
-the next delta has a durable baseline.
-
-For transfer or archival, export a `.epiq` bundle rather than copying a live WAL database:
-
-```bash
-epiq export-bundle --output backups/market.epiq
-epiq --db restored/market.sqlite import-bundle backups/market.epiq
-```
-
-The bundle contains an online SQLite backup and a versioned manifest with byte length and SHA-256
-checksum. Import refuses unexpected files, checksum mismatches, corrupt SQLite, and existing
-destinations.
-
-## Operational safety and agent handoff
-
-Before a long research run, create a transactionally consistent backup while the app is running:
-
-```bash
-epiq backup --output backups/market-before-refresh.sqlite
-```
-
-Existing files are never replaced unless `--force` is explicit. Check both SQLite integrity and
-cross-table references with:
-
-```bash
-epiq doctor
-```
-
-Inspect upgrades before applying them, and take a transactionally consistent snapshot of the old
-schema as part of an explicit migration:
-
-```bash
-epiq migration-plan
-epiq migrate --backup backups/market-before-v10.sqlite
-```
-
-Epiq refuses databases created by a newer unsupported schema version. SQLite triggers prevent
-updates or deletions of events, evidence fragments, and sources even if an application path is
-implemented incorrectly. `doctor` additionally checks materialized entities, questions, evidence,
-and claims against their originating event types and verifies every claim's primary evidence link.
-
-Agents can orient themselves without reading this tutorial or guessing the schema:
-
-```bash
-epiq version
-epiq capabilities
-epiq guide
-epiq agent status
-epiq next
+epiq guide recovery
 epiq agent schema envelope
 epiq docs list
-epiq capabilities --command record
-epiq capabilities --include-schema
-epiq schema --kind Company
-epiq context --kind Company --budget 4000
-epiq gaps --kind Company
-epiq stale --kind Company
-epiq contradictions --kind Company
-epiq refresh-plan --kind Company
-epiq search "pricing announcement"
 ```
 
-`capabilities` does not require an initialized database. It returns a versioned protocol declaration
-with every command's arguments, constraints, mutation and transaction behavior, return shape,
-examples, supported types and operations, JSON document shapes, common errors, and recommended
-agent workflows. `guide` describes the lifecycle and execution boundary; `agent status` combines
-live project health, research jobs, review queues, and blockers; and `next` returns the safest useful
-action as an executable, safety-annotated argument array. `--command` narrows the capabilities
-response for a token-efficient tool lookup;
-`--include-schema` combines protocol discovery with the selected project's current schema.
+Success and failure use the same versioned envelope shape. Errors are written to stderr with exit
+status 2. Suggested next actions are tokenized argv arrays and declare mutation, network, and
+approval requirements.
 
-`context` returns current typed cells and confidence-aware lineage, compacting rows when the
-approximate token budget would be exceeded. `gaps` distinguishes cells that have never been asked
-from completed unsuccessful searches. `stale` follows each field's temporal policy rather than
-decaying claim confidence.
-`refresh-plan` turns those conditions into stable JSON tasks with typed questions, suggested search
-queries, interpretation guidance, existing values, and source URLs for an external research agent.
+The Git-ledger architecture is documented in
+[`docs/git-ledger-architecture.md`](docs/git-ledger-architecture.md). Source-provider contracts and
+provenance are documented in
+[`docs/source-provider-protocol-spec.md`](docs/source-provider-protocol-spec.md) and
+[`docs/source-providers-and-provenance.md`](docs/source-providers-and-provenance.md).
 
-The ledger web Control Center uses a persistent, project-scoped [Pi](https://pi.dev/) session for
-planning. Pi runs without builtin shell or filesystem tools; it receives the current Epiq snapshot
-and an Epiq-specific system prompt, while all mutations remain explicit validated `epiq` CLI
-commands. Configure the frontier planning model with `EPIQ_PI_MODEL` (default
-`openai/gpt-6.2-astra`) and reasoning level with `EPIQ_PI_THINKING` (default `high`). Repetitive
-row research remains separately configurable through `EPIQ_RESEARCH_MODEL`.
-
-The Control Center's **Keep enriching this project** curator runs that same project-scoped Pi agent
-for multiple bounded cycles. Starting a curator requires a cash budget. Pi first produces a
-no-mutation strategy for approval: intended breadth, target example count, priority typed fields,
-phases, expected research volume, budget allocation, and stopping criteria. After approval, each
-cycle reflects on current coverage and usefulness, chooses one
-high-value enrichment, exposes its CLI commands and results in the conversation, and then evaluates
-the updated project before continuing. Curators have explicit cycle and research-cell budgets, can
-pause or stop at safe cycle boundaries, and stop automatically after repeated no-change cycles.
-For landscape, roster, and catalog objectives, the curator prioritizes adding credible examples
-before deepening the schema, normally seeking batches of 5–10 rows until the primary table has useful
-breadth. A single stalled tactic triggers another discovery approach; two no-change cycles stop the
-run.
-Curator schema plans favor analysis-ready atomic fields: quantities with units, numbers, dates,
-mutually exclusive enums, carefully evidenced booleans, URLs, and relationships. Free-text fields
-are reserved for facts that cannot be represented by a structured type without meaningful loss;
-unknown remains distinct from `false`.
-Their state is stored in `.epiq/curator.json`; a curator that was running when the server stopped is
-restored paused rather than silently resuming external work.
-Curator accounting is currently conservative and explicitly labeled estimated: by default Epiq
-reserves `$0.75` per Pi planning turn and `$0.25` per researched cell. Override those rates with
-`EPIQ_CURATOR_PLANNING_COST_USD` and `EPIQ_CURATOR_RESEARCH_CELL_COST_USD`. Cycle and cell ceilings
-remain internal safety caps behind the user-facing cash budget.
-When the allocation is exhausted, **Add budget & continue** extends the same approved strategy and
-Pi session from the next cycle; it does not discard progress or require a replacement curator plan.
-
-Background research jobs and provisional entity/field suggestions are persisted in the project
-database. Completed review queues therefore survive a server restart. Startup recovers every queued
-or running job, including jobs older than the recent 200-job activity window. Interrupted jobs become
-failed; pending cancellation requests become cancelled. Recovery does not launch external work.
-
-Each new job stores its project identity and a versioned request, including the job type, instructions,
-counts, scope and requested entities. Workers and late progress callbacks remain bound to their
-originating project. Job admission and project switching share a lock; active work still prevents
-closing or switching projects.
-
-Use `POST /api/research/jobs/{id}/retry` for cell research, row/field suggestions or workspace agents.
-A retry keeps the original request and records `retry_of`, `retry_root` and `attempt`. Repeating the
-same retry request returns the existing replacement job. To retry another failed attempt, use that
-replacement's ID. `GET /api/research/jobs/{id}` can inspect a job outside the recent activity window.
-
-Cell findings, including NotFound outcomes, commit atomically with their progress checkpoint. Retries
-skip committed cells and preserve the original target selection. Approved workspace retries reuse
-the saved plan and existing child jobs; failed children can be retried separately in Activity.
-Legacy cell-research requests are reconstructed when their stored metadata is sufficient. Other
-legacy jobs without a complete request return `job_request_unavailable` instead of guessing inputs.
-
-Corrections that replace a claim can be committed atomically:
-
-```bash
-epiq supersede clm_OLD \
-  --value '"closed"' \
-  --valid-from 2026-08-01 \
-  --evidence evd_NEW \
-  --reason "Company closure announcement"
-```
-
-The old claim remains in history as `superseded`; either both changes commit or neither does.
-
-## Current limits
-
-Epiq is an executable vertical slice, not yet a production database server. In particular:
-
-- the web server is intentionally loopback-oriented; there is no authentication or multi-tenancy,
-  so it must not be exposed to an untrusted network;
-- spreadsheet interactions include keyboard navigation, rectangular selection, tab-separated
-  copying, atomic provenance-aware paste, and typed repeated-value bulk fill; formula fields support
-  bounded row-level arithmetic rather than arbitrary spreadsheet functions;
-- there are no web searches, scrapers, or LLM calls inside the CLI;
-- question replacement migrations are not yet exposed as a full CLI workflow;
-- EpiQL implements only question declarations and a narrow count-over-filter derivation;
-- legacy `--db` commands remain during the cutover but are not authoritative for Git-ledger projects.
-
-These boundaries are intentional enough to make experiments honest, but not promises that the
-interface is finished. See [ROADMAP.md](ROADMAP.md) for the production sequence and release gates.
-
-## Development
-
-```bash
-uv sync --extra test --extra web --extra web-test
-uv run ruff check .
-uv run pytest -q
-npm --prefix web ci
-web/node_modules/.bin/playwright install chromium
-npm --prefix web test
-npm --prefix web run build
-uv build
-```
-
-GitHub Actions runs Python lint/tests, Chromium interaction tests, the frontend build, and an
-installed-wheel smoke test on every push and pull request. Build the frontend before the wheel
-to include browser assets; core-only builds still work without Node.js or built assets.
-
-The implementation separates SQLite upgrades (`migrations.py`), bulk historical reads
-(`projections.py`), worker scheduling (`jobs.py`), project-bound job lifecycle (`job_manager.py`),
-atomic finding preparation (`research_writeback.py`), and scoped frontend requests (`useTableData.ts`).
-The public Python `Database` facade remains the embedding interface.
-
-The web server defaults to six background workers and at most 1,000 waiting tasks. Configure these
-with positive integers in `EPIQ_RESEARCH_CONCURRENCY` and `EPIQ_RESEARCH_QUEUE_CAPACITY`. Queue
-overflow returns HTTP 429 with `research_queue_full`; already accepted jobs remain available in
-Activity. A cancelled queued job skips its runner when dequeued. Cancellation of work already
-executing remains cooperative.
-
-## License
-
-MIT
+Legacy SQLite-only commands remain available only through explicit `--db` compatibility workflows.
+They are not the architecture or onboarding path for new projects.

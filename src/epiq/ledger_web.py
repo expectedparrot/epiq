@@ -11,10 +11,11 @@ import threading
 import time
 import unicodedata
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -2295,7 +2296,11 @@ def create_ledger_app(
                             if proposed_commands
                             else [argv]
                         )
-                        if not isinstance(raw_commands, list) or not raw_commands or len(raw_commands) > 20:
+                        if (
+                            not isinstance(raw_commands, list)
+                            or not raw_commands
+                            or len(raw_commands) > 20
+                        ):
                             raise EpiqError(
                                 "invalid_agent_batch",
                                 "A command action must contain 1–20 Epiq commands",
