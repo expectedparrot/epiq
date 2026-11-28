@@ -9,6 +9,8 @@ Epiq separates durable research state from replaceable orchestration. The CLI va
 write and emits machine-readable JSON. The optional local web application adds a spreadsheet,
 document pipelines, and a persistent project-scoped Control Center agent.
 
+Planning a study with Epiq? Read the [workflow guide](src/epiq/docs_content/workflow.md) before drafting the plan. It is available before installation.
+
 ## Install the CLI
 
 Epiq requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
